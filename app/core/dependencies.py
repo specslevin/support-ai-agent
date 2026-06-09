@@ -13,6 +13,9 @@ from app.core.gpspos.auth import GpsPosAuth
 from app.core.gpspos.client import GpsPosClient
 from app.core.gpspos.config import GpsPosSettings
 from app.core.gpspos.diagnostics import GpsPosDiagnostics
+from app.core.gpspos_geo.client import GpsposGeoAuth, GpsposGeoClient
+from app.core.gpspos_geo.config import GpsposGeoSettings
+from app.core.gpspos_geo.service import GpsposGeoService
 from app.core.okdesk.client import OkdeskClient
 from app.core.okdesk.config import OkdeskSettings
 from app.core.okdesk.service import OkdeskService
@@ -128,6 +131,14 @@ def _gps_diagnostics() -> GpsPosDiagnostics:
 
 
 @functools.lru_cache
+def _gpspos_geo_service() -> GpsposGeoService:
+    cfg = GpsposGeoSettings()
+    auth = GpsposGeoAuth(cfg)
+    client = GpsposGeoClient(auth, cfg.BASE_URL)
+    return GpsposGeoService(client)
+
+
+@functools.lru_cache
 def _okdesk_client() -> OkdeskClient:
     ocfg = OkdeskSettings()
     return OkdeskClient(ocfg)
@@ -155,6 +166,11 @@ async def get_llm_router() -> LLMRouter:
 async def get_gpspos_diagnostics() -> GpsPosDiagnostics:
     """Return shared :class:`GpsPosDiagnostics` pipeline."""
     return _gps_diagnostics()
+
+
+async def get_gpspos_geo_service() -> GpsposGeoService:
+    """Return shared :class:`GpsposGeoService` for geo.gpspos.ru."""
+    return _gpspos_geo_service()
 
 
 async def get_okdesk_client() -> OkdeskClient:

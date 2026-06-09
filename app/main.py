@@ -21,6 +21,9 @@ from .core.gpspos.auth import GpsPosAuth
 from .core.gpspos.client import GpsPosClient
 from .core.gpspos.config import GpsPosSettings
 from .core.gpspos.diagnostics import GpsPosDiagnostics
+from .core.gpspos_geo.client import GpsposGeoAuth, GpsposGeoClient
+from .core.gpspos_geo.config import GpsposGeoSettings
+from .core.gpspos_geo.service import GpsposGeoService
 from .core.okdesk import OkdeskClient, OkdeskService, OkdeskSettings
 from .core.telegram.bot import create_bot, run_polling_with_retries, setup_dispatcher
 from .core.telegram.settings import TelegramRuntimeSettings
@@ -61,6 +64,12 @@ async def lifespan(app: FastAPI):
     registry = build_tool_registry(diagnostics)
     agent = SupportAgent(registry, diagnostics, llm_provider=tg.LLM_PROVIDER)
 
+    geo_settings = GpsposGeoSettings()
+    geo_auth = GpsposGeoAuth(geo_settings)
+    geo_client = GpsposGeoClient(geo_auth, geo_settings.BASE_URL)
+    geo_service = GpsposGeoService(geo_client)
+    log.info("gpspos_geo_initialized", base_url=geo_settings.BASE_URL)
+
     okdesk_settings = OkdeskSettings()
     okdesk_client = OkdeskClient(okdesk_settings)
     okdesk_service = OkdeskService(okdesk_client)
@@ -68,7 +77,7 @@ async def lifespan(app: FastAPI):
     await init_db()
     synced = await sync_companies(okdesk_service)
     log.info("startup_sync_companies", count=synced)
-    ai_agent = AIAgent(okdesk=okdesk_service, gpspos=diagnostics)
+    ai_agent = AIAgent(okdesk=okdesk_service, gpspos=diagnostics, gpspos_geo=geo_service)
 
     app.state.gpspos_auth = auth
     app.state.gpspos_client = client
@@ -76,6 +85,7 @@ async def lifespan(app: FastAPI):
     app.state.support_agent = agent
     app.state.okdesk_service = okdesk_service
     app.state.ai_agent = ai_agent
+    app.state.gpspos_geo_service = geo_service
 
     polling_task: asyncio.Task[None] | None = None
     token = tg.TELEGRAM_BOT_TOKEN.strip()
@@ -133,6 +143,15 @@ async def lifespan(app: FastAPI):
             await tb.session.close()
         except Exception:
             log.exception("telegram_bot_session_close_failed")
+
+    try:
+        await geo_client.aclose()
+    except Exception:
+        log.exception("gpspos_geo_client_close_failed")
+    try:
+        await geo_auth.aclose()
+    except Exception:
+        log.exception("gpspos_geo_auth_close_failed")
 
     try:
         await client.aclose()

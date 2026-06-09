@@ -9,6 +9,7 @@ from sqlalchemy import select
 from app.core.db.database import AsyncSessionLocal
 from app.core.db.models import Company as DBCompany
 from app.core.gpspos.diagnostics import GpsPosDiagnostics
+from app.core.gpspos_geo.service import GpsposGeoService
 from app.core.okdesk.service import OkdeskService
 
 log = structlog.get_logger(__name__)
@@ -87,6 +88,56 @@ AVAILABLE_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "list_geo_objects",
+            "description": (
+                "Get a list of all tracked vehicles/devices from GPSPOS Geo (geo.gpspos.ru). "
+                "Returns object id, name, IMEI, and subscription info. "
+                "Use when the user asks what objects are registered in the geo system."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_geo_object_status",
+            "description": (
+                "Get current GPS status of a vehicle or device by its numeric object_id "
+                "from GPSPOS Geo (geo.gpspos.ru). Returns coordinates, speed, online flag. "
+                "Use after list_geo_objects to look up the id."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "object_id": {
+                        "type": "integer",
+                        "description": "Numeric object id from GPSPOS Geo",
+                    },
+                },
+                "required": ["object_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_geozones",
+            "description": (
+                "Get a list of geofence zones configured in GPSPOS Geo (geo.gpspos.ru). "
+                "Returns zone id and name. Use when the user asks about geofences."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "list_issues",
             "description": (
                 "Get a list of support tickets/issues from Okdesk. "
@@ -113,6 +164,7 @@ AVAILABLE_TOOLS: list[dict[str, Any]] = [
 def build_tool_functions(
     okdesk: OkdeskService,
     gpspos: GpsPosDiagnostics,
+    geo: GpsposGeoService | None = None,
 ) -> dict[str, Any]:
     async def search_company(
         name: str, limit: int = 5
@@ -209,9 +261,48 @@ def build_tool_functions(
             for i in issues[:limit]
         ]
 
+    async def list_geo_objects() -> list[dict[str, Any]]:
+        if geo is None:
+            return [{"error": "GPSPOS Geo not configured"}]
+        objects = await geo.list_objects()
+        return [
+            {
+                "id": o.id,
+                "name": o.name,
+                "imei": o.imei,
+                "payed_till": str(o.payedTill) if o.payedTill else None,
+            }
+            for o in objects
+        ]
+
+    async def get_geo_object_status(object_id: int) -> dict[str, Any]:
+        if geo is None:
+            return {"error": "GPSPOS Geo not configured"}
+        status = await geo.get_object_status(object_id)
+        if status is None:
+            return {"error": f"Status unavailable for object_id={object_id}"}
+        return {
+            "object_id": object_id,
+            "online": status.online,
+            "lat": status.lat,
+            "lng": status.lng,
+            "speed": status.speed,
+            "satellites": status.sat,
+            "time": status.time,
+        }
+
+    async def list_geozones() -> list[dict[str, Any]]:
+        if geo is None:
+            return [{"error": "GPSPOS Geo not configured"}]
+        zones = await geo.list_geozones()
+        return [{"id": z.get("id"), "name": z.get("name")} for z in zones]
+
     return {
         "search_company": search_company,
         "list_companies": list_companies,
         "get_object_status": get_object_status,
         "list_issues": list_issues,
+        "list_geo_objects": list_geo_objects,
+        "get_geo_object_status": get_geo_object_status,
+        "list_geozones": list_geozones,
     }

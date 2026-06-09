@@ -10,6 +10,7 @@ from app.core.ai.tools import AVAILABLE_TOOLS, build_tool_functions
 from app.core.db.database import AsyncSessionLocal
 from app.core.db.models import ChatHistory
 from app.core.gpspos.diagnostics import GpsPosDiagnostics
+from app.core.gpspos_geo.service import GpsposGeoService
 from app.core.okdesk.service import OkdeskService
 
 log = structlog.get_logger(__name__)
@@ -20,10 +21,11 @@ class AIAgent:
         self,
         okdesk: OkdeskService,
         gpspos: GpsPosDiagnostics,
+        gpspos_geo: GpsposGeoService | None = None,
     ) -> None:
         self.llm = LLMClient()
         self.tool_definitions = AVAILABLE_TOOLS
-        self.tool_functions = build_tool_functions(okdesk, gpspos)
+        self.tool_functions = build_tool_functions(okdesk, gpspos, geo=gpspos_geo)
 
     async def run(self, user_message: str, user_id: str) -> str:
         system_msg: dict[str, str] = {
