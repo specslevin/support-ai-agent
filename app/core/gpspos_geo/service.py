@@ -1,0 +1,113 @@
+"""High-level helpers for geo.gpspos.ru API: objects, status, history, geozones, events."""
+
+from __future__ import annotations
+
+import time
+from typing import Any
+
+from .client import GpsposGeoClient
+from app.core.gpspos.models import EventItem, ObjectInfo, ObjectStatus
+
+
+def _decode_cp1251(text: str) -> str:
+    try:
+        return text.encode("latin1").decode("cp1251")
+    except Exception:
+        return text
+
+
+def _unwrap_list(data: Any, *keys: str) -> list[dict[str, Any]]:
+    if isinstance(data, list):
+        return [x for x in data if isinstance(x, dict)]
+    if isinstance(data, dict):
+        for key in keys or ("data", "items", "objects", "result", "value", "list"):
+            v = data.get(key)
+            if isinstance(v, list):
+                return [x for x in v if isinstance(x, dict)]
+    return []
+
+
+class GpsposGeoService:
+    def __init__(self, client: GpsposGeoClient) -> None:
+        self._client = client
+
+    async def list_objects(self) -> list[ObjectInfo]:
+        raw = await self._client.request("GET", "Objects")
+        rows = _unwrap_list(raw)
+        result: list[ObjectInfo] = []
+        for r in rows:
+            try:
+                result.append(ObjectInfo.model_validate(r))
+            except Exception:
+                continue
+        return result
+
+    async def get_object(self, object_id: int) -> ObjectInfo:
+        data = await self._client.request("GET", f"Objects/{object_id}")
+        if isinstance(data, dict) and "payedTill" not in data:
+            for k in ("data", "item", "object", "result"):
+                inner = data.get(k)
+                if isinstance(inner, dict) and "payedTill" in inner:
+                    data = inner
+                    break
+        return ObjectInfo.model_validate(data)
+
+    async def get_object_status(self, object_id: int) -> ObjectStatus | None:
+        data = await self._client.request("GET", f"ObjectsStatus/{object_id}")
+        if not isinstance(data, dict):
+            return None
+        pos = data.get("positions")
+        if not isinstance(pos, list) or not pos:
+            return None
+        first = pos[0]
+        if not isinstance(first, dict):
+            return None
+        return ObjectStatus.model_validate(first)
+
+    async def get_object_history(self, object_id: int, hours: int = 24) -> list[dict[str, Any]]:
+        now = int(time.time()) * 1000
+        body = {"from": now - hours * 3600 * 1000, "till": now}
+        raw = await self._client.request("POST", f"ObjectsHistory/Events/{object_id}", json=body)
+        if isinstance(raw, list):
+            rows = [x for x in raw if isinstance(x, dict)]
+            for row in rows:
+                if isinstance(row.get("text"), str):
+                    row["text"] = _decode_cp1251(row["text"])
+            return rows
+        return []
+
+    async def list_geozones(self) -> list[dict[str, Any]]:
+        raw = await self._client.request("GET", "Geozones")
+        return _unwrap_list(raw)
+
+    async def list_geozone_groups(self) -> list[dict[str, Any]]:
+        raw = await self._client.request("GET", "Geozones/Groups")
+        return _unwrap_list(raw)
+
+    async def list_events(self) -> list[EventItem]:
+        raw = await self._client.request("GET", "Events")
+        rows = _unwrap_list(raw)
+        result: list[EventItem] = []
+        for r in rows:
+            try:
+                ev = EventItem.model_validate(r)
+                ev.text = _decode_cp1251(ev.text)
+                result.append(ev)
+            except Exception:
+                continue
+        return result
+
+    async def reverse_geocode(self, lat: float, lng: float) -> str:
+        body = [{"latitude": lat, "longitude": lng}]
+        raw = await self._client.request("POST", "ReverseGeocoder", json=body)
+        if isinstance(raw, list) and raw:
+            first = raw[0]
+            if isinstance(first, dict):
+                addr = first.get("address")
+                if isinstance(addr, str) and addr.strip():
+                    return addr.strip()
+        if isinstance(raw, dict):
+            addr = raw.get("address")
+            if isinstance(addr, str) and addr.strip():
+                return addr.strip()
+        return "Адрес не определён"
