@@ -169,6 +169,16 @@ class Employee(BaseModel):
     comment: str | None = None
 
 
+class IssueComment(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: int
+    content: str | None = None
+    created_at: str | None = None
+    author: IssueAuthor | None = None
+    is_internal: bool | None = None
+
+
 class OkdeskCompanyBrief(BaseModel):
     model_config = ConfigDict(extra="ignore")
 

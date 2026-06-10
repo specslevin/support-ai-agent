@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .client import OkdeskClient
-from .models import Company, Contact, Employee, Equipment, EquipmentCompany, Issue
+from .models import Company, Contact, Employee, Equipment, EquipmentCompany, Issue, IssueComment
 
 
 def _ensure_list(data: Any) -> list[dict[str, Any]]:
@@ -55,6 +55,14 @@ class OkdeskService:
     async def get_issue(self, issue_id: int) -> Issue:
         data = await self._client._request("GET", f"issues/{issue_id}")
         return Issue.model_validate(data)
+
+    async def get_issue_comments(self, issue_id: int) -> list[IssueComment]:
+        data = await self._client.get_issue_comments(issue_id)
+        rows = _ensure_list(data)
+        return [IssueComment.model_validate(r) for r in rows]
+
+    async def add_comment(self, issue_id: int, text: str) -> dict[str, Any]:
+        return await self._client.add_internal_comment(issue_id, text)
 
     async def create_issue(self, **fields: Any) -> Issue:
         data = await self._client._request("POST", "issues", json={"issue": fields})

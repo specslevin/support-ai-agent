@@ -158,6 +158,119 @@ AVAILABLE_TOOLS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_issue_details",
+            "description": (
+                "Get full details of a specific Okdesk ticket by its numeric id. "
+                "Returns title, description, status, priority, company, contact, dates. "
+                "Use this after list_issues to read the full content of a ticket."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "issue_id": {
+                        "type": "integer",
+                        "description": "Numeric Okdesk issue id",
+                    },
+                },
+                "required": ["issue_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_issue_comments",
+            "description": (
+                "Get comments/replies on a specific Okdesk ticket. "
+                "Returns a list of comments with author, text, and timestamp. "
+                "Use to read the conversation history on a ticket."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "issue_id": {
+                        "type": "integer",
+                        "description": "Numeric Okdesk issue id",
+                    },
+                },
+                "required": ["issue_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_comment",
+            "description": (
+                "Add an internal comment to an Okdesk ticket. "
+                "The comment is internal (not visible to client). "
+                "Use only when the user explicitly asks to add a note or comment to a ticket."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "issue_id": {
+                        "type": "integer",
+                        "description": "Numeric Okdesk issue id",
+                    },
+                    "text": {
+                        "type": "string",
+                        "description": "Comment text to add",
+                    },
+                },
+                "required": ["issue_id", "text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_company_equipment",
+            "description": (
+                "Get a list of equipment (trackers, devices) registered for a company in Okdesk. "
+                "Returns equipment id, serial number, model, kind. "
+                "Use when the user asks what equipment/devices a company has."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "company_name": {
+                        "type": "string",
+                        "description": "Company name to look up equipment for",
+                    },
+                },
+                "required": ["company_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_object_events",
+            "description": (
+                "Get event history for a tracked vehicle/device from GPSPOS Geo (geo.gpspos.ru). "
+                "Returns events (ignition on/off, geofence entry/exit, alarms) with timestamps. "
+                "Use when the user asks what happened with a vehicle in the last N hours."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "object_id": {
+                        "type": "integer",
+                        "description": "Numeric object id from GPSPOS Geo (use list_geo_objects to find it)",
+                    },
+                    "hours": {
+                        "type": "integer",
+                        "description": "How many hours back to look (default 24, max 72)",
+                    },
+                },
+                "required": ["object_id"],
+            },
+        },
+    },
 ]
 
 
@@ -297,6 +410,84 @@ def build_tool_functions(
         zones = await geo.list_geozones()
         return [{"id": z.get("id"), "name": z.get("name")} for z in zones]
 
+    async def get_issue_details(issue_id: int) -> dict[str, Any]:
+        try:
+            issue = await okdesk.get_issue(issue_id)
+        except Exception as e:
+            return {"error": f"Issue {issue_id} not found: {e}"}
+        return {
+            "id": issue.id,
+            "title": issue.title,
+            "description": issue.description,
+            "status": issue.status.name if issue.status else None,
+            "priority": issue.priority.name if issue.priority else None,
+            "type": issue.type.name if issue.type else None,
+            "company": issue.company.name if issue.company else None,
+            "contact": issue.contact.name if issue.contact else None,
+            "created_at": issue.created_at,
+            "updated_at": issue.updated_at,
+            "deadline_at": issue.deadline_at,
+        }
+
+    async def get_issue_comments(issue_id: int) -> list[dict[str, Any]]:
+        try:
+            comments = await okdesk.get_issue_comments(issue_id)
+        except Exception as e:
+            return [{"error": f"Could not fetch comments for issue {issue_id}: {e}"}]
+        return [
+            {
+                "id": c.id,
+                "author": c.author.name if c.author else None,
+                "content": c.content,
+                "created_at": c.created_at,
+                "is_internal": c.is_internal,
+            }
+            for c in comments
+        ]
+
+    async def add_comment(issue_id: int, text: str) -> dict[str, Any]:
+        try:
+            result = await okdesk.add_comment(issue_id, text)
+            return {"ok": True, "result": result}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    async def get_company_equipment(company_name: str) -> list[dict[str, Any]]:
+        companies = await okdesk.list_companies(search=company_name)
+        if not companies:
+            return [{"error": f"Company '{company_name}' not found"}]
+        company_id = companies[0].id
+        try:
+            equipment = await okdesk.list_equipment(company_id=company_id)
+        except Exception as e:
+            return [{"error": f"Could not fetch equipment: {e}"}]
+        return [
+            {
+                "id": eq.id,
+                "serial_number": eq.serial_number,
+                "inventory_number": eq.inventory_number,
+                "kind": eq.equipment_kind.name if eq.equipment_kind else None,
+                "model": eq.equipment_model.name if eq.equipment_model else None,
+                "manufacturer": eq.equipment_manufacturer.name if eq.equipment_manufacturer else None,
+            }
+            for eq in equipment
+        ]
+
+    async def get_object_events(object_id: int, hours: int = 24) -> list[dict[str, Any]]:
+        if geo is None:
+            return [{"error": "GPSPOS Geo not configured"}]
+        hours = min(hours, 72)
+        events = await geo.get_object_history(object_id, hours=hours)
+        return [
+            {
+                "time": e.get("time"),
+                "type": e.get("type"),
+                "text": e.get("text"),
+                "status": e.get("status"),
+            }
+            for e in events[:50]
+        ]
+
     return {
         "search_company": search_company,
         "list_companies": list_companies,
@@ -305,4 +496,9 @@ def build_tool_functions(
         "list_geo_objects": list_geo_objects,
         "get_geo_object_status": get_geo_object_status,
         "list_geozones": list_geozones,
+        "get_issue_details": get_issue_details,
+        "get_issue_comments": get_issue_comments,
+        "add_comment": add_comment,
+        "get_company_equipment": get_company_equipment,
+        "get_object_events": get_object_events,
     }

@@ -38,10 +38,15 @@ class OkdeskClient:
         r.raise_for_status()
         return r.json()
 
+    async def get_issue_comments(self, issue_id: int) -> Any:
+        return await self._request("GET", f"issues/{issue_id}/comments")
+
     async def add_internal_comment(self, issue_id: int, comment: str) -> dict[str, Any]:
-        """Add an internal comment to an Okdesk issue."""
         return await self._request(
             "POST",
             f"issues/{issue_id}/comments",
             json={"is_internal": True, "text": comment},
         )
+
+    async def list_equipment_by_company(self, company_id: int) -> Any:
+        return await self._request("GET", "equipments/list", params={"company_id": company_id})
