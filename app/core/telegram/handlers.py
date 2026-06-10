@@ -20,7 +20,7 @@ _TELEGRAM_TEXT_MAX = 4096
 
 
 class _NotBuiltinCommandFilter(BaseFilter):
-    """Allow `/статус` etc. while avoiding double-handling of /start and /status."""
+    """Pass plain text and unknown slash commands; block known command names."""
 
     async def __call__(self, message: Message) -> bool:
         raw = (message.text or "").strip()
@@ -49,12 +49,15 @@ def build_handlers_router(
         log.info("telegram_in", kind="command", command="start", user_id=uid, chat_id=message.chat.id)
         text = (
             "Привет! Я AI-помощник техподдержки GPSPOS.\n\n"
-            "• Используй `/ai <вопрос>` — отправь запрос AI-ассистенту.\n"
-            "  Пример: `/ai Найди компанию Ситиматик`\n"
-            "  Пример: `/ai Статус объекта А123БВ`\n"
-            "• `/clear` — очистить историю диалога.\n"
-            "• `/status <ID или госномер>` — быстрая проверка статуса.\n"
-            "• Либо просто напиши вопрос текстом."
+            "Просто напиши вопрос — я отвечу, используя Okdesk и GPSPOS.\n\n"
+            "Примеры:\n"
+            "• Покажи последние заявки Россети\n"
+            "• Статус объекта А123БВ156\n"
+            "• Найди компанию Ситиматик и покажи заявки\n\n"
+            "Команды:\n"
+            "• `/clear` — очистить историю диалога\n"
+            "• `/sync` — синхронизировать компании из Okdesk\n"
+            "• `/status <госномер>` — быстрая проверка статуса"
         )
         await message.answer(_clip(text))
         log.info("telegram_out", kind="reply", command="start", user_id=uid, length=len(text))
@@ -158,7 +161,17 @@ def build_handlers_router(
         uid = message.from_user.id if message.from_user else 0
         body = message.text or ""
         log.info("telegram_in", kind="text", user_id=uid, chat_id=message.chat.id, length=len(body))
-        reply = await agent.process_message(body, uid)
+
+        if ai_agent is not None:
+            await message.answer("⏳ Думаю...")
+            try:
+                reply = await ai_agent.run(body, str(uid))
+            except Exception as e:
+                log.exception("ai_agent_error", user_id=uid, error=str(e))
+                reply = "❌ Произошла ошибка при обработке запроса. Попробуй ещё раз."
+        else:
+            reply = await agent.process_message(body, uid)
+
         reply = _clip(reply)
         await message.answer(reply)
         log.info("telegram_out", kind="reply", user_id=uid, length=len(reply))
