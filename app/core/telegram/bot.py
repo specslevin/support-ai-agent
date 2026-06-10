@@ -78,8 +78,10 @@ async def run_polling_with_retries(dp: Dispatcher, bot: Bot) -> None:
         try:
             log.info("telegram_polling_start", failures_streak=failures)
             await dp.start_polling(bot)
-            failures = 0
-            log.warning("telegram_polling_exited_normally")
+            # start_polling() returned without exception — dispatcher was stopped
+            # (e.g. via SIGTERM signal handler). Exit the loop cleanly.
+            log.info("telegram_polling_stopped")
+            break
         except asyncio.CancelledError:
             log.info("telegram_polling_cancelled")
             raise
