@@ -31,6 +31,19 @@ DEFAULT_SYSTEM_PROMPT = """\
 """
 
 
+class DeepSeekLLMRouter:
+    """Implements LLMRouter protocol for IntelligenceService using DeepSeek."""
+
+    def __init__(self) -> None:
+        self._client = LLMClient()
+
+    async def chat(self, system: str, user: str) -> str:
+        return await self._client.chat(
+            messages=[{"role": "user", "content": user}],
+            system_prompt=system,
+        )
+
+
 class LLMClient:
     def __init__(self):
         api_key = os.getenv("DEEPSEEK_API_KEY", "sk-placeholder")
