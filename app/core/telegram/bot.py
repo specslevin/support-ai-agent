@@ -10,7 +10,6 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.exceptions import TelegramNetworkError
 
-from app.core.agent.orchestrator import SupportAgent
 from app.core.ai.agent import AIAgent
 from app.core.okdesk.service import OkdeskService
 
@@ -59,13 +58,12 @@ def create_bot(
 
 def setup_dispatcher(
     dp: Dispatcher,
-    agent: SupportAgent,
     ai_agent: AIAgent | None = None,
     okdesk_service: OkdeskService | None = None,
 ) -> None:
     from .handlers import build_handlers_router
 
-    dp.include_router(build_handlers_router(agent, ai_agent=ai_agent, okdesk_service=okdesk_service))
+    dp.include_router(build_handlers_router(ai_agent=ai_agent, okdesk_service=okdesk_service))
 
 
 async def run_polling_with_retries(dp: Dispatcher, bot: Bot) -> None:

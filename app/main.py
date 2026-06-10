@@ -13,7 +13,6 @@ from aiogram.types import Update
 from fastapi import FastAPI, HTTPException, Request
 
 from .api.v1.router import api_v1_router
-from .core.agent.orchestrator import SupportAgent
 from .core.ai.agent import AIAgent
 from .core.db.database import init_db
 from .core.db.sync import sync_companies
@@ -27,7 +26,6 @@ from .core.gpspos_geo.service import GpsposGeoService
 from .core.okdesk import OkdeskClient, OkdeskService, OkdeskSettings
 from .core.telegram.bot import create_bot, run_polling_with_retries, setup_dispatcher
 from .core.telegram.settings import TelegramRuntimeSettings
-from .core.tools.registry import build_tool_registry
 
 
 def _configure_structlog() -> None:
@@ -61,9 +59,6 @@ async def lifespan(app: FastAPI):
     auth = GpsPosAuth(gps)
     client = GpsPosClient(auth, gps.BASE_URL)
     diagnostics = GpsPosDiagnostics(client)
-    registry = build_tool_registry(diagnostics)
-    agent = SupportAgent(registry, diagnostics, llm_provider=tg.LLM_PROVIDER)
-
     geo_settings = GpsposGeoSettings()
     geo_auth = GpsposGeoAuth(geo_settings)
     geo_client = GpsposGeoClient(geo_auth, geo_settings.BASE_URL)
@@ -82,7 +77,6 @@ async def lifespan(app: FastAPI):
     app.state.gpspos_auth = auth
     app.state.gpspos_client = client
     app.state.gpspos_diagnostics = diagnostics
-    app.state.support_agent = agent
     app.state.okdesk_service = okdesk_service
     app.state.ai_agent = ai_agent
     app.state.gpspos_geo_service = geo_service
@@ -97,7 +91,7 @@ async def lifespan(app: FastAPI):
             proxy_verify_ssl=tg.TELEGRAM_PROXY_VERIFY_SSL,
         )
         dp = Dispatcher()
-        setup_dispatcher(dp, agent, ai_agent=ai_agent, okdesk_service=okdesk_service)
+        setup_dispatcher(dp, ai_agent=ai_agent, okdesk_service=okdesk_service)
         app.state.telegram_bot = bot
         app.state.telegram_dp = dp
         secret = (tg.TELEGRAM_WEBHOOK_SECRET or "").strip() or None
