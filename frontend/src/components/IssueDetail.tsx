@@ -341,8 +341,9 @@ function TemplatePicker({ onSelect }: { onSelect: (content: string) => void }) {
 }
 
 const STATUS_OPTIONS = [
-  { code: 'completed', label: 'Решена', color: 'text-green-400 border-green-500/50 hover:bg-green-500/10' },
-  { code: 'delayed',   label: 'Ожидание ответа', color: 'text-yellow-400 border-yellow-500/50 hover:bg-yellow-500/10' },
+  { code: 'opened',    label: 'Открыта',          color: 'text-blue-400 border-blue-500/50 hover:bg-blue-500/10' },
+  { code: 'completed', label: 'Решена',            color: 'text-green-400 border-green-500/50 hover:bg-green-500/10' },
+  { code: 'delayed',   label: 'Ожидание ответа',   color: 'text-yellow-400 border-yellow-500/50 hover:bg-yellow-500/10' },
 ]
 
 const OKDESK_WEB_BASE = 'https://support.gpspos.ru'
@@ -351,17 +352,20 @@ function ResolveModal({
   issueId,
   externalId,
   typeCode,
+  currentStatus,
   onClose,
   onDone,
 }: {
   issueId: number
   externalId: number
   typeCode: string | null
+  currentStatus: string | null
   onClose: () => void
   onDone: (notice?: string) => void
 }) {
   const queryClient = useQueryClient()
-  const [selectedStatus, setSelectedStatus] = useState('completed')
+  const defaultStatus = currentStatus === 'completed' ? 'opened' : 'completed'
+  const [selectedStatus, setSelectedStatus] = useState(defaultStatus)
   const [comment, setComment] = useState('')
   const [delayTo, setDelayTo] = useState(() => {
     const d = new Date(); d.setDate(d.getDate() + 3)
@@ -391,7 +395,7 @@ function ResolveModal({
       <div className="relative bg-surface border border-border rounded-xl w-full max-w-lg shadow-2xl z-10">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-border">
-          <h2 className="text-sm font-semibold">Решить заявку #{externalId}</h2>
+          <h2 className="text-sm font-semibold">Сменить статус заявки #{externalId}</h2>
           <button onClick={onClose} className="text-muted hover:text-white text-lg leading-none">✕</button>
         </div>
 
@@ -555,25 +559,22 @@ export function IssueDetail() {
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1">
             <span className="text-muted text-xs font-mono">#{issue.external_id}</span>
-            <StatusBadge status={issue.status} />
+            {od ? (
+              <button
+                onClick={() => setResolveOpen(true)}
+                title="Изменить статус"
+                className="hover:opacity-80 transition-opacity"
+              >
+                <StatusBadge status={issue.status} />
+              </button>
+            ) : (
+              <StatusBadge status={issue.status} />
+            )}
             {issue.priority && <span className="text-xs text-muted">{issue.priority}</span>}
           </div>
           <h2 className="text-sm font-semibold leading-snug">{issue.subject ?? '—'}</h2>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          {od && issue.status !== 'completed' && (
-            <button
-              onClick={() => setResolveOpen(true)}
-              title={(!od.type_code || od.type_code === 'inner') ? 'Тип заявки не указан' : 'Изменить статус с комментарием'}
-              className={`text-xs px-3 py-1.5 rounded-lg border font-medium transition-colors ${
-                (!od.type_code || od.type_code === 'inner')
-                  ? 'border-yellow-500/40 text-yellow-400/60 cursor-not-allowed'
-                  : 'border-green-500/50 text-green-400 hover:bg-green-500/10'
-              }`}
-            >
-              Решить
-            </button>
-          )}
           <button onClick={() => selectIssue(null)} className="text-muted hover:text-white text-lg leading-none">✕</button>
         </div>
       </div>
@@ -717,6 +718,7 @@ export function IssueDetail() {
         issueId={issue.id}
         externalId={issue.external_id}
         typeCode={od.type_code}
+        currentStatus={issue.status}
         onClose={() => setResolveOpen(false)}
         onDone={(notice) => { setResolveOpen(false); if (notice) setResolveNotice(notice) }}
       />
