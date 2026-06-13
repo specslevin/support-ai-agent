@@ -310,6 +310,7 @@ async def resolve_issue(
     issue_id: int,
     status_code: str = Query(..., description="Target status code: completed or delayed"),
     comment: str = Query(..., min_length=1),
+    comment_public: bool = Query(True),
     delay_to: str | None = Query(None, description="Required when status_code=delayed (ISO datetime)"),
     cache: CacheService = Depends(get_cache_service),
     okdesk: OkdeskService = Depends(get_okdesk_service),
@@ -326,7 +327,7 @@ async def resolve_issue(
             raise HTTPException(status_code=404, detail="Issue not found")
         external_id = issue_data["issue"].external_id
 
-        status_result = await okdesk.change_issue_status(external_id, status_code, comment=comment, delay_to=delay_to)
+        status_result = await okdesk.change_issue_status(external_id, status_code, comment=comment, comment_public=comment_public, delay_to=delay_to)
         status_changed = status_result.get("code") == status_code
 
         await cache.refresh_single_issue(issue_id, external_id)

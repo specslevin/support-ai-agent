@@ -61,7 +61,7 @@ export const api = {
     return http.patch(`/issues/${id}/type`, null, { params: { type_code } }).then(r => r.data)
   },
 
-  resolveIssue(id: number, status_code: string, comment: string, delay_to?: string): Promise<{ ok: boolean; status_changed: boolean }> {
-    return http.post(`/issues/${id}/resolve`, null, { params: { status_code, comment, ...(delay_to ? { delay_to } : {}) } }).then(r => r.data)
+  resolveIssue(id: number, status_code: string, comment: string, delay_to?: string, comment_public = true): Promise<{ ok: boolean; status_changed: boolean }> {
+    return http.post(`/issues/${id}/resolve`, null, { params: { status_code, comment, comment_public, ...(delay_to ? { delay_to } : {}) } }).then(r => r.data)
   },
 }

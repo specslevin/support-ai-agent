@@ -381,13 +381,14 @@ function StatusActionModal({
 }) {
   const queryClient = useQueryClient()
   const [comment, setComment] = useState('')
+  const [commentPublic, setCommentPublic] = useState(true)
   const [delayTo, setDelayTo] = useState(() => {
     const d = new Date(); d.setDate(d.getDate() + 3)
     return d.toISOString().slice(0, 16)
   })
 
   const mutation = useMutation({
-    mutationFn: () => api.resolveIssue(issueId, targetStatus.code, comment, targetStatus.needsDelay ? delayTo : undefined),
+    mutationFn: () => api.resolveIssue(issueId, targetStatus.code, comment, targetStatus.needsDelay ? delayTo : undefined, commentPublic),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['issue', issueId] })
       queryClient.invalidateQueries({ queryKey: ['issues'] })
@@ -440,6 +441,15 @@ function StatusActionModal({
               />
               <TemplatePicker onSelect={text => setComment(text)} />
             </div>
+            <label className="flex items-center gap-2 cursor-pointer select-none w-fit">
+              <input
+                type="checkbox"
+                checked={commentPublic}
+                onChange={e => setCommentPublic(e.target.checked)}
+                className="w-3.5 h-3.5 accent-accent"
+              />
+              <span className="text-xs text-muted">Публичный комментарий</span>
+            </label>
           </div>
         </div>
 

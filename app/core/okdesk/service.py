@@ -64,10 +64,11 @@ class OkdeskService:
     async def add_comment(self, issue_id: int, text: str) -> dict[str, Any]:
         return await self._client.add_internal_comment(issue_id, text)
 
-    async def change_issue_status(self, issue_id: int, status_code: str, comment: str | None = None, delay_to: str | None = None) -> dict[str, Any]:
+    async def change_issue_status(self, issue_id: int, status_code: str, comment: str | None = None, comment_public: bool = True, delay_to: str | None = None) -> dict[str, Any]:
         payload: dict[str, Any] = {"code": status_code}
         if comment:
             payload["comment"] = comment
+            payload["comment_public"] = comment_public
         if delay_to:
             payload["delay_to"] = delay_to
         data = await self._client._request(
