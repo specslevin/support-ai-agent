@@ -44,6 +44,7 @@ export interface OkdeskDetail {
   delayed_to: string | null
   spent_time_total: number | null
   type_name: string | null
+  type_code: string | null
   author_name: string | null
   service_object_name: string | null
   parent_id: number | null

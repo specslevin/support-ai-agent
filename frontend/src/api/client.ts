@@ -52,4 +52,8 @@ export const api = {
   listTemplates(): Promise<Template[]> {
     return http.get('/templates').then(r => r.data)
   },
+
+  resolveIssue(id: number, status_code: string, comment: string): Promise<{ ok: boolean }> {
+    return http.post(`/issues/${id}/resolve`, null, { params: { status_code, comment } }).then(r => r.data)
+  },
 }

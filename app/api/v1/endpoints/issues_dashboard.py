@@ -165,6 +165,7 @@ async def get_issue_details(
                 "delayed_to": live.delayed_to,
                 "spent_time_total": live.spent_time_total,
                 "type_name": live.type.name if live.type else None,
+                "type_code": live.type.code if live.type else None,
                 "author_name": live.author.name if live.author else None,
                 "service_object_name": live.service_object.name if live.service_object else None,
                 "parent_id": live.parent_id,
@@ -280,6 +281,41 @@ async def assign_issue(
     except Exception:
         log.exception("assign_issue_failed", issue_id=issue_id)
         raise HTTPException(status_code=500, detail="Failed to assign issue")
+
+
+@router.post("/{issue_id}/resolve")
+async def resolve_issue(
+    issue_id: int,
+    status_code: str = Query(..., description="Target status code: completed or delayed"),
+    comment: str = Query(..., min_length=1),
+    cache: CacheService = Depends(get_cache_service),
+    okdesk: OkdeskService = Depends(get_okdesk_service),
+) -> dict[str, object]:
+    """Send a comment and change issue status in one action."""
+    ALLOWED = {"completed", "delayed", "opened"}
+    if status_code not in ALLOWED:
+        raise HTTPException(status_code=400, detail=f"status_code must be one of {ALLOWED}")
+    try:
+        issue_data = await cache.get_issue_with_analysis(issue_id)
+        if not issue_data:
+            raise HTTPException(status_code=404, detail="Issue not found")
+        external_id = issue_data["issue"].external_id
+
+        comment_result = await okdesk.add_comment(external_id, comment)
+        status_result = await okdesk.change_issue_status(external_id, status_code)
+
+        await cache.refresh_single_issue(issue_id, external_id)
+
+        return {
+            "ok": True,
+            "comment": comment_result,
+            "status": status_result,
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        log.exception("resolve_issue_failed", issue_id=issue_id)
+        raise HTTPException(status_code=500, detail="Failed to resolve issue")
 
 
 @router.post("/{issue_id}/comments")

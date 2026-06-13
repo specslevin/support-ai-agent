@@ -200,6 +200,24 @@ class CacheService:
             await self.db.commit()
         return row
 
+    async def refresh_single_issue(self, issue_id: int, external_id: int) -> None:
+        """Update the cached status and assignee for a single issue after a status change."""
+        try:
+            detail = await self.okdesk.get_issue(external_id)
+            result = await self.db.execute(
+                select(IssueCache).where(IssueCache.id == issue_id)
+            )
+            row = result.scalar_one_or_none()
+            if row:
+                row.status = detail.status.code if detail.status else row.status
+                if detail.assignee and detail.assignee.name:
+                    row.assignee_name = detail.assignee.name
+                row.updated_at = _parse_dt(detail.updated_at)
+                self.db.add(row)
+                await self.db.commit()
+        except Exception:
+            log.warning("refresh_single_issue_failed", issue_id=issue_id)
+
     async def save_analysis(
         self,
         issue_id: int,

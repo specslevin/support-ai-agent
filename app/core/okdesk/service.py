@@ -64,6 +64,14 @@ class OkdeskService:
     async def add_comment(self, issue_id: int, text: str) -> dict[str, Any]:
         return await self._client.add_internal_comment(issue_id, text)
 
+    async def change_issue_status(self, issue_id: int, status_code: str) -> dict[str, Any]:
+        data = await self._client._request(
+            "PATCH", f"issues/{issue_id}",
+            json={"issue": {"status_code": status_code}},
+        )
+        issue = Issue.model_validate(data)
+        return {"code": issue.status.code if issue.status else None, "name": issue.status.name if issue.status else None}
+
     async def assign_issue(self, issue_id: int, assignee_id: int) -> Issue:
         data = await self._client._request(
             "PATCH", f"issues/{issue_id}",

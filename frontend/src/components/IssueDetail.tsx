@@ -289,12 +289,145 @@ function TemplatePicker({ onSelect }: { onSelect: (content: string) => void }) {
   )
 }
 
+const STATUS_OPTIONS = [
+  { code: 'completed', label: 'Решена', color: 'text-green-400 border-green-500/50 hover:bg-green-500/10' },
+  { code: 'delayed',   label: 'Ожидание ответа', color: 'text-yellow-400 border-yellow-500/50 hover:bg-yellow-500/10' },
+]
+
+const OKDESK_WEB_BASE = 'https://gpspos.okdesk.ru'
+
+function ResolveModal({
+  issueId,
+  externalId,
+  typeCode,
+  onClose,
+  onDone,
+}: {
+  issueId: number
+  externalId: number
+  typeCode: string | null
+  onClose: () => void
+  onDone: () => void
+}) {
+  const queryClient = useQueryClient()
+  const [selectedStatus, setSelectedStatus] = useState('completed')
+  const [comment, setComment] = useState('')
+
+  const typeIsDefault = !typeCode || typeCode === 'inner'
+
+  const resolve = useMutation({
+    mutationFn: () => api.resolveIssue(issueId, selectedStatus, comment),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['issue', issueId] })
+      queryClient.invalidateQueries({ queryKey: ['issues'] })
+      queryClient.invalidateQueries({ queryKey: ['comments', issueId] })
+      onDone()
+    },
+  })
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="fixed inset-0 bg-black/70" onClick={onClose} />
+      <div className="relative bg-surface border border-border rounded-xl w-full max-w-lg shadow-2xl z-10">
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+          <h2 className="text-sm font-semibold">Решить заявку #{externalId}</h2>
+          <button onClick={onClose} className="text-muted hover:text-white text-lg leading-none">✕</button>
+        </div>
+
+        <div className="px-5 py-4 space-y-4">
+          {/* Type warning */}
+          {typeIsDefault && (
+            <div className="flex items-start gap-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg px-3 py-2.5 text-xs">
+              <span className="text-yellow-400 text-base shrink-0">⚠</span>
+              <div className="space-y-1">
+                <p className="text-yellow-300 font-medium">Тип заявки не указан</p>
+                <p className="text-yellow-300/70">
+                  Тип «Внутренняя» — значение по умолчанию. Укажите корректный тип в Okdesk перед изменением статуса.
+                </p>
+                <a
+                  href={`${OKDESK_WEB_BASE}/issues/${externalId}/edit`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-yellow-400 hover:text-yellow-300 underline underline-offset-2"
+                >
+                  Открыть в Okdesk ↗
+                </a>
+              </div>
+            </div>
+          )}
+
+          {/* Status selector */}
+          <div className="space-y-1.5">
+            <p className="text-[10px] font-semibold uppercase tracking-widest text-muted/60">Новый статус</p>
+            <div className="flex gap-2">
+              {STATUS_OPTIONS.map(opt => (
+                <button
+                  key={opt.code}
+                  onClick={() => setSelectedStatus(opt.code)}
+                  className={`flex-1 py-2 rounded-lg border text-xs font-medium transition-colors ${
+                    selectedStatus === opt.code
+                      ? opt.color + ' bg-white/5'
+                      : 'border-border text-muted hover:border-accent/50'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Comment with template picker */}
+          <div className="space-y-1.5">
+            <p className="text-[10px] font-semibold uppercase tracking-widest text-muted/60">
+              Комментарий <span className="text-red-400">*</span>
+            </p>
+            <div className="flex items-start gap-2">
+              <textarea
+                placeholder="Введите текст или выберите шаблон..."
+                value={comment}
+                onChange={e => setComment(e.target.value)}
+                rows={5}
+                className="flex-1 bg-base border border-border rounded px-3 py-2 text-xs resize-none focus:outline-none focus:border-accent leading-relaxed"
+              />
+              <TemplatePicker onSelect={text => setComment(text)} />
+            </div>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center justify-between gap-3 px-5 py-4 border-t border-border">
+          <button onClick={onClose} className="text-xs text-muted hover:text-white transition-colors">
+            Отмена
+          </button>
+          <button
+            disabled={!comment.trim() || typeIsDefault || resolve.isPending}
+            onClick={() => resolve.mutate()}
+            className="px-4 py-2 rounded-lg bg-green-600/90 hover:bg-green-600 text-white text-xs font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
+          >
+            {resolve.isPending ? (
+              <span className="animate-pulse">Отправка...</span>
+            ) : (
+              <>✓ Отправить и {STATUS_OPTIONS.find(s => s.code === selectedStatus)?.label.toLowerCase()}</>
+            )}
+          </button>
+        </div>
+
+        {resolve.isError && (
+          <p className="px-5 pb-4 text-xs text-red-400">Ошибка при отправке. Попробуйте снова.</p>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export function IssueDetail() {
   const { selectedIssueId, selectIssue } = useIssuesStore()
   const queryClient = useQueryClient()
   const [comment, setComment] = useState('')
   const [mileage, setMileage] = useState('')
   const [notes, setNotes] = useState('')
+  const [resolveOpen, setResolveOpen] = useState(false)
 
   const { data, isPending } = useQuery({
     queryKey: ['issue', selectedIssueId],
@@ -339,6 +472,7 @@ export function IssueDetail() {
   const { issue, okdesk_detail: od, latest_analysis } = data
 
   return (
+    <>
     <div className="flex flex-col h-full overflow-y-auto">
       {/* Header */}
       <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-border shrink-0">
@@ -350,7 +484,22 @@ export function IssueDetail() {
           </div>
           <h2 className="text-sm font-semibold leading-snug">{issue.subject ?? '—'}</h2>
         </div>
-        <button onClick={() => selectIssue(null)} className="text-muted hover:text-white text-lg leading-none shrink-0">✕</button>
+        <div className="flex items-center gap-2 shrink-0">
+          {od && issue.status !== 'completed' && (
+            <button
+              onClick={() => setResolveOpen(true)}
+              title={(!od.type_code || od.type_code === 'inner') ? 'Тип заявки не указан' : 'Изменить статус с комментарием'}
+              className={`text-xs px-3 py-1.5 rounded-lg border font-medium transition-colors ${
+                (!od.type_code || od.type_code === 'inner')
+                  ? 'border-yellow-500/40 text-yellow-400/60 cursor-not-allowed'
+                  : 'border-green-500/50 text-green-400 hover:bg-green-500/10'
+              }`}
+            >
+              Решить
+            </button>
+          )}
+          <button onClick={() => selectIssue(null)} className="text-muted hover:text-white text-lg leading-none">✕</button>
+        </div>
       </div>
 
       <div className="flex-1 px-5 py-4 space-y-5">
@@ -479,5 +628,16 @@ export function IssueDetail() {
         </div>
       </div>
     </div>
+
+    {resolveOpen && od && (
+      <ResolveModal
+        issueId={issue.id}
+        externalId={issue.external_id}
+        typeCode={od.type_code}
+        onClose={() => setResolveOpen(false)}
+        onDone={() => setResolveOpen(false)}
+      />
+    )}
+    </>
   )
 }
