@@ -307,7 +307,7 @@ function ResolveModal({
   externalId: number
   typeCode: string | null
   onClose: () => void
-  onDone: () => void
+  onDone: (notice?: string) => void
 }) {
   const queryClient = useQueryClient()
   const [selectedStatus, setSelectedStatus] = useState('completed')
@@ -317,11 +317,15 @@ function ResolveModal({
 
   const resolve = useMutation({
     mutationFn: () => api.resolveIssue(issueId, selectedStatus, comment),
-    onSuccess: () => {
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['issue', issueId] })
       queryClient.invalidateQueries({ queryKey: ['issues'] })
       queryClient.invalidateQueries({ queryKey: ['comments', issueId] })
-      onDone()
+      if (!data.status_changed) {
+        onDone(`Комментарий отправлен. Статус не изменён — смените вручную в Okdesk.`)
+      } else {
+        onDone()
+      }
     },
   })
 
@@ -428,6 +432,7 @@ export function IssueDetail() {
   const [mileage, setMileage] = useState('')
   const [notes, setNotes] = useState('')
   const [resolveOpen, setResolveOpen] = useState(false)
+  const [resolveNotice, setResolveNotice] = useState<string | null>(null)
 
   const { data, isPending } = useQuery({
     queryKey: ['issue', selectedIssueId],
@@ -503,6 +508,13 @@ export function IssueDetail() {
       </div>
 
       <div className="flex-1 px-5 py-4 space-y-5">
+        {resolveNotice && (
+          <div className="flex items-start gap-2 bg-yellow-500/10 border border-yellow-500/30 rounded-lg px-3 py-2 text-xs text-yellow-300">
+            <span className="shrink-0 mt-0.5">⚠</span>
+            <span className="flex-1">{resolveNotice}</span>
+            <button onClick={() => setResolveNotice(null)} className="shrink-0 text-yellow-400/60 hover:text-yellow-300 leading-none">✕</button>
+          </div>
+        )}
         {/* Клиент + даты кэша */}
         <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
           <span className="text-muted">Компания</span>
@@ -635,7 +647,7 @@ export function IssueDetail() {
         externalId={issue.external_id}
         typeCode={od.type_code}
         onClose={() => setResolveOpen(false)}
-        onDone={() => setResolveOpen(false)}
+        onDone={(notice) => { setResolveOpen(false); if (notice) setResolveNotice(notice) }}
       />
     )}
     </>

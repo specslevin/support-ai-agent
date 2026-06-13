@@ -53,7 +53,7 @@ export const api = {
     return http.get('/templates').then(r => r.data)
   },
 
-  resolveIssue(id: number, status_code: string, comment: string): Promise<{ ok: boolean }> {
+  resolveIssue(id: number, status_code: string, comment: string): Promise<{ ok: boolean; comment_sent: boolean; status_changed: boolean }> {
     return http.post(`/issues/${id}/resolve`, null, { params: { status_code, comment } }).then(r => r.data)
   },
 }
