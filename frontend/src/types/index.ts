@@ -34,8 +34,26 @@ export interface Analysis {
   created_at: string
 }
 
+export interface OkdeskDetail {
+  description: string | null
+  source: string | null
+  deadline_at: string | null
+  completed_at: string | null
+  planned_reaction_at: string | null
+  reacted_at: string | null
+  delayed_to: string | null
+  spent_time_total: number | null
+  type_name: string | null
+  author_name: string | null
+  service_object_name: string | null
+  parent_id: number | null
+  child_ids: number[]
+  parameters: { name: string; value: string }[]
+}
+
 export interface IssueDetail {
   issue: Issue
+  okdesk_detail: OkdeskDetail
   latest_analysis: Analysis | null
 }
 

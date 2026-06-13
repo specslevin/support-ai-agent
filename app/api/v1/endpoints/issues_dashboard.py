@@ -66,20 +66,60 @@ async def refresh_cache(
         raise HTTPException(status_code=500, detail="Cache refresh failed")
 
 
+_SOURCE_LABELS: dict[str, str] = {
+    "from_email": "Email",
+    "from_operator": "Оператор",
+    "from_client": "Клиент (портал)",
+    "from_telegram": "Telegram",
+    "from_api": "API",
+    "from_phone": "Телефон",
+}
+
+
 @router.get("/{issue_id}")
 async def get_issue_details(
     issue_id: int,
     cache: CacheService = Depends(get_cache_service),
+    okdesk: OkdeskService = Depends(get_okdesk_service),
 ) -> dict[str, object]:
-    """Return full issue details plus latest analysis."""
+    """Return full issue details plus latest analysis and live Okdesk fields."""
     try:
         data = await cache.get_issue_with_analysis(issue_id)
         if not data:
             raise HTTPException(status_code=404, detail="Issue not found")
         row = data["issue"]
         latest = data["latest_analysis"]
+
+        # Fetch live detail from Okdesk for fields not stored in cache
+        okdesk_detail: dict[str, object] = {}
+        try:
+            live = await okdesk.get_issue(row.external_id)
+            okdesk_detail = {
+                "description": live.description,
+                "source": _SOURCE_LABELS.get(live.source or "", live.source),
+                "deadline_at": live.deadline_at,
+                "completed_at": live.completed_at,
+                "planned_reaction_at": live.planned_reaction_at,
+                "reacted_at": live.reacted_at,
+                "delayed_to": live.delayed_to,
+                "spent_time_total": live.spent_time_total,
+                "type_name": live.type.name if live.type else None,
+                "author_name": live.author.name if live.author else None,
+                "service_object_name": live.service_object.name if live.service_object else None,
+                "parent_id": live.parent_id,
+                "child_ids": live.child_ids,
+                "parameters": [
+                    {"name": p.name, "value": p.value}
+                    for p in live.parameters
+                    if p.value
+                ],
+            }
+        except Exception:
+            log.warning("okdesk_detail_fetch_failed", issue_id=issue_id)
+
         return {
             "issue": IssueResponse.from_orm_row(row).model_dump(),
+            "okdesk_detail": okdesk_detail,
             "latest_analysis": (
                 {
                     "id": latest.id,

@@ -4,10 +4,42 @@ import { api } from '../api/client'
 import { useIssuesStore } from '../store/issuesStore'
 import { useUserStore, EMPLOYEES } from '../store/userStore'
 import { StatusBadge } from './StatusBadge'
+import type { OkdeskDetail } from '../types'
 
-function formatDate(iso: string | null) {
-  if (!iso) return '—'
-  return new Date(iso).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })
+function formatDate(iso: string | null | undefined) {
+  if (!iso) return null
+  return new Date(iso).toLocaleString('ru-RU', {
+    day: '2-digit', month: '2-digit', year: '2-digit',
+    hour: '2-digit', minute: '2-digit',
+  })
+}
+
+function isOverdue(iso: string | null | undefined): boolean {
+  if (!iso) return false
+  return new Date(iso) < new Date()
+}
+
+function stripHtml(html: string | null | undefined): string {
+  if (!html) return ''
+  return html.replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').trim()
+}
+
+function MetaRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <>
+      <span className="text-muted">{label}</span>
+      <span>{children}</span>
+    </>
+  )
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="space-y-2">
+      <h3 className="text-[10px] font-semibold uppercase tracking-widest text-muted/60">{title}</h3>
+      {children}
+    </div>
+  )
 }
 
 function AssigneeSection({ issueId, assigneeName }: { issueId: number; assigneeName: string | null }) {
@@ -36,7 +68,6 @@ function AssigneeSection({ issueId, assigneeName }: { issueId: number; assigneeN
         {assigneeName ?? 'Не назначен'}
       </span>
 
-      {/* Take for yourself */}
       {currentUser && currentUser.name !== assigneeName && (
         <button
           onClick={() => assignMutation.mutate(currentUser.id)}
@@ -47,7 +78,6 @@ function AssigneeSection({ issueId, assigneeName }: { issueId: number; assigneeN
         </button>
       )}
 
-      {/* Picker toggle */}
       <div className="relative shrink-0">
         <button
           onClick={() => setPickerOpen(o => !o)}
@@ -75,13 +105,86 @@ function AssigneeSection({ issueId, assigneeName }: { issueId: number; assigneeN
             ))}
           </div>
         )}
-        {pickerOpen && (
-          <div className="fixed inset-0 z-40" onClick={() => setPickerOpen(false)} />
-        )}
+        {pickerOpen && <div className="fixed inset-0 z-40" onClick={() => setPickerOpen(false)} />}
       </div>
 
       {assignMutation.isPending && (
         <span className="text-[10px] text-muted animate-pulse shrink-0">Сохранение...</span>
+      )}
+    </div>
+  )
+}
+
+function OkdeskInfo({ d, issueId, assigneeName }: { d: OkdeskDetail; issueId: number; assigneeName: string | null }) {
+  const deadline = formatDate(d.deadline_at)
+  const overdue = isOverdue(d.deadline_at)
+  const description = stripHtml(d.description)
+
+  return (
+    <div className="space-y-4 text-xs">
+      {/* Участники */}
+      <Section title="Участники">
+        <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+          {d.author_name && <MetaRow label="Автор">{d.author_name}</MetaRow>}
+          {d.service_object_name && <MetaRow label="Объект">{d.service_object_name}</MetaRow>}
+          {d.type_name && <MetaRow label="Тип">{d.type_name}</MetaRow>}
+          {d.source && <MetaRow label="Источник">{d.source}</MetaRow>}
+        </div>
+        <AssigneeSection issueId={issueId} assigneeName={assigneeName} />
+      </Section>
+
+      {/* Сроки */}
+      <Section title="Сроки">
+        <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+          {deadline && (
+            <MetaRow label="Срок выполнения">
+              <span className={overdue ? 'text-red-400' : ''}>
+                {deadline} {overdue && '⚠'}
+              </span>
+            </MetaRow>
+          )}
+          {d.completed_at && <MetaRow label="Завершена">{formatDate(d.completed_at)}</MetaRow>}
+          {d.delayed_to && <MetaRow label="Отложена до">{formatDate(d.delayed_to)}</MetaRow>}
+          {d.planned_reaction_at && <MetaRow label="Плановая реакция">{formatDate(d.planned_reaction_at)}</MetaRow>}
+          {d.reacted_at && <MetaRow label="Фактическая реакция">{formatDate(d.reacted_at)}</MetaRow>}
+          {d.spent_time_total != null && d.spent_time_total > 0 && (
+            <MetaRow label="Потрачено">
+              {d.spent_time_total} ч.
+            </MetaRow>
+          )}
+        </div>
+      </Section>
+
+      {/* Параметры (custom fields) */}
+      {d.parameters.length > 0 && (
+        <Section title="Параметры">
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+            {d.parameters.map(p => (
+              <MetaRow key={p.name} label={p.name}>{p.value}</MetaRow>
+            ))}
+          </div>
+        </Section>
+      )}
+
+      {/* Описание */}
+      {description && (
+        <Section title="Описание">
+          <p className="text-white/80 leading-relaxed whitespace-pre-wrap bg-surface rounded-lg px-3 py-2.5">
+            {description}
+          </p>
+        </Section>
+      )}
+
+      {/* Связанные заявки */}
+      {(d.parent_id || d.child_ids.length > 0) && (
+        <Section title="Связанные заявки">
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+            {d.parent_id && <MetaRow label="Родительская">#{d.parent_id}</MetaRow>}
+            {d.child_ids.length > 0 && (
+              <MetaRow label="Дочерние">{d.child_ids.map(id => `#${id}`).join(', ')}</MetaRow>
+            )}
+          </div>
+        </Section>
       )}
     </div>
   )
@@ -134,52 +237,47 @@ export function IssueDetail() {
     )
   }
 
-  const { issue, latest_analysis } = data
+  const { issue, okdesk_detail: od, latest_analysis } = data
 
   return (
     <div className="flex flex-col h-full overflow-y-auto">
       {/* Header */}
-      <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-border">
+      <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-border shrink-0">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1">
             <span className="text-muted text-xs font-mono">#{issue.external_id}</span>
             <StatusBadge status={issue.status} />
-            {issue.priority && (
-              <span className="text-xs text-muted">{issue.priority}</span>
-            )}
+            {issue.priority && <span className="text-xs text-muted">{issue.priority}</span>}
           </div>
           <h2 className="text-sm font-semibold leading-snug">{issue.subject ?? '—'}</h2>
         </div>
-        <button
-          onClick={() => selectIssue(null)}
-          className="text-muted hover:text-white text-lg leading-none"
-        >
-          ✕
-        </button>
+        <button onClick={() => selectIssue(null)} className="text-muted hover:text-white text-lg leading-none shrink-0">✕</button>
       </div>
 
       <div className="flex-1 px-5 py-4 space-y-5">
-        {/* Meta */}
-        <div className="space-y-1.5 text-xs">
-          <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
-            <span className="text-muted">Компания</span>
-            <span>{issue.company_name ?? '—'}</span>
-            <span className="text-muted">Контакт</span>
-            <span>{issue.contact_name ?? '—'}</span>
-            <span className="text-muted">Создана</span>
-            <span>{formatDate(issue.created_at)}</span>
-            <span className="text-muted">Синхронизирована</span>
-            <span>{formatDate(issue.synced_at)}</span>
-          </div>
-          {/* Assignee row — full width for the picker controls */}
-          <div className="pt-1">
-            <AssigneeSection issueId={issue.id} assigneeName={issue.assignee_name ?? null} />
-          </div>
+        {/* Клиент + даты кэша */}
+        <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
+          <span className="text-muted">Компания</span>
+          <span>{issue.company_name ?? '—'}</span>
+          <span className="text-muted">Контакт</span>
+          <span>{issue.contact_name ?? '—'}</span>
+          <span className="text-muted">Создана</span>
+          <span>{formatDate(issue.created_at) ?? '—'}</span>
+          <span className="text-muted">Изменена</span>
+          <span>{formatDate(issue.updated_at) ?? '—'}</span>
         </div>
+
+        {/* Live Okdesk info */}
+        {od && <OkdeskInfo d={od} issueId={issue.id} assigneeName={issue.assignee_name ?? null} />}
+
+        {/* Если okdesk_detail пустой — показываем только assignee picker */}
+        {!od && (
+          <AssigneeSection issueId={issue.id} assigneeName={issue.assignee_name ?? null} />
+        )}
 
         {/* Analysis */}
         <div className="border border-border rounded-lg p-4 space-y-3">
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-muted">Анализ пробега</h3>
+          <h3 className="text-[10px] font-semibold uppercase tracking-widest text-muted/60">Анализ пробега</h3>
 
           {latest_analysis ? (
             <div className="text-xs space-y-1.5">
@@ -206,15 +304,13 @@ export function IssueDetail() {
           )}
 
           <div className="space-y-2 pt-2 border-t border-border">
-            <div className="flex gap-2">
-              <input
-                type="number"
-                placeholder="Пробег по путевому листу (км)"
-                value={mileage}
-                onChange={e => setMileage(e.target.value)}
-                className="flex-1 bg-base border border-border rounded px-3 py-1.5 text-xs focus:outline-none focus:border-accent"
-              />
-            </div>
+            <input
+              type="number"
+              placeholder="Пробег по путевому листу (км)"
+              value={mileage}
+              onChange={e => setMileage(e.target.value)}
+              className="w-full bg-base border border-border rounded px-3 py-1.5 text-xs focus:outline-none focus:border-accent"
+            />
             <textarea
               placeholder="Примечания (необязательно)"
               value={notes}
@@ -234,7 +330,7 @@ export function IssueDetail() {
 
         {/* Comments */}
         <div className="space-y-3">
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-muted">
+          <h3 className="text-[10px] font-semibold uppercase tracking-widest text-muted/60">
             Комментарии {comments.length > 0 && `(${comments.length})`}
           </h3>
 
@@ -248,9 +344,7 @@ export function IssueDetail() {
                 <p className="leading-relaxed">{c.content ?? ''}</p>
               </div>
             ))}
-            {comments.length === 0 && (
-              <p className="text-xs text-muted">Комментариев нет</p>
-            )}
+            {comments.length === 0 && <p className="text-xs text-muted">Комментариев нет</p>}
           </div>
 
           <div className="flex gap-2">

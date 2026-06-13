@@ -130,6 +130,15 @@ class IssueAuthor(BaseModel):
     type: str | None = None
 
 
+class IssueParameter(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    code: str | None = None
+    name: str | None = None
+    field_type: str | None = None
+    value: str | None = None
+
+
 class Issue(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -140,10 +149,16 @@ class Issue(BaseModel):
     updated_at: str | None = None
     completed_at: str | None = None
     deadline_at: str | None = None
-    delay_to: str | None = None
+    delayed_to: str | None = None
     planned_reaction_at: str | None = None
     reacted_at: str | None = None
     without_answer: bool | None = None
+    source: str | None = None
+    spent_time_total: float | None = None
+    group_id: int | None = None
+    parent_id: int | None = None
+    child_ids: list[int] = []
+    parameters: list[IssueParameter] = []
     status: IssueStatus | None = None
     type: IssueType | None = None
     priority: IssuePriority | None = None
