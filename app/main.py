@@ -17,8 +17,9 @@ from fastapi.responses import FileResponse
 
 from .api.v1.router import api_v1_router
 from .core.ai.agent import AIAgent
-from .core.db.database import init_db
+from .core.db.database import AsyncSessionLocal, init_db
 from .core.db.sync import sync_companies
+from .core.services.cache_service import CacheService
 from .core.gpspos.auth import GpsPosAuth
 from .core.gpspos.client import GpsPosClient
 from .core.gpspos.config import GpsPosSettings
@@ -84,6 +85,23 @@ async def lifespan(app: FastAPI):
     app.state.ai_agent = ai_agent
     app.state.gpspos_geo_service = geo_service
 
+    async def _cache_refresh_loop(interval: int = 300) -> None:
+        _log = structlog.get_logger("cache_refresh")
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                async with AsyncSessionLocal() as db:
+                    svc = CacheService(db=db, okdesk=okdesk_service)
+                    count = await svc.refresh_issue_cache()
+                _log.info("cache_auto_refreshed", synced=count)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                _log.exception("cache_auto_refresh_failed")
+
+    cache_task = asyncio.create_task(_cache_refresh_loop())
+    log.info("cache_refresh_scheduled", interval_sec=300)
+
     polling_task: asyncio.Task[None] | None = None
     token = tg.TELEGRAM_BOT_TOKEN.strip()
     if token:
@@ -122,6 +140,12 @@ async def lifespan(app: FastAPI):
     log.info("app_started", app="support-ai", docs=True)
 
     yield
+
+    cache_task.cancel()
+    try:
+        await cache_task
+    except asyncio.CancelledError:
+        pass
 
     if polling_task:
         polling_task.cancel()
