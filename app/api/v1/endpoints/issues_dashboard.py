@@ -301,22 +301,13 @@ async def resolve_issue(
             raise HTTPException(status_code=404, detail="Issue not found")
         external_id = issue_data["issue"].external_id
 
-        current_status = issue_data["issue"].status
-        comment_result = await okdesk.add_comment(external_id, comment)
-
-        status_changed = False
-        status_result = None
-        try:
-            status_result = await okdesk.change_issue_status(external_id, status_code)
-            status_changed = status_result.get("code") == status_code
-        except Exception:
-            log.warning("status_change_failed", issue_id=issue_id, status_code=status_code)
+        status_result = await okdesk.change_issue_status(external_id, status_code, comment=comment)
+        status_changed = status_result.get("code") == status_code
 
         await cache.refresh_single_issue(issue_id, external_id)
 
         return {
             "ok": True,
-            "comment_sent": True,
             "status_changed": status_changed,
             "status": status_result,
         }
