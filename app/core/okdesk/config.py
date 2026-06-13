@@ -17,3 +17,8 @@ class OkdeskSettings(EnvSettings):
         description="Okdesk API token (required).",
         validation_alias=AliasChoices("OKDESK_API_TOKEN", "API_TOKEN"),
     )
+    EMPLOYEE_ID: int = Field(
+        default=22,
+        description="Okdesk employee ID linked to the API token.",
+        validation_alias=AliasChoices("OKDESK_EMPLOYEE_ID", "EMPLOYEE_ID"),
+    )

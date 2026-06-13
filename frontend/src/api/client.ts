@@ -29,8 +29,8 @@ export const api = {
     return http.get(`/issues/${id}/comments`).then(r => r.data)
   },
 
-  addComment(id: number, text: string): Promise<{ ok: boolean }> {
-    return http.post(`/issues/${id}/comments`, null, { params: { text } }).then(r => r.data)
+  addComment(id: number, text: string, isPublic = true): Promise<{ ok: boolean }> {
+    return http.post(`/issues/${id}/comments`, null, { params: { text, is_public: isPublic } }).then(r => r.data)
   },
 
   submitAnalysis(id: number, mileage_from_sheet: number, notes?: string): Promise<Analysis> {

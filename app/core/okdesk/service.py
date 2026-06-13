@@ -61,8 +61,8 @@ class OkdeskService:
         rows = _ensure_list(data)
         return [IssueComment.model_validate(r) for r in rows]
 
-    async def add_comment(self, issue_id: int, text: str) -> dict[str, Any]:
-        return await self._client.add_internal_comment(issue_id, text)
+    async def add_comment(self, issue_id: int, text: str, public: bool = True) -> dict[str, Any]:
+        return await self._client.add_comment(issue_id, text, public=public)
 
     async def change_issue_status(self, issue_id: int, status_code: str, comment: str | None = None, comment_public: bool = True, delay_to: str | None = None) -> dict[str, Any]:
         payload: dict[str, Any] = {"code": status_code}

@@ -477,6 +477,7 @@ export function IssueDetail() {
   const { selectedIssueId, selectIssue } = useIssuesStore()
   const queryClient = useQueryClient()
   const [comment, setComment] = useState('')
+  const [commentPublic, setCommentPublic] = useState(true)
   const [mileage, setMileage] = useState('')
   const [notes, setNotes] = useState('')
   const [statusDropdownOpen, setStatusDropdownOpen] = useState(false)
@@ -497,7 +498,7 @@ export function IssueDetail() {
   })
 
   const addComment = useMutation({
-    mutationFn: (text: string) => api.addComment(selectedIssueId!, text),
+    mutationFn: (text: string) => api.addComment(selectedIssueId!, text, commentPublic),
     onSuccess: () => {
       setComment('')
       queryClient.invalidateQueries({ queryKey: ['comments', selectedIssueId] })
@@ -698,9 +699,20 @@ export function IssueDetail() {
                 </button>
               </div>
             </div>
-            {comment && (
-              <p className="text-[10px] text-muted">Ctrl+Enter — отправить</p>
-            )}
+            <div className="flex items-center justify-between">
+              <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={commentPublic}
+                  onChange={e => setCommentPublic(e.target.checked)}
+                  className="w-3 h-3 accent-accent"
+                />
+                <span className={`text-[10px] ${commentPublic ? 'text-white' : 'text-muted'}`}>
+                  {commentPublic ? 'Публичный' : 'Приватный'}
+                </span>
+              </label>
+              {comment && <p className="text-[10px] text-muted">Ctrl+Enter — отправить</p>}
+            </div>
           </div>
         </div>
       </div>

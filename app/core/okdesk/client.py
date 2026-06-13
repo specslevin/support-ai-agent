@@ -13,6 +13,7 @@ class OkdeskClient:
     def __init__(self, settings: OkdeskSettings) -> None:
         self._token = settings.API_TOKEN
         self._base_url = settings.BASE_URL.rstrip("/")
+        self._employee_id = settings.EMPLOYEE_ID
         self._client = httpx.AsyncClient(timeout=30.0)
 
     async def aclose(self) -> None:
@@ -41,11 +42,11 @@ class OkdeskClient:
     async def get_issue_comments(self, issue_id: int) -> Any:
         return await self._request("GET", f"issues/{issue_id}/comments")
 
-    async def add_internal_comment(self, issue_id: int, comment: str) -> dict[str, Any]:
+    async def add_comment(self, issue_id: int, content: str, public: bool = True) -> dict[str, Any]:
         return await self._request(
             "POST",
             f"issues/{issue_id}/comments",
-            json={"is_internal": True, "content": comment},
+            json={"content": content, "author_id": self._employee_id, "public": public},
         )
 
     async def list_equipment_by_company(self, company_id: int) -> Any:

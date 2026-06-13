@@ -348,6 +348,7 @@ async def resolve_issue(
 async def add_comment(
     issue_id: int,
     text: str = Query(..., min_length=1),
+    is_public: bool = Query(True, description="Public comment (visible to client) or private"),
     cache: CacheService = Depends(get_cache_service),
     okdesk: OkdeskService = Depends(get_okdesk_service),
 ) -> dict[str, object]:
@@ -357,7 +358,7 @@ async def add_comment(
         if not issue_data:
             raise HTTPException(status_code=404, detail="Issue not found")
         external_id = issue_data["issue"].external_id
-        result = await okdesk.add_comment(external_id, text)
+        result = await okdesk.add_comment(external_id, text, public=is_public)
         return {"ok": True, "result": result}
     except HTTPException:
         raise
