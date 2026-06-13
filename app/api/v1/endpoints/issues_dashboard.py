@@ -66,6 +66,13 @@ async def refresh_cache(
         raise HTTPException(status_code=500, detail="Cache refresh failed")
 
 
+import re as _re
+
+
+def _looks_like_phone(value: str) -> bool:
+    return len(_re.sub(r"\D", "", value)) >= 7
+
+
 def _format_param(p: object) -> str | None:
     from app.core.okdesk.models import IssueParameter
     param: IssueParameter = p  # type: ignore[assignment]
@@ -73,10 +80,51 @@ def _format_param(p: object) -> str | None:
         return None
     if param.field_type == "ftcheckbox":
         return "Да" if param.value == "1" else None
-    # Skip single-character or meaningless values (e.g. "1", "0" in string fields)
+    # tel_person must look like a real phone number
+    if param.code == "tel_person" and not _looks_like_phone(param.value):
+        return None
+    # Skip other obviously garbage short values
     if len(param.value.strip()) < 3:
         return None
     return param.value
+
+
+def _extract_phone_from_contact(contact_value: str | None) -> str | None:
+    """Extract phone number from 'Иванов И.И. тел. 89001234567' style strings."""
+    if not contact_value:
+        return None
+    m = _re.search(r"(?:тел\.?\s*)?([\d\s\-\+\(\)]{7,})", contact_value)
+    if m:
+        phone = _re.sub(r"\s+", " ", m.group(1).strip())
+        if len(_re.sub(r"\D", "", phone)) >= 7:
+            return phone
+    return None
+
+
+def _build_parameters(params: list) -> list[dict[str, str]]:
+    from app.core.okdesk.models import IssueParameter
+    result: list[dict[str, str]] = []
+    contact_value: str | None = None
+    tel_shown = False
+
+    for p in params:
+        if p.code == "contact_person":
+            contact_value = p.value
+
+    for p in params:
+        formatted = _format_param(p)
+        if formatted is not None:
+            result.append({"name": p.name, "value": formatted})
+            if p.code == "tel_person":
+                tel_shown = True
+
+    # If tel_person was absent or garbage, try to extract phone from contact_person
+    if not tel_shown and contact_value:
+        phone = _extract_phone_from_contact(contact_value)
+        if phone:
+            result.append({"name": "Номер телефона", "value": phone})
+
+    return result
 
 
 _SOURCE_LABELS: dict[str, str] = {
@@ -121,11 +169,7 @@ async def get_issue_details(
                 "service_object_name": live.service_object.name if live.service_object else None,
                 "parent_id": live.parent_id,
                 "child_ids": live.child_ids,
-                "parameters": [
-                    {"name": p.name, "value": _format_param(p)}
-                    for p in live.parameters
-                    if _format_param(p) is not None
-                ],
+                "parameters": _build_parameters(live.parameters),
             }
         except Exception:
             log.warning("okdesk_detail_fetch_failed", issue_id=issue_id)
