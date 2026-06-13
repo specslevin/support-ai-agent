@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import functools
-from typing import cast
+from typing import AsyncGenerator, cast
 
 import structlog
+from fastapi import Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.ai.llm import DeepSeekLLMRouter
 from app.core.config import EnvSettings
+from app.core.db.database import AsyncSessionLocal
 from app.core.gpspos.auth import GpsPosAuth
 from app.core.gpspos.client import GpsPosClient
 from app.core.gpspos.config import GpsPosSettings
@@ -19,6 +22,7 @@ from app.core.gpspos_geo.service import GpsposGeoService
 from app.core.okdesk.client import OkdeskClient
 from app.core.okdesk.config import OkdeskSettings
 from app.core.okdesk.service import OkdeskService
+from app.core.services.cache_service import CacheService
 from app.services.intelligence_service import IntelligenceService, LLMRouter
 
 log = structlog.get_logger(__name__)
@@ -97,6 +101,19 @@ async def get_okdesk_service() -> OkdeskService:
 async def get_intelligence_service() -> IntelligenceService:
     """Return shared :class:`IntelligenceService` wired with singleton deps."""
     return _intelligence_service()
+
+
+async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
+    """Yield a per-request async DB session."""
+    async with AsyncSessionLocal() as session:
+        yield session
+
+
+async def get_cache_service(
+    db: AsyncSession = Depends(get_db_session),
+) -> CacheService:
+    """Return a CacheService bound to the request-scoped DB session."""
+    return CacheService(db=db, okdesk=_okdesk_service())
 
 
 @functools.lru_cache

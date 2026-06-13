@@ -1,0 +1,187 @@
+"""Dashboard endpoints for browsing and analysing Okdesk issues."""
+
+from __future__ import annotations
+
+import structlog
+from fastapi import APIRouter, Depends, HTTPException, Query
+
+from app.api.v1.schemas.issues import (
+    AnalysisInput,
+    AnalysisResult,
+    IssueResponse,
+    PaginatedIssuesResponse,
+)
+from app.core.dependencies import get_cache_service, get_okdesk_service
+from app.core.okdesk.service import OkdeskService
+from app.core.services.cache_service import CacheService
+
+log = structlog.get_logger(__name__)
+router = APIRouter(prefix="/issues", tags=["dashboard:issues"])
+
+
+@router.get("", response_model=PaginatedIssuesResponse)
+async def list_issues(
+    status: str | None = Query(None, description="Filter by status code"),
+    company: str | None = Query(None, description="Filter by company name (partial)"),
+    search: str | None = Query(None, description="Search in subject"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(10, ge=1, le=100),
+    sort: str = Query("created_at"),
+    order: str = Query("desc", pattern="^(asc|desc)$"),
+    cache: CacheService = Depends(get_cache_service),
+) -> PaginatedIssuesResponse:
+    """Return a paginated list of cached issues with optional filters."""
+    try:
+        issues = await cache.get_issues_from_cache(
+            status=status, company=company, search=search, sort=sort, order=order
+        )
+        total = len(issues)
+        start = (page - 1) * limit
+        page_items = issues[start : start + limit]
+        return PaginatedIssuesResponse(
+            data=[IssueResponse.from_orm_row(i) for i in page_items],
+            pagination={
+                "page": page,
+                "limit": limit,
+                "total": total,
+                "total_pages": max(1, (total + limit - 1) // limit),
+            },
+        )
+    except Exception:
+        log.exception("list_issues_failed")
+        raise HTTPException(status_code=500, detail="Failed to list issues")
+
+
+@router.get("/cache/refresh")
+async def refresh_cache(
+    cache: CacheService = Depends(get_cache_service),
+) -> dict[str, object]:
+    """Force-sync the issue cache from Okdesk REST API."""
+    try:
+        count = await cache.refresh_issue_cache()
+        return {"ok": True, "synced": count}
+    except Exception:
+        log.exception("refresh_cache_failed")
+        raise HTTPException(status_code=500, detail="Cache refresh failed")
+
+
+@router.get("/{issue_id}")
+async def get_issue_details(
+    issue_id: int,
+    cache: CacheService = Depends(get_cache_service),
+) -> dict[str, object]:
+    """Return full issue details plus latest analysis."""
+    try:
+        data = await cache.get_issue_with_analysis(issue_id)
+        if not data:
+            raise HTTPException(status_code=404, detail="Issue not found")
+        row = data["issue"]
+        latest = data["latest_analysis"]
+        return {
+            "issue": IssueResponse.from_orm_row(row).model_dump(),
+            "latest_analysis": (
+                {
+                    "id": latest.id,
+                    "mileage_from_sheet": latest.mileage_from_sheet,
+                    "mileage_from_system": latest.mileage_from_system,
+                    "discrepancy_percent": latest.discrepancy_percent,
+                    "ai_suggestion": latest.ai_suggestion,
+                    "recommendation": latest.recommendation,
+                    "created_at": latest.created_at.isoformat(),
+                }
+                if latest
+                else None
+            ),
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        log.exception("get_issue_details_failed", issue_id=issue_id)
+        raise HTTPException(status_code=500, detail="Failed to fetch issue")
+
+
+@router.post("/{issue_id}/analysis", response_model=AnalysisResult)
+async def submit_analysis(
+    issue_id: int,
+    data: AnalysisInput,
+    cache: CacheService = Depends(get_cache_service),
+) -> AnalysisResult:
+    """Save a mileage analysis for an issue (AI suggestion deferred to Phase 2)."""
+    try:
+        issue_data = await cache.get_issue_with_analysis(issue_id)
+        if not issue_data:
+            raise HTTPException(status_code=404, detail="Issue not found")
+
+        saved = await cache.save_analysis(
+            issue_id=issue_id,
+            mileage_sheet=data.mileage_from_sheet,
+            ai_suggestion="",
+            recommendation="review",
+            notes=data.notes,
+        )
+        return AnalysisResult(
+            analysis_id=str(saved.id),
+            mileage_from_sheet=saved.mileage_from_sheet or 0.0,
+            mileage_from_system=saved.mileage_from_system,
+            discrepancy_percent=saved.discrepancy_percent,
+            ai_suggestion=saved.ai_suggestion or "",
+            recommendation=saved.recommendation,
+            created_at=saved.created_at.isoformat(),
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        log.exception("submit_analysis_failed", issue_id=issue_id)
+        raise HTTPException(status_code=500, detail="Failed to save analysis")
+
+
+@router.get("/{issue_id}/comments")
+async def get_issue_comments(
+    issue_id: int,
+    cache: CacheService = Depends(get_cache_service),
+    okdesk: OkdeskService = Depends(get_okdesk_service),
+) -> list[dict[str, object]]:
+    """Fetch comments from Okdesk for a cached issue."""
+    try:
+        issue_data = await cache.get_issue_with_analysis(issue_id)
+        if not issue_data:
+            raise HTTPException(status_code=404, detail="Issue not found")
+        external_id = issue_data["issue"].external_id
+        comments = await okdesk.get_issue_comments(external_id)
+        return [
+            {
+                "id": c.id,
+                "author": c.author.name if c.author else "Unknown",
+                "content": c.content,
+                "created_at": c.created_at,
+                "is_internal": c.is_internal,
+            }
+            for c in comments
+        ]
+    except HTTPException:
+        raise
+    except Exception:
+        log.exception("get_comments_failed", issue_id=issue_id)
+        raise HTTPException(status_code=500, detail="Failed to fetch comments")
+
+
+@router.post("/{issue_id}/comments")
+async def add_comment(
+    issue_id: int,
+    text: str = Query(..., min_length=1),
+    cache: CacheService = Depends(get_cache_service),
+    okdesk: OkdeskService = Depends(get_okdesk_service),
+) -> dict[str, object]:
+    """Add a comment to an issue in Okdesk."""
+    try:
+        issue_data = await cache.get_issue_with_analysis(issue_id)
+        if not issue_data:
+            raise HTTPException(status_code=404, detail="Issue not found")
+        external_id = issue_data["issue"].external_id
+        result = await okdesk.add_comment(external_id, text)
+        return {"ok": True, "result": result}
+    except HTTPException:
+        raise
+    except Exception:
+        log.exception("add_comment_failed", issue_id=issue_id)
+        raise HTTPException(status_code=500, detail="Failed to add comment")
