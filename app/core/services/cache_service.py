@@ -38,25 +38,25 @@ class CacheService:
     async def refresh_issue_cache(self) -> int:
         """Pull all issues from Okdesk REST API and upsert into issue_cache.
 
-        Okdesk limits to 20 per request, so we loop with offset until
-        we get fewer than 20 results.
+        Okdesk paginates via `page` (1-indexed), 100 per request max.
+        We loop until we get fewer results than requested.
 
         Returns the number of issues upserted.
         """
         collected: list[Any] = []
-        offset = 0
+        page = 1
         while True:
             try:
                 batch = await self.okdesk.list_issues(
-                    limit=_OKDESK_PAGE_SIZE, offset=offset
+                    limit=_OKDESK_PAGE_SIZE, page=page
                 )
             except Exception:
-                log.warning("okdesk_list_issues_failed", offset=offset)
+                log.warning("okdesk_list_issues_failed", page=page)
                 break
             collected.extend(batch)
             if len(batch) < _OKDESK_PAGE_SIZE:
                 break
-            offset += _OKDESK_PAGE_SIZE
+            page += 1
 
         # Deduplicate by external ID (last write wins)
         by_id: dict[int, Any] = {}
