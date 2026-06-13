@@ -9,6 +9,7 @@ interface FiltersState {
   selectedIssueId: number | null
   setFilter: (key: 'status' | 'company' | 'search', value: string) => void
   setPage: (page: number) => void
+  setLimit: (limit: number) => void
   selectIssue: (id: number | null) => void
   resetFilters: () => void
 }
@@ -23,6 +24,7 @@ export const useIssuesStore = create<FiltersState>(set => ({
 
   setFilter: (key, value) => set({ [key]: value, page: 1 }),
   setPage: page => set({ page }),
+  setLimit: limit => set({ limit, page: 1 }),
   selectIssue: id => set({ selectedIssueId: id }),
   resetFilters: () => set({ status: '', company: '', search: '', page: 1 }),
 }))

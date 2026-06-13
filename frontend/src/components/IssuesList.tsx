@@ -47,7 +47,7 @@ function IssueRow({ issue, selected, onClick }: { issue: Issue; selected: boolea
 }
 
 export function IssuesList() {
-  const { status, company, search, page, limit, selectedIssueId, setPage, selectIssue } = useIssuesStore()
+  const { status, company, search, page, limit, selectedIssueId, setPage, setLimit, selectIssue } = useIssuesStore()
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ['issues', { status, company, search, page, limit }],
@@ -106,9 +106,27 @@ export function IssuesList() {
         )}
       </div>
 
-      {pagination && pagination.total_pages > 1 && (
+      {pagination && (
         <div className="flex items-center justify-between px-4 py-2.5 border-t border-border text-xs text-muted shrink-0">
-          <span>{(page - 1) * limit + 1}–{Math.min(page * limit, pagination.total)} из {pagination.total}</span>
+          <div className="flex items-center gap-3">
+            <span>{(page - 1) * limit + 1}–{Math.min(page * limit, pagination.total)} из {pagination.total}</span>
+            <div className="flex items-center gap-1.5">
+              <span>Показывать:</span>
+              {[20, 50, 100].map(n => (
+                <button
+                  key={n}
+                  onClick={() => setLimit(n)}
+                  className={`px-2 py-0.5 rounded transition-colors ${
+                    limit === n
+                      ? 'bg-accent/20 text-accent border border-accent/40'
+                      : 'border border-border hover:border-accent/60'
+                  }`}
+                >
+                  {n}
+                </button>
+              ))}
+            </div>
+          </div>
           <div className="flex items-center gap-1">
             <button
               disabled={page <= 1}
