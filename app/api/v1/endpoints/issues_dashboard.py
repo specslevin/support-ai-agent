@@ -310,6 +310,7 @@ async def resolve_issue(
     issue_id: int,
     status_code: str = Query(..., description="Target status code: completed or delayed"),
     comment: str = Query(..., min_length=1),
+    delay_to: str | None = Query(None, description="Required when status_code=delayed (ISO datetime)"),
     cache: CacheService = Depends(get_cache_service),
     okdesk: OkdeskService = Depends(get_okdesk_service),
 ) -> dict[str, object]:
@@ -317,13 +318,15 @@ async def resolve_issue(
     ALLOWED = {"completed", "delayed", "opened"}
     if status_code not in ALLOWED:
         raise HTTPException(status_code=400, detail=f"status_code must be one of {ALLOWED}")
+    if status_code == "delayed" and not delay_to:
+        raise HTTPException(status_code=400, detail="delay_to is required for status 'delayed'")
     try:
         issue_data = await cache.get_issue_with_analysis(issue_id)
         if not issue_data:
             raise HTTPException(status_code=404, detail="Issue not found")
         external_id = issue_data["issue"].external_id
 
-        status_result = await okdesk.change_issue_status(external_id, status_code, comment=comment)
+        status_result = await okdesk.change_issue_status(external_id, status_code, comment=comment, delay_to=delay_to)
         status_changed = status_result.get("code") == status_code
 
         await cache.refresh_single_issue(issue_id, external_id)

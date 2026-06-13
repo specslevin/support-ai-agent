@@ -363,11 +363,16 @@ function ResolveModal({
   const queryClient = useQueryClient()
   const [selectedStatus, setSelectedStatus] = useState('completed')
   const [comment, setComment] = useState('')
+  const [delayTo, setDelayTo] = useState(() => {
+    const d = new Date(); d.setDate(d.getDate() + 3)
+    return d.toISOString().slice(0, 16)
+  })
 
   const typeIsDefault = !typeCode || typeCode === 'inner'
+  const isDelayed = selectedStatus === 'delayed'
 
   const resolve = useMutation({
-    mutationFn: () => api.resolveIssue(issueId, selectedStatus, comment),
+    mutationFn: () => api.resolveIssue(issueId, selectedStatus, comment, isDelayed ? delayTo : undefined),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['issue', issueId] })
       queryClient.invalidateQueries({ queryKey: ['issues'] })
@@ -432,6 +437,21 @@ function ResolveModal({
             </div>
           </div>
 
+          {/* Delay date — only for delayed status */}
+          {isDelayed && (
+            <div className="space-y-1.5">
+              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted/60">
+                Отложить до <span className="text-red-400">*</span>
+              </p>
+              <input
+                type="datetime-local"
+                value={delayTo}
+                onChange={e => setDelayTo(e.target.value)}
+                className="w-full bg-base border border-border rounded px-3 py-2 text-xs focus:outline-none focus:border-accent"
+              />
+            </div>
+          )}
+
           {/* Comment with template picker */}
           <div className="space-y-1.5">
             <p className="text-[10px] font-semibold uppercase tracking-widest text-muted/60">
@@ -456,7 +476,7 @@ function ResolveModal({
             Отмена
           </button>
           <button
-            disabled={!comment.trim() || typeIsDefault || resolve.isPending}
+            disabled={!comment.trim() || typeIsDefault || (isDelayed && !delayTo) || resolve.isPending}
             onClick={() => resolve.mutate()}
             className="px-4 py-2 rounded-lg bg-green-600/90 hover:bg-green-600 text-white text-xs font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
           >
