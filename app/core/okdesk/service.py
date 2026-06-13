@@ -79,7 +79,7 @@ class OkdeskService:
         return {"code": issue.status.code if issue.status else None, "name": issue.status.name if issue.status else None}
 
     async def list_issue_types(self) -> list[dict[str, Any]]:
-        data = await self._client._request("GET", "issues/types")
+        data = await self._client._request("GET", "references/issue_types")
         if isinstance(data, list):
             return [{"code": t.get("code"), "name": t.get("name")} for t in data if not t.get("inner", False)]
         return []
@@ -94,8 +94,8 @@ class OkdeskService:
 
     async def assign_issue(self, issue_id: int, assignee_id: int) -> Issue:
         data = await self._client._request(
-            "PATCH", f"issues/{issue_id}",
-            json={"issue": {"assignee_id": assignee_id}},
+            "PATCH", f"issues/{issue_id}/assignee",
+            json={"assignee_id": assignee_id},
         )
         return Issue.model_validate(data)
 
