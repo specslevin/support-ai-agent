@@ -66,3 +66,15 @@ export interface Comment {
 }
 
 export type StatusCode = 'opened' | 'in_progress' | 'resolved' | 'closed' | string
+
+export interface Template {
+  id: number
+  name: string
+  content: string
+  category_id: number
+  category_name: string | null
+  category_color: string | null
+  usage_count: number
+  is_favorite: boolean
+  is_dynamic: boolean
+}

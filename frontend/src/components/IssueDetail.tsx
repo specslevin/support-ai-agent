@@ -1,10 +1,10 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { api } from '../api/client'
 import { useIssuesStore } from '../store/issuesStore'
 import { useUserStore, EMPLOYEES } from '../store/userStore'
 import { StatusBadge } from './StatusBadge'
-import type { OkdeskDetail } from '../types'
+import type { OkdeskDetail, Template } from '../types'
 
 function formatDate(iso: string | null | undefined) {
   if (!iso) return null
@@ -190,6 +190,105 @@ function OkdeskInfo({ d, issueId, assigneeName }: { d: OkdeskDetail; issueId: nu
   )
 }
 
+const CATEGORY_COLORS: Record<string, string> = {
+  primary: 'text-blue-400',
+  secondary: 'text-gray-400',
+  success: 'text-green-400',
+  danger: 'text-red-400',
+  warning: 'text-yellow-400',
+  info: 'text-cyan-400',
+  dark: 'text-gray-500',
+}
+
+function TemplatePicker({ onSelect }: { onSelect: (content: string) => void }) {
+  const [open, setOpen] = useState(false)
+  const [search, setSearch] = useState('')
+
+  const { data: templates = [] } = useQuery({
+    queryKey: ['templates'],
+    queryFn: () => api.listTemplates(),
+    staleTime: 5 * 60_000,
+  })
+
+  const grouped = useMemo(() => {
+    const filtered = search
+      ? templates.filter(t =>
+          t.name.toLowerCase().includes(search.toLowerCase()) ||
+          t.content.toLowerCase().includes(search.toLowerCase())
+        )
+      : templates
+
+    return filtered.reduce<Record<string, Template[]>>((acc, t) => {
+      const key = t.category_name ?? 'Другое'
+      ;(acc[key] ??= []).push(t)
+      return acc
+    }, {})
+  }, [templates, search])
+
+  if (!open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        title="Шаблоны ответов"
+        className="shrink-0 px-2.5 py-1.5 text-xs bg-surface border border-border hover:border-accent rounded transition-colors"
+      >
+        📋
+      </button>
+    )
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center p-4">
+      <div className="fixed inset-0 bg-black/60" onClick={() => setOpen(false)} />
+      <div className="relative bg-surface border border-border rounded-xl w-full max-w-md max-h-[70vh] flex flex-col shadow-2xl z-10">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
+          <span className="text-sm font-semibold">Шаблоны ответов</span>
+          <button onClick={() => setOpen(false)} className="text-muted hover:text-white text-lg leading-none">✕</button>
+        </div>
+        <div className="px-4 py-2 border-b border-border shrink-0">
+          <input
+            autoFocus
+            type="text"
+            placeholder="Поиск..."
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            className="w-full bg-base border border-border rounded px-3 py-1.5 text-xs focus:outline-none focus:border-accent"
+          />
+        </div>
+        <div className="overflow-y-auto flex-1 py-2">
+          {Object.keys(grouped).length === 0 && (
+            <p className="text-xs text-muted px-4 py-3">Шаблоны не найдены</p>
+          )}
+          {Object.entries(grouped).map(([cat, items]) => {
+            const color = CATEGORY_COLORS[items[0]?.category_color ?? ''] ?? 'text-gray-400'
+            return (
+              <div key={cat}>
+                <div className={`px-4 py-1 text-[10px] uppercase tracking-widest font-semibold ${color}`}>{cat}</div>
+                {items.map(t => (
+                  <button
+                    key={t.id}
+                    onClick={() => { onSelect(t.content); setOpen(false); setSearch('') }}
+                    className="w-full text-left px-4 py-2 hover:bg-white/5 transition-colors"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-white flex-1">{t.name}</span>
+                      {t.is_favorite && <span className="text-yellow-400 text-[10px]">★</span>}
+                      {t.usage_count > 0 && (
+                        <span className="text-[10px] text-muted">{t.usage_count}</span>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-muted mt-0.5 line-clamp-2 leading-relaxed">{t.content}</p>
+                  </button>
+                ))}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function IssueDetail() {
   const { selectedIssueId, selectIssue } = useIssuesStore()
   const queryClient = useQueryClient()
@@ -347,22 +446,35 @@ export function IssueDetail() {
             {comments.length === 0 && <p className="text-xs text-muted">Комментариев нет</p>}
           </div>
 
-          <div className="flex gap-2">
-            <input
-              type="text"
-              placeholder="Написать комментарий..."
-              value={comment}
-              onChange={e => setComment(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && comment && addComment.mutate(comment)}
-              className="flex-1 bg-base border border-border rounded px-3 py-1.5 text-xs focus:outline-none focus:border-accent"
-            />
-            <button
-              disabled={!comment || addComment.isPending}
-              onClick={() => addComment.mutate(comment)}
-              className="bg-surface border border-border hover:border-accent rounded px-3 py-1.5 text-xs transition-colors disabled:opacity-40"
-            >
-              ↵
-            </button>
+          <div className="space-y-2">
+            <div className="flex items-start gap-2">
+              <textarea
+                placeholder="Написать комментарий..."
+                value={comment}
+                onChange={e => setComment(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && comment) {
+                    addComment.mutate(comment)
+                  }
+                }}
+                rows={3}
+                className="flex-1 bg-base border border-border rounded px-3 py-1.5 text-xs resize-none focus:outline-none focus:border-accent"
+              />
+              <div className="flex flex-col gap-1.5 shrink-0">
+                <TemplatePicker onSelect={text => setComment(text)} />
+                <button
+                  disabled={!comment || addComment.isPending}
+                  onClick={() => addComment.mutate(comment)}
+                  title="Отправить (Ctrl+Enter)"
+                  className="bg-surface border border-border hover:border-accent rounded px-2.5 py-1.5 text-xs transition-colors disabled:opacity-40"
+                >
+                  {addComment.isPending ? '...' : '↵'}
+                </button>
+              </div>
+            </div>
+            {comment && (
+              <p className="text-[10px] text-muted">Ctrl+Enter — отправить</p>
+            )}
           </div>
         </div>
       </div>

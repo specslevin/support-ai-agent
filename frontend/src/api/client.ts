@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { IssuesListResponse, IssueDetail, Comment, Analysis } from '../types'
+import type { IssuesListResponse, IssueDetail, Comment, Analysis, Template } from '../types'
 
 const http = axios.create({
   baseURL: '/api/v1',
@@ -47,5 +47,9 @@ export const api = {
 
   listEmployees(): Promise<{ id: number; name: string }[]> {
     return http.get('/employees').then(r => r.data)
+  },
+
+  listTemplates(): Promise<Template[]> {
+    return http.get('/templates').then(r => r.data)
   },
 }
