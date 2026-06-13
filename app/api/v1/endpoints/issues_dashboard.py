@@ -66,6 +66,17 @@ async def refresh_cache(
         raise HTTPException(status_code=500, detail="Cache refresh failed")
 
 
+def _format_param(p: object) -> str | None:
+    from app.core.okdesk.models import IssueParameter
+    param: IssueParameter = p  # type: ignore[assignment]
+    if not param.value:
+        return None
+    if param.field_type == "ftcheckbox":
+        # "1" = checked, "0" = unchecked — only show if explicitly checked
+        return "Да" if param.value == "1" else None
+    return param.value
+
+
 _SOURCE_LABELS: dict[str, str] = {
     "from_email": "Email",
     "from_operator": "Оператор",
@@ -109,9 +120,9 @@ async def get_issue_details(
                 "parent_id": live.parent_id,
                 "child_ids": live.child_ids,
                 "parameters": [
-                    {"name": p.name, "value": p.value}
+                    {"name": p.name, "value": _format_param(p)}
                     for p in live.parameters
-                    if p.value
+                    if _format_param(p) is not None
                 ],
             }
         except Exception:
