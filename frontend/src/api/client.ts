@@ -40,4 +40,12 @@ export const api = {
   refreshCache(): Promise<{ ok: boolean; synced: number }> {
     return http.get('/issues/cache/refresh').then(r => r.data)
   },
+
+  assignIssue(issueId: number, assigneeId: number): Promise<{ ok: boolean; assignee_name: string }> {
+    return http.patch(`/issues/${issueId}/assignee`, null, { params: { assignee_id: assigneeId } }).then(r => r.data)
+  },
+
+  listEmployees(): Promise<{ id: number; name: string }[]> {
+    return http.get('/employees').then(r => r.data)
+  },
 }

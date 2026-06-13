@@ -90,7 +90,38 @@ class CacheService:
 
         await self.db.commit()
         log.info("issue_cache_refreshed", count=count)
+
+        # Batch-sync assignees for active issues (opened/wait/delayed)
+        await self._sync_assignees_for_active()
+
         return count
+
+    _ACTIVE_STATUSES = ("opened", "wait", "delayed")
+
+    async def _sync_assignees_for_active(self) -> None:
+        """Fetch assignee from Okdesk for every active issue missing one."""
+        result = await self.db.execute(
+            select(IssueCache).where(
+                IssueCache.status.in_(self._ACTIVE_STATUSES),
+                IssueCache.assignee_name.is_(None),
+            )
+        )
+        rows = list(result.scalars().all())
+        if not rows:
+            return
+        log.info("assignee_sync_start", count=len(rows))
+        updated = 0
+        for row in rows:
+            try:
+                detail = await self.okdesk.get_issue(row.external_id)
+                if detail.assignee and detail.assignee.name:
+                    row.assignee_name = detail.assignee.name
+                    self.db.add(row)
+                    updated += 1
+            except Exception:
+                log.warning("assignee_fetch_failed", external_id=row.external_id)
+        await self.db.commit()
+        log.info("assignee_sync_done", updated=updated)
 
     # ------------------------------------------------------------------
     # Queries
@@ -152,6 +183,21 @@ class CacheService:
         latest = analysis_result.scalar_one_or_none()
 
         return {"issue": row, "latest_analysis": latest}
+
+    async def assign_issue(self, issue_id: int, assignee_id: int) -> IssueCache | None:
+        """Assign issue to employee in Okdesk and update local cache."""
+        result = await self.db.execute(
+            select(IssueCache).where(IssueCache.id == issue_id)
+        )
+        row = result.scalar_one_or_none()
+        if not row:
+            return None
+        updated = await self.okdesk.assign_issue(row.external_id, assignee_id)
+        if updated.assignee and updated.assignee.name:
+            row.assignee_name = updated.assignee.name
+            self.db.add(row)
+            await self.db.commit()
+        return row
 
     async def save_analysis(
         self,

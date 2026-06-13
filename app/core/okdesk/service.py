@@ -64,6 +64,18 @@ class OkdeskService:
     async def add_comment(self, issue_id: int, text: str) -> dict[str, Any]:
         return await self._client.add_internal_comment(issue_id, text)
 
+    async def assign_issue(self, issue_id: int, assignee_id: int) -> Issue:
+        data = await self._client._request(
+            "PATCH", f"issues/{issue_id}",
+            json={"issue": {"assignee_id": assignee_id}},
+        )
+        return Issue.model_validate(data)
+
+    async def list_employees(self, **params: Any) -> list[Employee]:
+        data = await self._client._request("GET", "employees/list", params=params)
+        rows = _ensure_list(data)
+        return [Employee.model_validate(r) for r in rows]
+
     async def create_issue(self, **fields: Any) -> Issue:
         data = await self._client._request("POST", "issues", json={"issue": fields})
         return Issue.model_validate(data)

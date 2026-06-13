@@ -2,11 +2,89 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { api } from '../api/client'
 import { useIssuesStore } from '../store/issuesStore'
+import { useUserStore, EMPLOYEES } from '../store/userStore'
 import { StatusBadge } from './StatusBadge'
 
 function formatDate(iso: string | null) {
   if (!iso) return '—'
   return new Date(iso).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })
+}
+
+function AssigneeSection({ issueId, assigneeName }: { issueId: number; assigneeName: string | null }) {
+  const queryClient = useQueryClient()
+  const { currentUser } = useUserStore()
+  const [pickerOpen, setPickerOpen] = useState(false)
+
+  const assignMutation = useMutation({
+    mutationFn: (employeeId: number) => api.assignIssue(issueId, employeeId),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['issue', issueId] })
+      queryClient.invalidateQueries({ queryKey: ['issues'] })
+      setPickerOpen(false)
+    },
+  })
+
+  const groups = EMPLOYEES.reduce<Record<string, typeof EMPLOYEES>>((acc, e) => {
+    ;(acc[e.group] ??= []).push(e)
+    return acc
+  }, {})
+
+  return (
+    <div className="flex items-center gap-2 text-xs relative">
+      <span className="text-muted shrink-0">Ответственный</span>
+      <span className={`flex-1 ${assigneeName ? 'text-white' : 'text-muted/50'}`}>
+        {assigneeName ?? 'Не назначен'}
+      </span>
+
+      {/* Take for yourself */}
+      {currentUser && currentUser.name !== assigneeName && (
+        <button
+          onClick={() => assignMutation.mutate(currentUser.id)}
+          disabled={assignMutation.isPending}
+          className="text-[10px] px-2 py-0.5 rounded border border-accent/50 text-accent hover:bg-accent/10 transition-colors disabled:opacity-40 shrink-0"
+        >
+          Взять себе
+        </button>
+      )}
+
+      {/* Picker toggle */}
+      <div className="relative shrink-0">
+        <button
+          onClick={() => setPickerOpen(o => !o)}
+          disabled={assignMutation.isPending}
+          className="text-[10px] px-2 py-0.5 rounded border border-border hover:border-accent text-muted hover:text-white transition-colors disabled:opacity-40"
+        >
+          ▾
+        </button>
+
+        {pickerOpen && (
+          <div className="absolute right-0 top-full mt-1 bg-surface border border-border rounded-lg py-1 z-50 w-40 shadow-xl">
+            {Object.entries(groups).map(([group, members]) => (
+              <div key={group}>
+                <div className="px-3 py-1 text-[10px] uppercase tracking-widest text-muted/60">{group}</div>
+                {members.map(emp => (
+                  <button
+                    key={emp.id}
+                    onClick={() => assignMutation.mutate(emp.id)}
+                    className={`w-full text-left px-4 py-1.5 text-xs hover:bg-white/5 transition-colors ${emp.name === assigneeName ? 'text-accent' : 'text-white'}`}
+                  >
+                    {emp.name}
+                  </button>
+                ))}
+              </div>
+            ))}
+          </div>
+        )}
+        {pickerOpen && (
+          <div className="fixed inset-0 z-40" onClick={() => setPickerOpen(false)} />
+        )}
+      </div>
+
+      {assignMutation.isPending && (
+        <span className="text-[10px] text-muted animate-pulse shrink-0">Сохранение...</span>
+      )}
+    </div>
+  )
 }
 
 export function IssueDetail() {
@@ -82,15 +160,21 @@ export function IssueDetail() {
 
       <div className="flex-1 px-5 py-4 space-y-5">
         {/* Meta */}
-        <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
-          <span className="text-muted">Компания</span>
-          <span>{issue.company_name ?? '—'}</span>
-          <span className="text-muted">Контакт</span>
-          <span>{issue.contact_name ?? '—'}</span>
-          <span className="text-muted">Создана</span>
-          <span>{formatDate(issue.created_at)}</span>
-          <span className="text-muted">Синхронизирована</span>
-          <span>{formatDate(issue.synced_at)}</span>
+        <div className="space-y-1.5 text-xs">
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+            <span className="text-muted">Компания</span>
+            <span>{issue.company_name ?? '—'}</span>
+            <span className="text-muted">Контакт</span>
+            <span>{issue.contact_name ?? '—'}</span>
+            <span className="text-muted">Создана</span>
+            <span>{formatDate(issue.created_at)}</span>
+            <span className="text-muted">Синхронизирована</span>
+            <span>{formatDate(issue.synced_at)}</span>
+          </div>
+          {/* Assignee row — full width for the picker controls */}
+          <div className="pt-1">
+            <AssigneeSection issueId={issue.id} assigneeName={issue.assignee_name ?? null} />
+          </div>
         </div>
 
         {/* Analysis */}

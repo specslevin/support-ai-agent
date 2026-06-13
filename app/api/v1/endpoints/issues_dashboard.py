@@ -12,6 +12,7 @@ from app.api.v1.schemas.issues import (
     PaginatedIssuesResponse,
 )
 from app.core.dependencies import get_cache_service, get_okdesk_service
+from app.core.okdesk.models import Employee
 from app.core.okdesk.service import OkdeskService
 from app.core.services.cache_service import CacheService
 
@@ -163,6 +164,25 @@ async def get_issue_comments(
     except Exception:
         log.exception("get_comments_failed", issue_id=issue_id)
         raise HTTPException(status_code=500, detail="Failed to fetch comments")
+
+
+@router.patch("/{issue_id}/assignee")
+async def assign_issue(
+    issue_id: int,
+    assignee_id: int = Query(..., description="Okdesk employee ID"),
+    cache: CacheService = Depends(get_cache_service),
+) -> dict[str, object]:
+    """Assign issue to an employee in Okdesk and update local cache."""
+    try:
+        row = await cache.assign_issue(issue_id, assignee_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Issue not found")
+        return {"ok": True, "assignee_name": row.assignee_name}
+    except HTTPException:
+        raise
+    except Exception:
+        log.exception("assign_issue_failed", issue_id=issue_id)
+        raise HTTPException(status_code=500, detail="Failed to assign issue")
 
 
 @router.post("/{issue_id}/comments")
