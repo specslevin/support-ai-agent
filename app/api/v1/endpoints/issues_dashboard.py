@@ -264,6 +264,28 @@ async def get_issue_comments(
         raise HTTPException(status_code=500, detail="Failed to fetch comments")
 
 
+@router.patch("/{issue_id}/type")
+async def change_issue_type(
+    issue_id: int,
+    type_code: str = Query(..., description="Okdesk issue type code"),
+    cache: CacheService = Depends(get_cache_service),
+    okdesk: OkdeskService = Depends(get_okdesk_service),
+) -> dict[str, object]:
+    """Change issue type in Okdesk."""
+    try:
+        issue_data = await cache.get_issue_with_analysis(issue_id)
+        if not issue_data:
+            raise HTTPException(status_code=404, detail="Issue not found")
+        external_id = issue_data["issue"].external_id
+        result = await okdesk.change_issue_type(external_id, type_code)
+        return {"ok": True, "type_code": result["code"], "type_name": result["name"]}
+    except HTTPException:
+        raise
+    except Exception:
+        log.exception("change_issue_type_failed", issue_id=issue_id)
+        raise HTTPException(status_code=500, detail="Failed to change issue type")
+
+
 @router.patch("/{issue_id}/assignee")
 async def assign_issue(
     issue_id: int,

@@ -53,6 +53,14 @@ export const api = {
     return http.get('/templates').then(r => r.data)
   },
 
+  listIssueTypes(): Promise<{ code: string; name: string }[]> {
+    return http.get('/issue-types').then(r => r.data)
+  },
+
+  changeIssueType(id: number, type_code: string): Promise<{ ok: boolean; type_code: string; type_name: string }> {
+    return http.patch(`/issues/${id}/type`, null, { params: { type_code } }).then(r => r.data)
+  },
+
   resolveIssue(id: number, status_code: string, comment: string): Promise<{ ok: boolean; comment_sent: boolean; status_changed: boolean }> {
     return http.post(`/issues/${id}/resolve`, null, { params: { status_code, comment } }).then(r => r.data)
   },

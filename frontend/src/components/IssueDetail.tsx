@@ -115,6 +115,57 @@ function AssigneeSection({ issueId, assigneeName }: { issueId: number; assigneeN
   )
 }
 
+function TypeSection({ issueId, typeName, typeCode }: { issueId: number; typeName: string | null; typeCode: string | null }) {
+  const queryClient = useQueryClient()
+  const [open, setOpen] = useState(false)
+
+  const { data: types = [] } = useQuery({
+    queryKey: ['issue-types'],
+    queryFn: () => api.listIssueTypes(),
+    staleTime: 5 * 60 * 1000,
+  })
+
+  const mutation = useMutation({
+    mutationFn: (code: string) => api.changeIssueType(issueId, code),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['issue', issueId] })
+      setOpen(false)
+    },
+  })
+
+  const isDefault = !typeCode || typeCode === 'inner'
+
+  return (
+    <div className="col-span-2 flex items-center gap-2">
+      <span className="text-muted shrink-0">Тип</span>
+      {open ? (
+        <div className="flex items-center gap-1.5 flex-1">
+          <select
+            autoFocus
+            className="flex-1 bg-surface border border-border rounded px-2 py-0.5 text-xs text-white"
+            defaultValue={typeCode ?? ''}
+            onChange={e => e.target.value && mutation.mutate(e.target.value)}
+            onBlur={() => setOpen(false)}
+          >
+            <option value="" disabled>Выберите тип...</option>
+            {types.map(t => (
+              <option key={t.code} value={t.code}>{t.name}</option>
+            ))}
+          </select>
+          <button onClick={() => setOpen(false)} className="text-muted hover:text-white leading-none">✕</button>
+        </div>
+      ) : (
+        <button
+          onClick={() => setOpen(true)}
+          className={`text-left hover:text-white transition-colors ${isDefault ? 'text-yellow-400' : 'text-white'}`}
+        >
+          {isDefault ? '⚠ Не указан — нажмите чтобы выбрать' : typeName}
+        </button>
+      )}
+    </div>
+  )
+}
+
 function OkdeskInfo({ d, issueId, assigneeName }: { d: OkdeskDetail; issueId: number; assigneeName: string | null }) {
   const deadline = formatDate(d.deadline_at)
   const overdue = isOverdue(d.deadline_at)
@@ -127,7 +178,7 @@ function OkdeskInfo({ d, issueId, assigneeName }: { d: OkdeskDetail; issueId: nu
         <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
           {d.author_name && <MetaRow label="Автор">{d.author_name}</MetaRow>}
           {d.service_object_name && <MetaRow label="Объект">{d.service_object_name}</MetaRow>}
-          {d.type_name && <MetaRow label="Тип">{d.type_name}</MetaRow>}
+          <TypeSection issueId={issueId} typeName={d.type_name} typeCode={d.type_code} />
           {d.source && <MetaRow label="Источник">{d.source}</MetaRow>}
         </div>
         <AssigneeSection issueId={issueId} assigneeName={assigneeName} />
