@@ -152,6 +152,7 @@ class Issue(BaseModel):
     author: IssueAuthor | None = None
     service_object: IssueAuthor | None = None
     agreement: IssueAuthor | None = None
+    assignee: IssueAuthor | None = None
 
 
 class Employee(BaseModel):

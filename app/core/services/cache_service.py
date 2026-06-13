@@ -119,13 +119,29 @@ class CacheService:
         return list(result.scalars().all())
 
     async def get_issue_with_analysis(self, issue_id: int) -> dict[str, Any] | None:
-        """Return IssueCache row plus its latest AnalysisCache entry."""
+        """Return IssueCache row plus its latest AnalysisCache entry.
+
+        If assignee_name is missing, fetch it from Okdesk and persist lazily.
+        """
         result = await self.db.execute(
             select(IssueCache).where(IssueCache.id == issue_id)
         )
         row = result.scalar_one_or_none()
         if not row:
             return None
+
+        # Lazy-fetch assignee from Okdesk if not cached yet
+        if row.assignee_name is None:
+            try:
+                detail = await self.okdesk.get_issue(row.external_id)
+                assignee = getattr(detail, "assignee", None)
+                if assignee and hasattr(assignee, "name"):
+                    row.assignee_name = assignee.name
+                if row.assignee_name:
+                    self.db.add(row)
+                    await self.db.commit()
+            except Exception:
+                log.warning("assignee_fetch_failed", issue_id=issue_id)
 
         analysis_result = await self.db.execute(
             select(AnalysisCache)

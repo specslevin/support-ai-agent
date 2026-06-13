@@ -1,24 +1,29 @@
-// Colors match Okdesk UI palette
-const STYLES: Record<string, { bg: string; text: string; label: string }> = {
-  opened:    { bg: '#0ea5e9', text: '#fff',     label: 'Открыта' },
-  wait:      { bg: '#a855f7', text: '#fff',     label: 'Ожидание' },
-  delayed:   { bg: '#f97316', text: '#fff',     label: 'Отложена' },
-  completed: { bg: '#22c55e', text: '#fff',     label: 'Решена' },
-  inst_fin:  { bg: '#22c55e', text: '#fff',     label: 'Завершена' },
-  closed:    { bg: '#4b5563', text: '#d1d5db',  label: 'Закрыта' },
+// Colors taken directly from Okdesk API status.color field
+const STYLES: Record<string, { color: string; label: string }> = {
+  opened:    { color: '#3edad8', label: 'Открыта' },
+  wait:      { color: '#2b6684', label: 'В работе' },
+  delayed:   { color: '#bb7db2', label: 'Ожидание ответа' },
+  completed: { color: '#67a030', label: 'Решена' },
+  inst_fin:  { color: '#67a030', label: 'Завершена' },
+  closed:    { color: '#787880', label: 'Закрыта' },
 }
-
-const DEFAULT = { bg: '#374151', text: '#9ca3af', label: '' }
 
 export function StatusBadge({ status }: { status: string | null }) {
   const s = status ?? ''
-  const { bg, text, label } = STYLES[s] ?? DEFAULT
+  const style = STYLES[s]
+  if (!style) {
+    return (
+      <span className="inline-block text-xs px-2.5 py-0.5 rounded font-medium bg-gray-700 text-gray-300 whitespace-nowrap">
+        {s || '—'}
+      </span>
+    )
+  }
   return (
     <span
-      style={{ backgroundColor: bg, color: text }}
+      style={{ backgroundColor: style.color, color: '#fff' }}
       className="inline-block text-xs px-2.5 py-0.5 rounded font-medium whitespace-nowrap"
     >
-      {label || s || '—'}
+      {style.label}
     </span>
   )
 }

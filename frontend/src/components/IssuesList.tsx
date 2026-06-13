@@ -30,8 +30,11 @@ function IssueRow({ issue, selected, onClick }: { issue: Issue; selected: boolea
       <td className="px-3 py-2.5 max-w-xs">
         <span className="line-clamp-1">{issue.subject ?? '—'}</span>
       </td>
-      <td className="px-3 py-2.5 text-xs text-muted max-w-[220px]">
+      <td className="px-3 py-2.5 text-xs text-muted max-w-[200px]">
         <span className="line-clamp-1">{issue.company_name ?? '—'}</span>
+      </td>
+      <td className="px-3 py-2.5 text-xs text-muted max-w-[140px]">
+        <span className="line-clamp-1">{issue.assignee_name ?? '—'}</span>
       </td>
       <td className="px-3 py-2.5 text-xs text-muted whitespace-nowrap w-44">
         {formatDate(issue.updated_at)}
@@ -79,6 +82,7 @@ export function IssuesList() {
               <th className="px-3 py-2 font-medium">Дата регистрации</th>
               <th className="px-3 py-2 font-medium">Тема</th>
               <th className="px-3 py-2 font-medium">Клиент</th>
+              <th className="px-3 py-2 font-medium">Ответственный</th>
               <th className="px-3 py-2 font-medium">Дата изменения</th>
               <th className="px-3 py-2 font-medium">Статус</th>
             </tr>

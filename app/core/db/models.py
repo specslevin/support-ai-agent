@@ -92,6 +92,7 @@ class IssueCache(Base):
         Integer, ForeignKey("objects.id", ondelete="SET NULL"), nullable=True
     )
     contact_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    assignee_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     synced_at: Mapped[datetime] = mapped_column(

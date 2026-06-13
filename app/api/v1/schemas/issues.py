@@ -15,6 +15,7 @@ class IssueResponse(BaseModel):
     priority: str | None
     company_name: str | None
     contact_name: str | None
+    assignee_name: str | None
     created_at: str | None
     updated_at: str | None
     synced_at: str
@@ -31,6 +32,7 @@ class IssueResponse(BaseModel):
             priority=r.priority,
             company_name=r.company_name,
             contact_name=r.contact_name,
+            assignee_name=r.assignee_name,
             created_at=r.created_at.isoformat() if r.created_at else None,
             updated_at=r.updated_at.isoformat() if r.updated_at else None,
             synced_at=r.synced_at.isoformat(),
