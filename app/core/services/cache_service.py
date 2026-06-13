@@ -14,7 +14,8 @@ from app.core.okdesk.service import OkdeskService
 
 log = structlog.get_logger(__name__)
 
-_OKDESK_PAGE_SIZE = 100
+_OKDESK_PAGE_SIZE = 50
+_OKDESK_MAX_PAGES = 20  # sync most recent 1000 issues
 
 
 def _parse_dt(value: str | None) -> datetime | None:
@@ -45,7 +46,7 @@ class CacheService:
         """
         collected: list[Any] = []
         page_num = 1
-        while True:
+        while page_num <= _OKDESK_MAX_PAGES:
             try:
                 # Okdesk uses page[number] / page[size] style pagination
                 batch = await self.okdesk.list_issues(
