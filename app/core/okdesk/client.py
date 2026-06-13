@@ -45,7 +45,7 @@ class OkdeskClient:
         return await self._request(
             "POST",
             f"issues/{issue_id}/comments",
-            json={"is_internal": True, "text": comment},
+            json={"is_internal": True, "content": comment},
         )
 
     async def list_equipment_by_company(self, company_id: int) -> Any:
