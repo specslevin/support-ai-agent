@@ -1,23 +1,24 @@
-const colors: Record<string, string> = {
-  opened: 'bg-red-900/50 text-red-300 border border-red-700',
-  in_progress: 'bg-yellow-900/50 text-yellow-300 border border-yellow-700',
-  resolved: 'bg-green-900/50 text-green-300 border border-green-700',
-  closed: 'bg-gray-800 text-gray-400 border border-gray-600',
+// Colors match Okdesk UI palette
+const STYLES: Record<string, { bg: string; text: string; label: string }> = {
+  opened:    { bg: '#0ea5e9', text: '#fff',     label: 'Открыта' },
+  wait:      { bg: '#a855f7', text: '#fff',     label: 'Ожидание' },
+  delayed:   { bg: '#f97316', text: '#fff',     label: 'Отложена' },
+  completed: { bg: '#22c55e', text: '#fff',     label: 'Решена' },
+  inst_fin:  { bg: '#22c55e', text: '#fff',     label: 'Завершена' },
+  closed:    { bg: '#4b5563', text: '#d1d5db',  label: 'Закрыта' },
 }
 
-const labels: Record<string, string> = {
-  opened: 'Открыта',
-  in_progress: 'В работе',
-  resolved: 'Решена',
-  closed: 'Закрыта',
-}
+const DEFAULT = { bg: '#374151', text: '#9ca3af', label: '' }
 
 export function StatusBadge({ status }: { status: string | null }) {
-  const s = status ?? 'unknown'
-  const cls = colors[s] ?? 'bg-gray-800 text-gray-400 border border-gray-600'
+  const s = status ?? ''
+  const { bg, text, label } = STYLES[s] ?? DEFAULT
   return (
-    <span className={`inline-block text-xs px-2 py-0.5 rounded-full font-medium ${cls}`}>
-      {labels[s] ?? s}
+    <span
+      style={{ backgroundColor: bg, color: text }}
+      className="inline-block text-xs px-2.5 py-0.5 rounded font-medium whitespace-nowrap"
+    >
+      {label || s || '—'}
     </span>
   )
 }

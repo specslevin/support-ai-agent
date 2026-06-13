@@ -7,6 +7,7 @@ export interface Issue {
   company_name: string | null
   contact_name: string | null
   created_at: string | null
+  updated_at: string | null
   synced_at: string
 }
 

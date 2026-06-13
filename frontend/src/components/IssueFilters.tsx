@@ -3,8 +3,10 @@ import { useIssuesStore } from '../store/issuesStore'
 const STATUSES = [
   { value: '', label: 'Все статусы' },
   { value: 'opened', label: 'Открыта' },
-  { value: 'in_progress', label: 'В работе' },
-  { value: 'resolved', label: 'Решена' },
+  { value: 'wait', label: 'Ожидание' },
+  { value: 'delayed', label: 'Отложена' },
+  { value: 'completed', label: 'Решена' },
+  { value: 'inst_fin', label: 'Завершена' },
   { value: 'closed', label: 'Закрыта' },
 ]
 
