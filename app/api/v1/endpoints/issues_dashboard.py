@@ -72,8 +72,10 @@ def _format_param(p: object) -> str | None:
     if not param.value:
         return None
     if param.field_type == "ftcheckbox":
-        # "1" = checked, "0" = unchecked — only show if explicitly checked
         return "Да" if param.value == "1" else None
+    # Skip single-character or meaningless values (e.g. "1", "0" in string fields)
+    if len(param.value.strip()) < 3:
+        return None
     return param.value
 
 
