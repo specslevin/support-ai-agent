@@ -96,15 +96,16 @@ class CacheService:
 
         return count
 
-    _ACTIVE_STATUSES = ("opened", "wait", "delayed")
-
     async def _sync_assignees_for_active(self) -> None:
-        """Fetch assignee from Okdesk for every active issue missing one."""
+        """Fetch assignee from Okdesk for all issues missing assignee_name.
+
+        Limited to 500 most recently updated to keep refresh time reasonable.
+        """
         result = await self.db.execute(
-            select(IssueCache).where(
-                IssueCache.status.in_(self._ACTIVE_STATUSES),
-                IssueCache.assignee_name.is_(None),
-            )
+            select(IssueCache)
+            .where(IssueCache.assignee_name.is_(None))
+            .order_by(IssueCache.updated_at.desc())
+            .limit(500)
         )
         rows = list(result.scalars().all())
         if not rows:
