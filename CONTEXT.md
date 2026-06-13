@@ -1,7 +1,7 @@
 # Support AI Agent — Контекст проекта
 
 > Этот файл поддерживается Claude Code и обновляется в начале каждой сессии.
-> **Последнее обновление:** 2026-06-11 (сессия 2)
+> **Последнее обновление:** 2026-06-13 (сессия 5)
 
 ---
 
@@ -36,48 +36,37 @@ SSH-команда: `ssh -i /c/Users/sPec/.ssh/id_ed25519 root@155.212.186.165`
 support-ai-agent/
 ├── app/
 │   ├── main.py                         # FastAPI + lifespan (DI, polling запуск)
-│   ├── api/v1/                         # REST endpoints (health, webhooks, test)
+│   ├── api/v1/
+│   │   ├── router.py                   # агрегатор роутов
+│   │   ├── endpoints/
+│   │   │   ├── webhooks.py             # POST /webhooks/okdesk
+│   │   │   ├── test.py                 # POST /test/pipeline
+│   │   │   └── issues_dashboard.py    # ✅ NEW: 6 endpoints для дашборда
+│   │   └── schemas/
+│   │       └── issues.py              # ✅ NEW: Pydantic schemas
 │   ├── core/
 │   │   ├── ai/
-│   │   │   ├── agent.py               # AIAgent — главный агент (DeepSeek + tool calling)
-│   │   │   ├── llm.py                 # LLMClient (AsyncOpenAI → DeepSeek API)
-│   │   │   └── tools.py               # 7 инструментов + build_tool_functions()
-│   │   ├── agent/                      # SupportAgent — старый оркестратор (legacy)
-│   │   │   ├── orchestrator.py        # regex-роутинг + mock LLM
-│   │   │   └── prompts.py
+│   │   │   ├── agent.py               # AIAgent (DeepSeek + tool calling)
+│   │   │   ├── llm.py                 # LLMClient → DeepSeek API
+│   │   │   └── tools.py               # 12 инструментов
 │   │   ├── db/
 │   │   │   ├── database.py            # SQLite async (support_agent.db)
-│   │   │   ├── models.py              # Company, ChatHistory
-│   │   │   └── sync.py                # sync_companies() — синхронизация с Okdesk
+│   │   │   ├── models.py              # Company, Object, Issue, ChatHistory, IssueCache, AnalysisCache ✅
+│   │   │   └── sync.py                # sync_companies()
+│   │   ├── services/
+│   │   │   └── cache_service.py       # ✅ NEW: CacheService (refresh + query + save)
 │   │   ├── gpspos/                     # GPSPOS Nav API (nav.gpspos.ru)
-│   │   │   ├── auth.py                # token refresh, кэш
-│   │   │   ├── client.py              # httpx async
-│   │   │   ├── diagnostics.py         # find_object_by_identifier, get_object_status
-│   │   │   └── models.py
 │   │   ├── gpspos_geo/                 # GPSPOS Geo API (geo.gpspos.ru)
-│   │   │   ├── client.py
-│   │   │   ├── service.py             # list_objects, get_status, list_geozones
-│   │   │   └── config.py
-│   │   ├── okdesk/                     # Okdesk CRM
-│   │   │   ├── client.py
-│   │   │   ├── service.py             # list_companies, list_issues, ...
-│   │   │   └── models.py
-│   │   ├── wialon/                     # Wialon API (заглушка, не подключена к агенту)
-│   │   │   ├── client.py
-│   │   │   ├── service.py
-│   │   │   └── models.py
-│   │   └── telegram/
-│   │       ├── bot.py                 # create_bot, run_polling_with_retries
-│   │       ├── handlers.py            # /start, /статус, text → AIAgent
-│   │       └── settings.py
+│   │   ├── okdesk/                     # Okdesk CRM REST API
+│   │   ├── wialon/                     # Wialon API (заглушка)
+│   │   └── telegram/                   # aiogram 3.x бот
 │   └── services/
-│       └── intelligence_service.py    # LLM-triage для заявок (не подключена)
+│       └── intelligence_service.py    # LLM-triage для webhook
+├── frontend/                          # 🚧 Phase 2 — React (в разработке)
 ├── scripts/
-│   ├── deploy.sh
-│   └── run_prod.sh
 ├── requirements.txt
-├── .env                               # секреты (не в git)
-└── .env.example
+├── .env
+└── CONTEXT.md / WEB_DASHBOARD_ARCHITECTURE.md
 ```
 
 ---
@@ -95,8 +84,9 @@ support-ai-agent/
 | **DB sync** (`core/db/sync.py`) | ✅ Работает | 164 компании синхронизируются |
 | **Telegram polling** | ✅ Работает | aiogram 3.x, resilient polling |
 | **Wialon** (`core/wialon/`) | ⚠️ Заглушка | клиент есть, в агент НЕ подключён |
-| **SupportAgent** (`core/agent/`) | 🟡 Legacy | старый оркестратор, ещё используется |
-| **IntelligenceService** | ⚠️ Не подключена | LLM-triage, отдельный модуль |
+| **IntelligenceService** | ✅ Подключена | LLM-triage через DeepSeek, webhook `/api/v1/webhooks/okdesk` |
+| **IssueCache / AnalysisCache** | ✅ Phase 1 | DB таблицы + CacheService + 6 API endpoints |
+| **Dashboard API** (`api/v1/issues`) | ✅ Задеплоен | 1000 заявок в кэше, pagination/filter/search |
 
 ---
 
@@ -169,27 +159,30 @@ ssh ... "systemctl status support-ai-agent && curl -s http://localhost:8001/heal
 
 | Дата | Коммит | Что сделано |
 |---|---|---|
+| 2026-06-13 | `7553f98` | fix: page[size]=50, лимит 1000 заявок на refresh |
+| 2026-06-13 | `49d525a` | fix: Okdesk pagination — page[number]/page[size] |
+| 2026-06-13 | `fe00ee4` | feat: Phase 1 backend — IssueCache, CacheService, 6 dashboard endpoints |
+| 2026-06-11 | `2f88347` | feat: IntelligenceService → Okdesk webhook через DeepSeek |
+| 2026-06-11 | `b867cac` | feat: /история, улучшен промпт, удалён legacy SupportAgent |
 | 2026-06-11 | `af7df44` | feat: 5 новых инструментов (детали заявки, комментарии, оборудование, события Geo) |
-| 2026-06-11 | `df8be05` | fix: SIGTERM — выход из polling loop при остановке сервиса |
-| 2026-06-09 | `0e3677f` | feat: интеграция GPSPOS Geo в lifespan, DI, инструменты агента |
-| 2026-06-08 | `01920d5` | feat: рефакторинг, удаление дублей, заглушки Wialon/Geo |
 
 ---
 
 ## Нерешённые проблемы
 
-- **Диск 56%** — почищен 2026-06-11 (удалён .vscode-server 2.5GB, npm кэш, journal)
+- **Diск сервера** — мониторить (был 89% в июне)
 - **Wialon не подключён** к агенту — есть клиент/сервис, но нет инструментов
-- **SupportAgent (legacy)** — дублирует логику AIAgent, надо решить судьбу
-- **IntelligenceService** — написан, но не интегрирован в пайплайн
-- **История в БД** — нет инструмента для просмотра из бота
+- **Okdesk webhook не настроен** — нужно добавить URL в настройках Okdesk
+- **Cache refresh только ручной** — фоновая задача (каждые 5 мин) запланирована на Phase 1.5
+- **IssueCache.company_name** — у ~половины заявок null (Okdesk не всегда возвращает company)
 
 ---
 
-## Дальнейшие шаги (к обсуждению)
+## Дальнейшие шаги
 
-1. Подключить Wialon к инструментам агента
-2. Разобраться с legacy SupportAgent — убрать или оставить как fallback
-3. Добавить в агент инструмент просмотра истории чата
-4. Настроить мониторинг (uptime, лог-ошибки)
-5. Почистить диск сервера
+### Текущая фаза: Phase 2 — React Frontend
+1. ✅ Phase 1 Backend задеплоен (1000 заявок в кэше)
+2. 🚧 **Phase 2: React + Vite frontend** — в работе
+3. ⬜ Phase 1.5: фоновый refresh каждые 5 мин (BackgroundTasks или APScheduler)
+4. ⬜ Phase 3: AI-анализ пробегов (DeepSeek + Geo mileage)
+5. ⬜ Phase 4: Polish + deploy frontend

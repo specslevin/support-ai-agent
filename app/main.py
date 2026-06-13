@@ -5,12 +5,15 @@ from __future__ import annotations
 import asyncio
 import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from dotenv import load_dotenv
 import structlog
 from aiogram import Dispatcher
 from aiogram.types import Update
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 from .api.v1.router import api_v1_router
 from .core.ai.agent import AIAgent
@@ -195,3 +198,12 @@ async def telegram_webhook(request: Request) -> dict[str, bool]:
 
 
 app.include_router(api_v1_router)
+
+# Serve React frontend from app/static if it exists
+_static_dir = Path(__file__).parent / "static"
+if _static_dir.is_dir():
+    app.mount("/assets", StaticFiles(directory=str(_static_dir / "assets")), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_fallback(full_path: str) -> FileResponse:
+        return FileResponse(str(_static_dir / "index.html"))
