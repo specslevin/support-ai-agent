@@ -370,7 +370,6 @@ function StatusActionModal({
   issueId,
   externalId,
   targetStatus,
-  typeCode,
   onClose,
   onDone,
 }: {
