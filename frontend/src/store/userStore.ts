@@ -8,10 +8,10 @@ export interface Employee {
 }
 
 export const EMPLOYEES: Employee[] = [
-  { id: 1, name: 'Свириденко', group: 'Первая линия' },
-  { id: 2, name: 'Рогозин', group: 'Первая линия' },
-  { id: 3, name: 'Лебедь', group: 'Вторая линия' },
-  { id: 4, name: 'Игнашкин', group: 'Вторая линия' },
+  { id: 21, name: 'Свириденко', group: 'Первая линия' },
+  { id: 22, name: 'Рогозин', group: 'Первая линия' },
+  { id: 2, name: 'Лебедь', group: 'Вторая линия' },
+  { id: 3, name: 'Игнашкин', group: 'Вторая линия' },
 ]
 
 interface UserStore {

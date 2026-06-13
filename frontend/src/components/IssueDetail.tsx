@@ -17,7 +17,7 @@ function AssigneeSection({ issueId, assigneeName }: { issueId: number; assigneeN
 
   const assignMutation = useMutation({
     mutationFn: (employeeId: number) => api.assignIssue(issueId, employeeId),
-    onSuccess: (data) => {
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['issue', issueId] })
       queryClient.invalidateQueries({ queryKey: ['issues'] })
       setPickerOpen(false)
