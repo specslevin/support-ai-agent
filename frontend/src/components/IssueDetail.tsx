@@ -294,7 +294,7 @@ const STATUS_OPTIONS = [
   { code: 'delayed',   label: 'Ожидание ответа', color: 'text-yellow-400 border-yellow-500/50 hover:bg-yellow-500/10' },
 ]
 
-const OKDESK_WEB_BASE = 'https://gpspos.okdesk.ru'
+const OKDESK_WEB_BASE = 'https://support.gpspos.ru'
 
 function ResolveModal({
   issueId,
