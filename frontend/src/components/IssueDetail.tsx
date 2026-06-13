@@ -340,109 +340,80 @@ function TemplatePicker({ onSelect }: { onSelect: (content: string) => void }) {
   )
 }
 
-const STATUS_OPTIONS = [
-  { code: 'opened',    label: 'Открыта',          color: 'text-blue-400 border-blue-500/50 hover:bg-blue-500/10' },
-  { code: 'completed', label: 'Решена',            color: 'text-green-400 border-green-500/50 hover:bg-green-500/10' },
-  { code: 'delayed',   label: 'Ожидание ответа',   color: 'text-yellow-400 border-yellow-500/50 hover:bg-yellow-500/10' },
+// All Okdesk statuses with their actual colors and rules
+const ALL_STATUSES = [
+  { code: 'opened',   label: 'Открыть',            bg: '#3edad8', commentRequired: false, needsDelay: false },
+  { code: 'wait',     label: 'В работу',            bg: '#2b6684', commentRequired: false, needsDelay: false },
+  { code: 'delayed',  label: 'Ожидание ответа',     bg: '#bb7db2', commentRequired: true,  needsDelay: true  },
+  { code: 'no_time',  label: 'Отложить',            bg: '#f68741', commentRequired: true,  needsDelay: true  },
+  { code: 'completed',label: 'Решить',              bg: '#67a030', commentRequired: false, needsDelay: false },
+  { code: 'closed',   label: 'Закрыть',             bg: '#787880', commentRequired: false, needsDelay: false },
 ]
 
-const OKDESK_WEB_BASE = 'https://support.gpspos.ru'
+const DEPARTURE_TYPES = new Set(['departure', 'departure_fuel'])
+const FINAL_STATUSES  = new Set(['completed', 'closed', 'inst_fin'])
 
-function ResolveModal({
+function getAvailableStatuses(currentStatus: string | null, typeCode: string | null) {
+  const typeIsDefault = !typeCode || typeCode === 'inner'
+  const isDeparture   = typeCode ? DEPARTURE_TYPES.has(typeCode) : false
+
+  return ALL_STATUSES.filter(s => {
+    if (s.code === currentStatus) return false
+    if (s.code === 'wait' && !isDeparture) return false
+    if (FINAL_STATUSES.has(s.code) && typeIsDefault) return false
+    return true
+  })
+}
+
+// Modal shown after picking a status — comment + optional delay_to
+function StatusActionModal({
   issueId,
   externalId,
+  targetStatus,
   typeCode,
-  currentStatus,
   onClose,
   onDone,
 }: {
   issueId: number
   externalId: number
+  targetStatus: typeof ALL_STATUSES[number]
   typeCode: string | null
-  currentStatus: string | null
   onClose: () => void
   onDone: (notice?: string) => void
 }) {
   const queryClient = useQueryClient()
-  const defaultStatus = currentStatus === 'completed' ? 'opened' : 'completed'
-  const [selectedStatus, setSelectedStatus] = useState(defaultStatus)
   const [comment, setComment] = useState('')
   const [delayTo, setDelayTo] = useState(() => {
     const d = new Date(); d.setDate(d.getDate() + 3)
     return d.toISOString().slice(0, 16)
   })
 
-  const typeIsDefault = !typeCode || typeCode === 'inner'
-  const isDelayed = selectedStatus === 'delayed'
-
-  const resolve = useMutation({
-    mutationFn: () => api.resolveIssue(issueId, selectedStatus, comment, isDelayed ? delayTo : undefined),
+  const mutation = useMutation({
+    mutationFn: () => api.resolveIssue(issueId, targetStatus.code, comment, targetStatus.needsDelay ? delayTo : undefined),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['issue', issueId] })
       queryClient.invalidateQueries({ queryKey: ['issues'] })
       queryClient.invalidateQueries({ queryKey: ['comments', issueId] })
-      if (!data.status_changed) {
-        onDone(`Комментарий отправлен. Статус не изменён — смените вручную в Okdesk.`)
-      } else {
-        onDone()
-      }
+      onDone(!data.status_changed ? 'Статус не изменён — смените вручную в Okdesk.' : undefined)
     },
   })
+
+  const canSubmit = (!targetStatus.commentRequired || comment.trim()) && (!targetStatus.needsDelay || delayTo)
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="fixed inset-0 bg-black/70" onClick={onClose} />
-      <div className="relative bg-surface border border-border rounded-xl w-full max-w-lg shadow-2xl z-10">
-        {/* Header */}
+      <div className="relative bg-surface border border-border rounded-xl w-full max-w-md shadow-2xl z-10">
         <div className="flex items-center justify-between px-5 py-4 border-b border-border">
-          <h2 className="text-sm font-semibold">Сменить статус заявки #{externalId}</h2>
+          <div className="flex items-center gap-2">
+            <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: targetStatus.bg }} />
+            <h2 className="text-sm font-semibold">{targetStatus.label} — #{externalId}</h2>
+          </div>
           <button onClick={onClose} className="text-muted hover:text-white text-lg leading-none">✕</button>
         </div>
 
         <div className="px-5 py-4 space-y-4">
-          {/* Type warning */}
-          {typeIsDefault && (
-            <div className="flex items-start gap-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg px-3 py-2.5 text-xs">
-              <span className="text-yellow-400 text-base shrink-0">⚠</span>
-              <div className="space-y-1">
-                <p className="text-yellow-300 font-medium">Тип заявки не указан</p>
-                <p className="text-yellow-300/70">
-                  Тип «Внутренняя» — значение по умолчанию. Укажите корректный тип в Okdesk перед изменением статуса.
-                </p>
-                <a
-                  href={`${OKDESK_WEB_BASE}/issues/${externalId}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 text-yellow-400 hover:text-yellow-300 underline underline-offset-2"
-                >
-                  Открыть в Okdesk ↗
-                </a>
-              </div>
-            </div>
-          )}
-
-          {/* Status selector */}
-          <div className="space-y-1.5">
-            <p className="text-[10px] font-semibold uppercase tracking-widest text-muted/60">Новый статус</p>
-            <div className="flex gap-2">
-              {STATUS_OPTIONS.map(opt => (
-                <button
-                  key={opt.code}
-                  onClick={() => setSelectedStatus(opt.code)}
-                  className={`flex-1 py-2 rounded-lg border text-xs font-medium transition-colors ${
-                    selectedStatus === opt.code
-                      ? opt.color + ' bg-white/5'
-                      : 'border-border text-muted hover:border-accent/50'
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Delay date — only for delayed status */}
-          {isDelayed && (
+          {targetStatus.needsDelay && (
             <div className="space-y-1.5">
               <p className="text-[10px] font-semibold uppercase tracking-widest text-muted/60">
                 Отложить до <span className="text-red-400">*</span>
@@ -456,17 +427,17 @@ function ResolveModal({
             </div>
           )}
 
-          {/* Comment with template picker */}
           <div className="space-y-1.5">
             <p className="text-[10px] font-semibold uppercase tracking-widest text-muted/60">
-              Комментарий <span className="text-red-400">*</span>
+              Комментарий{targetStatus.commentRequired && <span className="text-red-400 ml-1">*</span>}
             </p>
             <div className="flex items-start gap-2">
               <textarea
-                placeholder="Введите текст или выберите шаблон..."
+                autoFocus
+                placeholder={targetStatus.commentRequired ? 'Обязательный комментарий...' : 'Необязательный комментарий...'}
                 value={comment}
                 onChange={e => setComment(e.target.value)}
-                rows={5}
+                rows={4}
                 className="flex-1 bg-base border border-border rounded px-3 py-2 text-xs resize-none focus:outline-none focus:border-accent leading-relaxed"
               />
               <TemplatePicker onSelect={text => setComment(text)} />
@@ -474,25 +445,19 @@ function ResolveModal({
           </div>
         </div>
 
-        {/* Footer */}
         <div className="flex items-center justify-between gap-3 px-5 py-4 border-t border-border">
-          <button onClick={onClose} className="text-xs text-muted hover:text-white transition-colors">
-            Отмена
-          </button>
+          <button onClick={onClose} className="text-xs text-muted hover:text-white transition-colors">Отмена</button>
           <button
-            disabled={!comment.trim() || typeIsDefault || (isDelayed && !delayTo) || resolve.isPending}
-            onClick={() => resolve.mutate()}
-            className="px-4 py-2 rounded-lg bg-green-600/90 hover:bg-green-600 text-white text-xs font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
+            disabled={!canSubmit || mutation.isPending}
+            onClick={() => mutation.mutate()}
+            style={{ background: canSubmit && !mutation.isPending ? targetStatus.bg : undefined }}
+            className="px-4 py-2 rounded-lg text-white text-xs font-semibold transition-opacity disabled:opacity-40 disabled:cursor-not-allowed disabled:bg-surface disabled:border disabled:border-border"
           >
-            {resolve.isPending ? (
-              <span className="animate-pulse">Отправка...</span>
-            ) : (
-              <>✓ Отправить и {STATUS_OPTIONS.find(s => s.code === selectedStatus)?.label.toLowerCase()}</>
-            )}
+            {mutation.isPending ? <span className="animate-pulse">Отправка...</span> : `✓ ${targetStatus.label}`}
           </button>
         </div>
 
-        {resolve.isError && (
+        {mutation.isError && (
           <p className="px-5 pb-4 text-xs text-red-400">Ошибка при отправке. Попробуйте снова.</p>
         )}
       </div>
@@ -506,7 +471,8 @@ export function IssueDetail() {
   const [comment, setComment] = useState('')
   const [mileage, setMileage] = useState('')
   const [notes, setNotes] = useState('')
-  const [resolveOpen, setResolveOpen] = useState(false)
+  const [statusDropdownOpen, setStatusDropdownOpen] = useState(false)
+  const [pendingStatus, setPendingStatus] = useState<typeof ALL_STATUSES[number] | null>(null)
   const [resolveNotice, setResolveNotice] = useState<string | null>(null)
 
   const { data, isPending } = useQuery({
@@ -560,13 +526,32 @@ export function IssueDetail() {
           <div className="flex items-center gap-2 mb-1">
             <span className="text-muted text-xs font-mono">#{issue.external_id}</span>
             {od ? (
-              <button
-                onClick={() => setResolveOpen(true)}
-                title="Изменить статус"
-                className="hover:opacity-80 transition-opacity"
-              >
-                <StatusBadge status={issue.status} />
-              </button>
+              <div className="relative">
+                <button
+                  onClick={() => setStatusDropdownOpen(v => !v)}
+                  title="Изменить статус"
+                  className="hover:opacity-75 transition-opacity"
+                >
+                  <StatusBadge status={issue.status} />
+                </button>
+                {statusDropdownOpen && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setStatusDropdownOpen(false)} />
+                    <div className="absolute left-0 top-full mt-1 z-50 rounded-lg overflow-hidden shadow-2xl border border-border min-w-[160px]">
+                      {getAvailableStatuses(issue.status, od.type_code).map(s => (
+                        <button
+                          key={s.code}
+                          onClick={() => { setStatusDropdownOpen(false); setPendingStatus(s) }}
+                          className="w-full text-left px-4 py-2.5 text-xs font-medium text-white hover:brightness-110 transition-all"
+                          style={{ background: s.bg }}
+                        >
+                          {s.label}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
             ) : (
               <StatusBadge status={issue.status} />
             )}
@@ -713,14 +698,14 @@ export function IssueDetail() {
       </div>
     </div>
 
-    {resolveOpen && od && (
-      <ResolveModal
+    {pendingStatus && od && (
+      <StatusActionModal
         issueId={issue.id}
         externalId={issue.external_id}
+        targetStatus={pendingStatus}
         typeCode={od.type_code}
-        currentStatus={issue.status}
-        onClose={() => setResolveOpen(false)}
-        onDone={(notice) => { setResolveOpen(false); if (notice) setResolveNotice(notice) }}
+        onClose={() => setPendingStatus(null)}
+        onDone={(notice) => { setPendingStatus(null); if (notice) setResolveNotice(notice) }}
       />
     )}
     </>
