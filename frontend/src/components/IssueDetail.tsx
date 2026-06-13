@@ -377,7 +377,6 @@ function StatusActionModal({
   issueId: number
   externalId: number
   targetStatus: typeof ALL_STATUSES[number]
-  typeCode: string | null
   onClose: () => void
   onDone: (notice?: string) => void
 }) {
@@ -703,7 +702,6 @@ export function IssueDetail() {
         issueId={issue.id}
         externalId={issue.external_id}
         targetStatus={pendingStatus}
-        typeCode={od.type_code}
         onClose={() => setPendingStatus(null)}
         onDone={(notice) => { setPendingStatus(null); if (notice) setResolveNotice(notice) }}
       />
