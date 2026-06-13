@@ -346,7 +346,7 @@ function ResolveModal({
                   Тип «Внутренняя» — значение по умолчанию. Укажите корректный тип в Okdesk перед изменением статуса.
                 </p>
                 <a
-                  href={`${OKDESK_WEB_BASE}/issues/${externalId}/edit`}
+                  href={`${OKDESK_WEB_BASE}/issues/${externalId}`}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="inline-flex items-center gap-1 text-yellow-400 hover:text-yellow-300 underline underline-offset-2"
