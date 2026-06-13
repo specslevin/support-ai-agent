@@ -14,7 +14,7 @@ from app.core.okdesk.service import OkdeskService
 
 log = structlog.get_logger(__name__)
 
-_OKDESK_PAGE_SIZE = 20
+_OKDESK_PAGE_SIZE = 100
 
 
 def _parse_dt(value: str | None) -> datetime | None:
@@ -44,19 +44,21 @@ class CacheService:
         Returns the number of issues upserted.
         """
         collected: list[Any] = []
-        page = 1
+        page_num = 1
         while True:
             try:
+                # Okdesk uses page[number] / page[size] style pagination
                 batch = await self.okdesk.list_issues(
-                    limit=_OKDESK_PAGE_SIZE, page=page
+                    **{"page[number]": page_num, "page[size]": _OKDESK_PAGE_SIZE}
                 )
             except Exception:
-                log.warning("okdesk_list_issues_failed", page=page)
+                log.warning("okdesk_list_issues_failed", page=page_num)
                 break
             collected.extend(batch)
+            log.debug("okdesk_page_fetched", page=page_num, count=len(batch))
             if len(batch) < _OKDESK_PAGE_SIZE:
                 break
-            page += 1
+            page_num += 1
 
         # Deduplicate by external ID (last write wins)
         by_id: dict[int, Any] = {}
