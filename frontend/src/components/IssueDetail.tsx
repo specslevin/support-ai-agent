@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { api } from '../api/client'
 import { useIssuesStore } from '../store/issuesStore'
 import { useUserStore, EMPLOYEES } from '../store/userStore'
@@ -254,6 +254,7 @@ const CATEGORY_COLORS: Record<string, string> = {
 function TemplatePicker({ onSelect }: { onSelect: (content: string) => void }) {
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
+  const setLastTemplate = useIssuesStore(s => s.setLastTemplate)
 
   const { data: templates = [] } = useQuery({
     queryKey: ['templates'],
@@ -261,6 +262,14 @@ function TemplatePicker({ onSelect }: { onSelect: (content: string) => void }) {
     staleTime: 5 * 60_000,
   })
 
+  const handleSelect = (content: string) => {
+    setLastTemplate(content)
+    onSelect(content)
+    setOpen(false)
+    setSearch('')
+  }
+
+  // Categories ordered by their most-used template; items within by usage desc.
   const grouped = useMemo(() => {
     const filtered = search
       ? templates.filter(t =>
@@ -269,11 +278,19 @@ function TemplatePicker({ onSelect }: { onSelect: (content: string) => void }) {
         )
       : templates
 
-    return filtered.reduce<Record<string, Template[]>>((acc, t) => {
+    const byCat = filtered.reduce<Record<string, Template[]>>((acc, t) => {
       const key = t.category_name ?? 'Другое'
       ;(acc[key] ??= []).push(t)
       return acc
     }, {})
+    for (const items of Object.values(byCat)) {
+      items.sort((a, b) => b.usage_count - a.usage_count)
+    }
+    return Object.fromEntries(
+      Object.entries(byCat).sort(
+        ([, a], [, b]) => (b[0]?.usage_count ?? 0) - (a[0]?.usage_count ?? 0),
+      ),
+    )
   }, [templates, search])
 
   if (!open) {
@@ -318,7 +335,7 @@ function TemplatePicker({ onSelect }: { onSelect: (content: string) => void }) {
                 {items.map(t => (
                   <button
                     key={t.id}
-                    onClick={() => { onSelect(t.content); setOpen(false); setSearch('') }}
+                    onClick={() => handleSelect(t.content)}
                     className="w-full text-left px-4 py-2 hover:bg-white/5 transition-colors"
                   >
                     <div className="flex items-center gap-2">
@@ -624,7 +641,7 @@ function AutoAnalysis({ issueId, onUseDraft }: { issueId: number; onUseDraft: (t
 }
 
 export function IssueDetail() {
-  const { selectedIssueId, selectIssue, trackOpen, setTrackOpen } = useIssuesStore()
+  const { selectedIssueId, selectIssue, trackOpen, setTrackOpen, lastTemplate } = useIssuesStore()
   const queryClient = useQueryClient()
   const [comment, setComment] = useState('')
   const [commentPublic, setCommentPublic] = useState(true)
@@ -633,6 +650,13 @@ export function IssueDetail() {
   const [statusDropdownOpen, setStatusDropdownOpen] = useState(false)
   const [pendingStatus, setPendingStatus] = useState<typeof ALL_STATUSES[number] | null>(null)
   const [resolveNotice, setResolveNotice] = useState<string | null>(null)
+
+  // On opening a new issue, prefill the comment with the last-used template
+  // (until the operator picks another). Empty if none chosen yet.
+  useEffect(() => {
+    setComment(lastTemplate)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedIssueId])
 
   const { data, isPending } = useQuery({
     queryKey: ['issue', selectedIssueId],

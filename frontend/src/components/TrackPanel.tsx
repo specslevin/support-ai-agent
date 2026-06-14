@@ -62,7 +62,9 @@ function TrackMap({ data, apiRef }: { data: TrackData; apiRef: React.MutableRefO
       L.circleMarker(coords[0], { radius: 6, color: '#22c55e', fillColor: '#22c55e', fillOpacity: 1 }).addTo(map).bindTooltip('Старт')
       L.circleMarker(coords[coords.length - 1], { radius: 6, color: '#3b82f6', fillColor: '#3b82f6', fillOpacity: 1 }).addTo(map).bindTooltip('Финиш')
       map.fitBounds(L.latLngBounds(coords).pad(0.1))
-      cursor = L.circleMarker(coords[0], { radius: 7, color: '#ffffff', weight: 2, fillColor: '#a855f7', fillOpacity: 1 })
+      cursor = L.circleMarker(coords[0], {
+        radius: 8, color: '#ffffff', weight: 3, fillColor: '#a855f7', fillOpacity: 1, pane: 'markerPane',
+      }).addTo(map)
     } else {
       map.setView([55.75, 37.62], 5)
     }
@@ -72,7 +74,7 @@ function TrackMap({ data, apiRef }: { data: TrackData; apiRef: React.MutableRefO
       show: (lat, lng) => {
         if (!cursor) return
         cursor.setLatLng([lat, lng])
-        if (!map.hasLayer(cursor)) cursor.addTo(map)
+        cursor.bringToFront()
       },
     }
     return () => { map.remove(); apiRef.current = null }
