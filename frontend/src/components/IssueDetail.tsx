@@ -655,6 +655,22 @@ export function IssueDetail() {
     },
   })
 
+  const quickResolve = useMutation({
+    mutationFn: (statusCode: 'completed' | 'delayed') => {
+      const delayTo = statusCode === 'delayed'
+        ? (() => { const d = new Date(); d.setDate(d.getDate() + 3); return d.toISOString().slice(0, 16) })()
+        : undefined
+      return api.resolveIssue(selectedIssueId!, statusCode, comment, delayTo, commentPublic)
+    },
+    onSuccess: (data) => {
+      setComment('')
+      queryClient.invalidateQueries({ queryKey: ['issue', selectedIssueId] })
+      queryClient.invalidateQueries({ queryKey: ['issues'] })
+      queryClient.invalidateQueries({ queryKey: ['comments', selectedIssueId] })
+      if (!data.status_changed) setResolveNotice('Статус не изменён — смените вручную в Okdesk.')
+    },
+  })
+
   const submitAnalysis = useMutation({
     mutationFn: () => api.submitAnalysis(selectedIssueId!, parseFloat(mileage), notes || undefined),
     onSuccess: () => {
@@ -873,6 +889,26 @@ export function IssueDetail() {
                 </span>
               </label>
               {comment && <p className="text-[10px] text-muted">Ctrl+Enter — отправить</p>}
+            </div>
+
+            {/* Быстрое решение: комментарий + смена статуса одним кликом */}
+            <div className="flex items-center gap-2">
+              <button
+                disabled={!comment || quickResolve.isPending}
+                onClick={() => quickResolve.mutate('delayed')}
+                title="Отправить ответ и перевести в «Ожидание ответа» (+3 дня)"
+                className="flex-1 bg-surface border border-border hover:border-accent text-white text-xs font-semibold py-1.5 rounded transition-colors disabled:opacity-40"
+              >
+                {quickResolve.isPending && quickResolve.variables === 'delayed' ? '...' : '⏸ Ожидание'}
+              </button>
+              <button
+                disabled={!comment || quickResolve.isPending}
+                onClick={() => quickResolve.mutate('completed')}
+                title="Отправить ответ клиенту и перевести в «Решена»"
+                className="flex-1 bg-green-600/90 hover:bg-green-500 text-white text-xs font-semibold py-1.5 rounded transition-colors disabled:opacity-40"
+              >
+                {quickResolve.isPending && quickResolve.variables === 'completed' ? 'Отправка...' : '✓ Решить'}
+              </button>
             </div>
           </div>
         </div>

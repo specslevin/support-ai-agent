@@ -5,26 +5,52 @@ import uPlot from 'uplot'
 import 'leaflet/dist/leaflet.css'
 import 'uplot/dist/uPlot.min.css'
 import { api } from '../api/client'
-import type { TrackData } from '../types'
+import type { TrackData, TrackPoint } from '../types'
 
-function TrackMap({ data }: { data: TrackData }) {
+type MapApi = { show: (lat: number, lng: number) => void }
+
+// Canonical uPlot wheel-zoom plugin (x-axis only), zooms around cursor.
+function wheelZoomPlugin(factor = 0.75): uPlot.Plugin {
+  let xMin = 0, xMax = 0, xRange = 0
+  return {
+    hooks: {
+      ready: (u) => {
+        xMin = u.scales.x.min!; xMax = u.scales.x.max!; xRange = xMax - xMin
+        const over = u.over
+        over.addEventListener('wheel', (e) => {
+          e.preventDefault()
+          const left = u.cursor.left ?? over.clientWidth / 2
+          const leftPct = left / over.clientWidth
+          const xVal = u.posToVal(left, 'x')
+          const oxRange = u.scales.x.max! - u.scales.x.min!
+          const nxRange = e.deltaY < 0 ? oxRange * factor : oxRange / factor
+          let nxMin = xVal - leftPct * nxRange
+          let nxMax = nxMin + nxRange
+          if (nxRange > xRange) { nxMin = xMin; nxMax = xMax }
+          else if (nxMin < xMin) { nxMin = xMin; nxMax = xMin + nxRange }
+          else if (nxMax > xMax) { nxMax = xMax; nxMin = xMax - nxRange }
+          u.setScale('x', { min: nxMin, max: nxMax })
+        })
+      },
+    },
+  }
+}
+
+function TrackMap({ data, apiRef }: { data: TrackData; apiRef: React.MutableRefObject<MapApi | null> }) {
   const ref = useRef<HTMLDivElement>(null)
-  const mapRef = useRef<L.Map | null>(null)
 
   useEffect(() => {
     if (!ref.current) return
     const map = L.map(ref.current, { zoomControl: true, attributionControl: false })
-    mapRef.current = map
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map)
 
     const coords = data.points
       .filter(p => p.lat != null && p.lng != null)
       .map(p => [p.lat as number, p.lng as number] as [number, number])
 
+    let cursor: L.CircleMarker | null = null
     if (coords.length) {
       L.polyline(coords, { color: '#ef4444', weight: 2.5, opacity: 0.85 }).addTo(map)
-
-      // Highlight teleport jumps (GPS spoofing) as dashed bright segments
       for (const i of data.teleports ?? []) {
         const a = data.points[i - 1], b = data.points[i]
         if (a?.lat != null && a?.lng != null && b?.lat != null && b?.lng != null) {
@@ -33,28 +59,34 @@ function TrackMap({ data }: { data: TrackData }) {
           }).addTo(map)
         }
       }
-
-      L.circleMarker(coords[0], { radius: 6, color: '#22c55e', fillColor: '#22c55e', fillOpacity: 1 })
-        .addTo(map).bindTooltip('Старт')
-      L.circleMarker(coords[coords.length - 1], { radius: 6, color: '#3b82f6', fillColor: '#3b82f6', fillOpacity: 1 })
-        .addTo(map).bindTooltip('Финиш')
+      L.circleMarker(coords[0], { radius: 6, color: '#22c55e', fillColor: '#22c55e', fillOpacity: 1 }).addTo(map).bindTooltip('Старт')
+      L.circleMarker(coords[coords.length - 1], { radius: 6, color: '#3b82f6', fillColor: '#3b82f6', fillOpacity: 1 }).addTo(map).bindTooltip('Финиш')
       map.fitBounds(L.latLngBounds(coords).pad(0.1))
+      cursor = L.circleMarker(coords[0], { radius: 7, color: '#ffffff', weight: 2, fillColor: '#a855f7', fillOpacity: 1 })
     } else {
       map.setView([55.75, 37.62], 5)
     }
     setTimeout(() => map.invalidateSize(), 100)
-    return () => { map.remove(); mapRef.current = null }
-  }, [data])
+
+    apiRef.current = {
+      show: (lat, lng) => {
+        if (!cursor) return
+        cursor.setLatLng([lat, lng])
+        if (!map.hasLayer(cursor)) cursor.addTo(map)
+      },
+    }
+    return () => { map.remove(); apiRef.current = null }
+  }, [data, apiRef])
 
   return <div ref={ref} className="w-full h-full rounded-lg overflow-hidden" />
 }
 
-function TelemetryCharts({ data }: { data: TrackData }) {
+function TelemetryCharts({ data, apiRef }: { data: TrackData; apiRef: React.MutableRefObject<MapApi | null> }) {
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (!ref.current) return
-    const pts = data.points
+    const pts: TrackPoint[] = data.points
     const xs = pts.map(p => (p.t ?? 0) / 1000)
     const speed = pts.map(p => p.speed)
     const pwr = pts.map(p => p.pwr)
@@ -78,17 +110,29 @@ function TelemetryCharts({ data }: { data: TrackData }) {
         { label: 'Напряжение, В', stroke: '#ef4444', width: 1.2, scale: 'pwr' },
         { label: 'Спутники', stroke: '#3b82f6', width: 1.2, scale: 'sat' },
       ],
+      plugins: [wheelZoomPlugin()],
+      hooks: {
+        setCursor: [
+          (u) => {
+            const idx = u.cursor.idx
+            if (idx == null) return
+            const p = pts[idx]
+            if (p?.lat != null && p?.lng != null) apiRef.current?.show(p.lat, p.lng)
+          },
+        ],
+      },
     }
     const u = new uPlot(opts, [xs, speed, pwr, sat], ref.current)
     const onResize = () => u.setSize({ width: ref.current!.clientWidth || width, height: 260 })
     window.addEventListener('resize', onResize)
     return () => { window.removeEventListener('resize', onResize); u.destroy() }
-  }, [data])
+  }, [data, apiRef])
 
   return <div ref={ref} className="w-full" />
 }
 
 export function TrackPanel({ issueId }: { issueId: number }) {
+  const mapApi = useRef<MapApi | null>(null)
   const { data, isPending, isError } = useQuery({
     queryKey: ['track', issueId],
     queryFn: () => api.getTrack(issueId),
@@ -120,11 +164,14 @@ export function TrackPanel({ issueId }: { issueId: number }) {
         </div>
       </div>
       <div className="h-[55%] min-h-[260px] p-3 shrink-0">
-        <TrackMap data={data} />
+        <TrackMap data={data} apiRef={mapApi} />
       </div>
       <div className="border-t border-border p-3">
-        <div className="text-[10px] font-semibold uppercase tracking-widest text-muted/60 mb-2">Телеметрия за день</div>
-        <TelemetryCharts data={data} />
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-[10px] font-semibold uppercase tracking-widest text-muted/60">Телеметрия за день</span>
+          <span className="text-[10px] text-muted/50">колёсико — зум · наведение — точка на карте</span>
+        </div>
+        <TelemetryCharts data={data} apiRef={mapApi} />
       </div>
     </div>
   )
