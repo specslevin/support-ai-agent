@@ -241,11 +241,16 @@ class IssueAutomationService:
     def _derive_flags(f: TelemetryFacts) -> None:
         if f.power_off_ratio and f.power_off_ratio > 0.2:
             f.flags.append("power_off")
+        # Jamming needs strong / corroborated evidence — a couple of brief
+        # GPS hiccups (2-3 teleports at ~160 km/h) are normal noise, not РЭБ.
+        # True jamming (e.g. 64051) shows many teleports, impossible implied
+        # speeds, speed spikes and satellite dropouts together.
         jamming = (
-            f.teleport_jumps >= 2
-            or f.speed_spike_count >= 2
-            or (f.low_sat_ratio is not None and f.low_sat_ratio > 0.05)
-            or (f.zero_coord_moving_ratio is not None and f.zero_coord_moving_ratio > 0.1)
+            f.teleport_jumps >= 5
+            or (f.max_implied_kmh is not None and f.max_implied_kmh > 500 and f.teleport_jumps >= 2)
+            or f.speed_spike_count >= 3
+            or (f.low_sat_ratio is not None and f.low_sat_ratio > 0.08)
+            or (f.zero_coord_moving_ratio is not None and f.zero_coord_moving_ratio > 0.15)
         )
         if jamming:
             f.flags.append("jamming")

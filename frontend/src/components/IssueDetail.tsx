@@ -217,14 +217,12 @@ function OkdeskInfo({ d, issueId, assigneeName }: { d: OkdeskDetail; issueId: nu
         </Section>
       )}
 
-      {/* Описание */}
-      {description && (
-        <Section title="Описание">
-          <p className="text-white/80 leading-relaxed whitespace-pre-wrap bg-surface rounded-lg px-3 py-2.5">
-            {description}
-          </p>
-        </Section>
-      )}
+      {/* Описание (вопрос клиента) */}
+      <Section title="Вопрос клиента">
+        <p className="text-white/80 leading-relaxed whitespace-pre-wrap bg-surface rounded-lg px-3 py-2.5">
+          {description || <span className="text-muted/60">Текст отсутствует — см. тему и параметры заявки</span>}
+        </p>
+      </Section>
 
       {/* Связанные заявки */}
       {(d.parent_id || d.child_ids.length > 0) && (
@@ -645,8 +643,6 @@ export function IssueDetail() {
   const queryClient = useQueryClient()
   const [comment, setComment] = useState('')
   const [commentPublic, setCommentPublic] = useState(true)
-  const [mileage, setMileage] = useState('')
-  const [notes, setNotes] = useState('')
   const [statusDropdownOpen, setStatusDropdownOpen] = useState(false)
   const [pendingStatus, setPendingStatus] = useState<typeof ALL_STATUSES[number] | null>(null)
   const [resolveNotice, setResolveNotice] = useState<string | null>(null)
@@ -692,15 +688,6 @@ export function IssueDetail() {
       queryClient.invalidateQueries({ queryKey: ['issues'] })
       queryClient.invalidateQueries({ queryKey: ['comments', selectedIssueId] })
       if (!data.status_changed) setResolveNotice('Статус не изменён — смените вручную в Okdesk.')
-    },
-  })
-
-  const submitAnalysis = useMutation({
-    mutationFn: () => api.submitAnalysis(selectedIssueId!, parseFloat(mileage), notes || undefined),
-    onSuccess: () => {
-      setMileage('')
-      setNotes('')
-      queryClient.invalidateQueries({ queryKey: ['issue', selectedIssueId] })
     },
   })
 
@@ -804,55 +791,25 @@ export function IssueDetail() {
 
           <AutoAnalysis issueId={issue.id} onUseDraft={(text) => { setComment(text); setCommentPublic(true) }} />
 
-          <div className="pt-2 border-t border-border" />
-
-          {latest_analysis ? (
-            <div className="text-xs space-y-1.5">
+          {latest_analysis && latest_analysis.mileage_from_system != null && (
+            <div className="text-xs space-y-1.5 pt-2 border-t border-border">
+              <span className="text-[10px] text-muted/60">Прошлый анализ</span>
               <div className="grid grid-cols-2 gap-x-4 gap-y-1">
                 <span className="text-muted">Путевой лист</span>
-                <span>{latest_analysis.mileage_from_sheet?.toLocaleString('ru-RU')} км</span>
+                <span>{latest_analysis.mileage_from_sheet?.toLocaleString('ru-RU') ?? '—'} км</span>
                 <span className="text-muted">По системе</span>
-                <span>{latest_analysis.mileage_from_system?.toLocaleString('ru-RU') ?? '—'} км</span>
+                <span>{latest_analysis.mileage_from_system?.toLocaleString('ru-RU')} км</span>
                 {latest_analysis.discrepancy_percent != null && (
                   <>
                     <span className="text-muted">Расхождение</span>
-                    <span className={latest_analysis.discrepancy_percent > 5 ? 'text-red-400' : 'text-green-400'}>
+                    <span className={Math.abs(latest_analysis.discrepancy_percent) > 5 ? 'text-yellow-400' : 'text-green-400'}>
                       {latest_analysis.discrepancy_percent.toFixed(1)}%
                     </span>
                   </>
                 )}
               </div>
-              {latest_analysis.ai_suggestion && (
-                <p className="text-muted mt-2 leading-relaxed">{latest_analysis.ai_suggestion}</p>
-              )}
             </div>
-          ) : (
-            <p className="text-xs text-muted">Анализ не проводился</p>
           )}
-
-          <div className="space-y-2 pt-2 border-t border-border">
-            <input
-              type="number"
-              placeholder="Пробег по путевому листу (км)"
-              value={mileage}
-              onChange={e => setMileage(e.target.value)}
-              className="w-full bg-base border border-border rounded px-3 py-1.5 text-xs focus:outline-none focus:border-accent"
-            />
-            <textarea
-              placeholder="Примечания (необязательно)"
-              value={notes}
-              onChange={e => setNotes(e.target.value)}
-              rows={2}
-              className="w-full bg-base border border-border rounded px-3 py-1.5 text-xs resize-none focus:outline-none focus:border-accent"
-            />
-            <button
-              disabled={!mileage || submitAnalysis.isPending}
-              onClick={() => submitAnalysis.mutate()}
-              className="w-full bg-accent/90 hover:bg-accent text-black text-xs font-semibold py-1.5 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              {submitAnalysis.isPending ? 'Сохранение...' : 'Сохранить анализ'}
-            </button>
-          </div>
         </div>
 
         {/* Comments */}
