@@ -107,6 +107,25 @@ export interface AutomationResult {
   error: string | null
 }
 
+export interface TrackPoint {
+  t: number
+  lat: number | null
+  lng: number | null
+  speed: number
+  sat: number
+  pwr: number | null
+}
+
+export interface TrackData {
+  parsed: AutomationParsed
+  object_id?: number
+  object_name?: string
+  total_packets?: number
+  points: TrackPoint[]
+  teleports?: number[]
+  error?: string
+}
+
 export interface Template {
   id: number
   name: string

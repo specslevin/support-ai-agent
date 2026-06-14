@@ -390,6 +390,65 @@ class IssueAutomationService:
             needs_review=confidence < 0.85,
         )
 
+    async def build_track(self, title: str | None, description: str | None,
+                          max_points: int = 2500) -> dict[str, Any]:
+        """Return track points + telemetry series for map/charts rendering.
+
+        Points: {t(ms), lat, lng, speed, sat, pwr}. ``teleports`` are indices i
+        where the jump from point i-1 to i is physically impossible (GPS spoofing).
+        """
+        parsed = self.parse_issue(title, description, None)
+        if not parsed.plate or not parsed.date:
+            return {"error": "no_plate_or_date", "parsed": asdict(parsed), "points": []}
+        obj = await self._geo.find_object_by_plate(parsed.plate)
+        if not obj:
+            return {"error": "object_not_found", "parsed": asdict(parsed), "points": []}
+        oid = int(obj["id"])
+        day = _dt.date.fromisoformat(parsed.date)
+        start = _dt.datetime.combine(day, _dt.time.min)
+        from_ms = int(start.timestamp() * 1000)
+        till_ms = int((start + _dt.timedelta(days=1)).timestamp() * 1000)
+        packets = await self._geo.get_packets(oid, from_ms, till_ms)
+        packets.sort(key=lambda p: p.get("time") or 0)
+
+        teleports: list[int] = []
+        for i in range(1, len(packets)):
+            a, b = packets[i - 1], packets[i]
+            if not (a.get("lat") and a.get("lng") and b.get("lat") and b.get("lng")):
+                continue
+            dt = ((b.get("time") or 0) - (a.get("time") or 0)) / 1000.0
+            if dt <= 0:
+                continue
+            impl = _haversine_m(a["lat"], a["lng"], b["lat"], b["lng"]) / dt * 3.6
+            if impl > _TELEPORT_KMH:
+                teleports.append(i)
+
+        step = max(1, len(packets) // max_points)
+        tele_set = set(teleports)
+        points: list[dict[str, Any]] = []
+        index_map: dict[int, int] = {}
+        for i, p in enumerate(packets):
+            if i % step != 0 and i not in tele_set:
+                continue
+            tags = p.get("tags") if isinstance(p.get("tags"), dict) else {}
+            index_map[i] = len(points)
+            points.append({
+                "t": p.get("time"),
+                "lat": round(p["lat"], 5) if p.get("lat") else None,
+                "lng": round(p["lng"], 5) if p.get("lng") else None,
+                "speed": p.get("speed") or 0,
+                "sat": p.get("sat") or 0,
+                "pwr": round(tags.get("pwr_ext"), 1) if tags.get("pwr_ext") is not None else None,
+            })
+        return {
+            "parsed": asdict(parsed),
+            "object_id": oid,
+            "object_name": obj.get("name"),
+            "total_packets": len(packets),
+            "points": points,
+            "teleports": [index_map[i] for i in teleports if i in index_map],
+        }
+
     def to_dict(self, r: AutomationResult) -> dict[str, Any]:
         return {
             "parsed": asdict(r.parsed),

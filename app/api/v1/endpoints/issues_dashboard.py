@@ -251,6 +251,28 @@ async def automate_issue(
         raise HTTPException(status_code=500, detail="Automation failed")
 
 
+@router.get("/{issue_id}/track")
+async def get_issue_track(
+    issue_id: int,
+    cache: CacheService = Depends(get_cache_service),
+    okdesk: OkdeskService = Depends(get_okdesk_service),
+    automation: IssueAutomationService = Depends(get_issue_automation_service),
+) -> dict[str, object]:
+    """Return GPS track + telemetry series (speed/voltage/satellites) for charts and map."""
+    try:
+        issue_data = await cache.get_issue_with_analysis(issue_id)
+        if not issue_data:
+            raise HTTPException(status_code=404, detail="Issue not found")
+        external_id = issue_data["issue"].external_id
+        live = await okdesk.get_issue(external_id)
+        return await automation.build_track(live.title, live.description)
+    except HTTPException:
+        raise
+    except Exception:
+        log.exception("get_issue_track_failed", issue_id=issue_id)
+        raise HTTPException(status_code=500, detail="Failed to build track")
+
+
 @router.post("/{issue_id}/analysis", response_model=AnalysisResult)
 async def submit_analysis(
     issue_id: int,

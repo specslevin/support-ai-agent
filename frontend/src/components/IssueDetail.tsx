@@ -624,7 +624,7 @@ function AutoAnalysis({ issueId, onUseDraft }: { issueId: number; onUseDraft: (t
 }
 
 export function IssueDetail() {
-  const { selectedIssueId, selectIssue } = useIssuesStore()
+  const { selectedIssueId, selectIssue, trackOpen, setTrackOpen } = useIssuesStore()
   const queryClient = useQueryClient()
   const [comment, setComment] = useState('')
   const [commentPublic, setCommentPublic] = useState(true)
@@ -719,6 +719,13 @@ export function IssueDetail() {
           <h2 className="text-sm font-semibold leading-snug">{issue.subject ?? '—'}</h2>
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={() => setTrackOpen(!trackOpen)}
+            title="Карта трека и графики телеметрии"
+            className={`text-xs px-2.5 py-1 rounded border transition-colors ${trackOpen ? 'border-accent text-accent bg-accent/10' : 'border-border text-muted hover:text-white hover:border-accent'}`}
+          >
+            {trackOpen ? '◀ Скрыть' : '🗺 Карта и графики'}
+          </button>
           <button onClick={() => selectIssue(null)} className="text-muted hover:text-white text-lg leading-none">✕</button>
         </div>
       </div>

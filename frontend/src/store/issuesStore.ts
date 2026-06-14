@@ -8,10 +8,12 @@ interface FiltersState {
   page: number
   limit: number
   selectedIssueId: number | null
+  trackOpen: boolean
   setFilter: (key: 'status' | 'company' | 'search', value: string) => void
   setPage: (page: number) => void
   setLimit: (limit: number) => void
   selectIssue: (id: number | null) => void
+  setTrackOpen: (open: boolean) => void
   resetFilters: () => void
 }
 
@@ -24,11 +26,13 @@ export const useIssuesStore = create<FiltersState>()(
       page: 1,
       limit: 20,
       selectedIssueId: null,
+      trackOpen: false,
 
       setFilter: (key, value) => set({ [key]: value, page: 1 }),
       setPage: page => set({ page }),
       setLimit: limit => set({ limit, page: 1 }),
-      selectIssue: id => set({ selectedIssueId: id }),
+      selectIssue: id => set({ selectedIssueId: id, trackOpen: false }),
+      setTrackOpen: open => set({ trackOpen: open }),
       resetFilters: () => set({ status: '', company: '', search: '', page: 1 }),
     }),
     {

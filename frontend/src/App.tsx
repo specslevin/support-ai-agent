@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { IssueFilters } from './components/IssueFilters'
 import { IssuesList } from './components/IssuesList'
 import { IssueDetail } from './components/IssueDetail'
+import { TrackPanel } from './components/TrackPanel'
 import { useIssuesStore } from './store/issuesStore'
 import { useUserStore, EMPLOYEES } from './store/userStore'
 import { api } from './api/client'
@@ -69,6 +70,7 @@ function UserSelector() {
 
 function Dashboard() {
   const selectedIssueId = useIssuesStore(s => s.selectedIssueId)
+  const trackOpen = useIssuesStore(s => s.trackOpen)
   const [refreshing, setRefreshing] = useState(false)
   const [lastSynced, setLastSynced] = useState<number | null>(null)
 
@@ -112,13 +114,24 @@ function Dashboard() {
       </div>
 
       {/* Content */}
-      <div className="flex flex-1 min-h-0">
+      <div className="flex flex-1 min-h-0 relative">
         <div className={`flex flex-col transition-all ${selectedIssueId ? 'w-3/5' : 'w-full'} border-r border-border min-h-0`}>
           <IssuesList />
         </div>
         {selectedIssueId && (
           <div className="w-2/5 flex flex-col min-h-0 overflow-hidden">
             <IssueDetail />
+          </div>
+        )}
+
+        {/* Track + charts panel — slides out to the left of the detail drawer */}
+        {selectedIssueId && (
+          <div
+            className={`absolute top-0 bottom-0 right-[40%] bg-base border-r border-border z-30 flex flex-col min-h-0 shadow-2xl transition-all duration-300 ${
+              trackOpen ? 'left-0 opacity-100' : 'left-[40%] opacity-0 pointer-events-none'
+            }`}
+          >
+            {trackOpen && <TrackPanel issueId={selectedIssueId} />}
           </div>
         )}
       </div>
