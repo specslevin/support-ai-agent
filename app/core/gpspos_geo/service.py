@@ -97,6 +97,56 @@ class GpsposGeoService:
                 continue
         return result
 
+    @staticmethod
+    def _norm_plate(value: Any) -> str:
+        return str(value or "").replace(" ", "").upper()
+
+    async def find_object_by_plate(self, plate: str) -> dict[str, Any] | None:
+        """Find a tracked object by license plate (gosnumber).
+
+        Rosseti objects usually store the plate inside the ``name`` field
+        (e.g. ``"УАЗ-390995 Т489КО56"``), sometimes in ``stateNumber``/``number``.
+        Returns the raw object dict (id, name, stateNumber, ...) or None.
+        """
+        needle = self._norm_plate(plate)
+        if not needle:
+            return None
+        raw = await self._client.request("GET", "Objects")
+        rows = _unwrap_list(raw)
+        exact: dict[str, Any] | None = None
+        partial: dict[str, Any] | None = None
+        for r in rows:
+            fields = (r.get("stateNumber"), r.get("name"), r.get("number"))
+            for f in fields:
+                nf = self._norm_plate(f)
+                if not nf:
+                    continue
+                if nf == needle:
+                    return r
+                if needle in nf and partial is None:
+                    partial = r
+        return exact or partial
+
+    async def get_daily_stats(
+        self, object_id: int, from_ms: int, till_ms: int
+    ) -> list[dict[str, Any]]:
+        """Per-day statistics. ``length`` is mileage in METERS, ``day`` is YYYYMMDD int."""
+        body = {"from": from_ms, "till": till_ms}
+        raw = await self._client.request(
+            "POST", f"ObjectsHistory/DailyStat/{object_id}", json=body
+        )
+        return _unwrap_list(raw)
+
+    async def get_packets(
+        self, object_id: int, from_ms: int, till_ms: int
+    ) -> list[dict[str, Any]]:
+        """Raw telemetry packets: time(ms), speed, sat, lat, lng, tags{pwr_ext,pwr_int,hdop,pdop}."""
+        body = {"from": from_ms, "till": till_ms, "objectId": object_id}
+        raw = await self._client.request("POST", "ObjectPackets", json=body)
+        if isinstance(raw, list):
+            return [x for x in raw if isinstance(x, dict)]
+        return _unwrap_list(raw, "packets", "data")
+
     async def reverse_geocode(self, lat: float, lng: float) -> str:
         body = [{"latitude": lat, "longitude": lng}]
         raw = await self._client.request("POST", "ReverseGeocoder", json=body)

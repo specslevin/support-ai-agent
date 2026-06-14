@@ -88,6 +88,8 @@ support-ai-agent/
 | **Детали заявки** | ✅ Полные | описание, сроки, параметры (с извлечением телефона), связанные |
 | **Пагинация** | ✅ 20/50/100 | селектор в нижней панели таблицы |
 | **Wialon** | ⚠️ Заглушка | клиент есть, в агент НЕ подключён |
+| **Автоанализ заявки** | ✅ Phase A | парсинг → geo DailyStat+ObjectPackets → классификация (DeepSeek) → черновик ответа |
+| **Пагинация persist** | ✅ | `limit` сохраняется в localStorage (issues-prefs) |
 
 ---
 
@@ -113,7 +115,19 @@ GET  /api/v1/issues/{id}/comments      — комментарии из Okdesk
 POST /api/v1/issues/{id}/comments      — добавить комментарий
 PATCH /api/v1/issues/{id}/assignee     — назначить ответственного
 GET  /api/v1/employees                 — список активных сотрудников
+POST /api/v1/issues/{id}/automate      — автоанализ «Расхождение пробега» + черновик ответа
 ```
+
+## Автоматизация (Phase A)
+
+```
+app/services/issue_automation.py        # IssueAutomationService: parse → telemetry → classify → draft
+app/core/gpspos_geo/service.py          # +find_object_by_plate, get_daily_stats, get_packets
+```
+- geo DailyStat: `length` (метры) = реальный пробег; ObjectPackets: `sat`, `tags.pwr_ext` (напряжение), gaps.
+- Эвристика + DeepSeek выбирают категорию (Данные верны / Глушение / Не было питания / Терминал подключился / Изменили настройки / Диагностика) и заполняют шаблон.
+- Результат сохраняется в AnalysisCache; оператор подтверждает и отправляет через комментарий/Решить.
+- ⚠️ Edge-case: если пакеты только после восстановления питания — может занизить причину (нужна ручная проверка, `needs_review`).
 
 ---
 

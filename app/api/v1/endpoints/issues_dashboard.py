@@ -11,10 +11,15 @@ from app.api.v1.schemas.issues import (
     IssueResponse,
     PaginatedIssuesResponse,
 )
-from app.core.dependencies import get_cache_service, get_okdesk_service
+from app.core.dependencies import (
+    get_cache_service,
+    get_issue_automation_service,
+    get_okdesk_service,
+)
 from app.core.okdesk.models import Employee
 from app.core.okdesk.service import OkdeskService
 from app.core.services.cache_service import CacheService
+from app.services.issue_automation import IssueAutomationService
 
 log = structlog.get_logger(__name__)
 router = APIRouter(prefix="/issues", tags=["dashboard:issues"])
@@ -197,6 +202,48 @@ async def get_issue_details(
     except Exception:
         log.exception("get_issue_details_failed", issue_id=issue_id)
         raise HTTPException(status_code=500, detail="Failed to fetch issue")
+
+
+@router.post("/{issue_id}/automate")
+async def automate_issue(
+    issue_id: int,
+    cache: CacheService = Depends(get_cache_service),
+    okdesk: OkdeskService = Depends(get_okdesk_service),
+    automation: IssueAutomationService = Depends(get_issue_automation_service),
+) -> dict[str, object]:
+    """Analyse a mileage-discrepancy issue and draft an answer for operator review.
+
+    Reads the live Okdesk issue, pulls real telemetry from geo.gpspos.ru,
+    classifies the cause and returns a draft answer (nothing is sent automatically).
+    """
+    try:
+        issue_data = await cache.get_issue_with_analysis(issue_id)
+        if not issue_data:
+            raise HTTPException(status_code=404, detail="Issue not found")
+        external_id = issue_data["issue"].external_id
+        live = await okdesk.get_issue(external_id)
+        params = _build_parameters(live.parameters)
+        result = await automation.automate(live.title, live.description, params)
+
+        # Persist the analysis so the dashboard can show it later.
+        try:
+            await cache.save_analysis(
+                issue_id=issue_id,
+                mileage_sheet=result.parsed.sheet_mileage_km or 0.0,
+                ai_suggestion=result.draft_answer,
+                recommendation=result.category,
+                notes=result.reasoning,
+                mileage_system=result.telemetry.system_mileage_km,
+            )
+        except Exception:
+            log.warning("automate_save_analysis_failed", issue_id=issue_id)
+
+        return automation.to_dict(result)
+    except HTTPException:
+        raise
+    except Exception:
+        log.exception("automate_issue_failed", issue_id=issue_id)
+        raise HTTPException(status_code=500, detail="Automation failed")
 
 
 @router.post("/{issue_id}/analysis", response_model=AnalysisResult)

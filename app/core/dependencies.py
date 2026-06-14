@@ -24,6 +24,7 @@ from app.core.okdesk.config import OkdeskSettings
 from app.core.okdesk.service import OkdeskService
 from app.core.services.cache_service import CacheService
 from app.services.intelligence_service import IntelligenceService, LLMRouter
+from app.services.issue_automation import IssueAutomationService
 
 log = structlog.get_logger(__name__)
 
@@ -71,6 +72,20 @@ def _intelligence_service() -> IntelligenceService:
         _gps_diagnostics(),
         _okdesk_client(),
     )
+
+
+@functools.lru_cache
+def _issue_automation_service() -> IssueAutomationService:
+    return IssueAutomationService(
+        _okdesk_service(),
+        _gpspos_geo_service(),
+        _llm_router_instance(),
+    )
+
+
+async def get_issue_automation_service() -> IssueAutomationService:
+    """Return shared :class:`IssueAutomationService` for mileage-discrepancy automation."""
+    return _issue_automation_service()
 
 
 async def get_llm_router() -> LLMRouter:

@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { persist } from 'zustand/middleware'
 
 interface FiltersState {
   status: string
@@ -14,17 +15,26 @@ interface FiltersState {
   resetFilters: () => void
 }
 
-export const useIssuesStore = create<FiltersState>(set => ({
-  status: '',
-  company: '',
-  search: '',
-  page: 1,
-  limit: 20,
-  selectedIssueId: null,
+export const useIssuesStore = create<FiltersState>()(
+  persist(
+    set => ({
+      status: '',
+      company: '',
+      search: '',
+      page: 1,
+      limit: 20,
+      selectedIssueId: null,
 
-  setFilter: (key, value) => set({ [key]: value, page: 1 }),
-  setPage: page => set({ page }),
-  setLimit: limit => set({ limit, page: 1 }),
-  selectIssue: id => set({ selectedIssueId: id }),
-  resetFilters: () => set({ status: '', company: '', search: '', page: 1 }),
-}))
+      setFilter: (key, value) => set({ [key]: value, page: 1 }),
+      setPage: page => set({ page }),
+      setLimit: limit => set({ limit, page: 1 }),
+      selectIssue: id => set({ selectedIssueId: id }),
+      resetFilters: () => set({ status: '', company: '', search: '', page: 1 }),
+    }),
+    {
+      name: 'issues-prefs',
+      // Persist only the pagination size — the rest stays per-session.
+      partialize: state => ({ limit: state.limit }),
+    },
+  ),
+)

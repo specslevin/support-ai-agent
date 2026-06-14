@@ -68,6 +68,41 @@ export interface Comment {
 
 export type StatusCode = 'opened' | 'in_progress' | 'resolved' | 'closed' | string
 
+export interface AutomationParsed {
+  plate: string | null
+  date: string | null
+  sheet_mileage_km: number | null
+  declared_system_km: number | null
+}
+
+export interface AutomationTelemetry {
+  object_id: number | null
+  object_name: string | null
+  system_mileage_km: number | null
+  max_speed: number | null
+  move_time_min: number | null
+  packets: number
+  avg_sat: number | null
+  low_sat_ratio: number | null
+  min_power_v: number | null
+  avg_power_v: number | null
+  power_off_ratio: number | null
+  max_gap_min: number | null
+  zero_coord_moving_ratio: number | null
+  flags: string[]
+}
+
+export interface AutomationResult {
+  parsed: AutomationParsed
+  telemetry: AutomationTelemetry
+  category: string
+  confidence: number
+  draft_answer: string
+  reasoning: string
+  needs_review: boolean
+  error: string | null
+}
+
 export interface Template {
   id: number
   name: string

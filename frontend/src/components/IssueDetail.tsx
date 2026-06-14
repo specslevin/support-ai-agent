@@ -4,7 +4,7 @@ import { api } from '../api/client'
 import { useIssuesStore } from '../store/issuesStore'
 import { useUserStore, EMPLOYEES } from '../store/userStore'
 import { StatusBadge } from './StatusBadge'
-import type { OkdeskDetail, Template } from '../types'
+import type { OkdeskDetail, Template, AutomationResult } from '../types'
 
 function formatDate(iso: string | null | undefined) {
   if (!iso) return null
@@ -473,6 +473,115 @@ function StatusActionModal({
   )
 }
 
+const FLAG_LABELS: Record<string, string> = {
+  power_off: '🔌 Нет питания',
+  jamming: '📡 Глушение GPS',
+  track_gap: '✂ Обрыв трека',
+  no_data: '⚠ Нет данных',
+  object_not_found: '❓ Объект не найден',
+}
+
+function Fact({ label, value, warn }: { label: string; value: React.ReactNode; warn?: boolean }) {
+  if (value == null || value === '') return null
+  return (
+    <>
+      <span className="text-muted">{label}</span>
+      <span className={warn ? 'text-yellow-400' : ''}>{value}</span>
+    </>
+  )
+}
+
+function AutoAnalysis({ issueId, onUseDraft }: { issueId: number; onUseDraft: (text: string) => void }) {
+  const queryClient = useQueryClient()
+  const [result, setResult] = useState<AutomationResult | null>(null)
+
+  const run = useMutation({
+    mutationFn: () => api.automateIssue(issueId),
+    onSuccess: (data) => {
+      setResult(data)
+      queryClient.invalidateQueries({ queryKey: ['issue', issueId] })
+    },
+  })
+
+  const t = result?.telemetry
+  const p = result?.parsed
+  const conf = result ? Math.round(result.confidence * 100) : 0
+
+  return (
+    <div className="space-y-3">
+      <button
+        onClick={() => run.mutate()}
+        disabled={run.isPending}
+        className="w-full bg-gradient-to-r from-violet-600/90 to-fuchsia-600/90 hover:from-violet-600 hover:to-fuchsia-600 text-white text-xs font-semibold py-2 rounded transition-colors disabled:opacity-50"
+      >
+        {run.isPending ? '🤖 Анализирую заявку и данные geo...' : '🤖 Автоанализ заявки'}
+      </button>
+
+      {run.isError && (
+        <p className="text-xs text-red-400">Ошибка анализа. Попробуйте снова.</p>
+      )}
+
+      {result && (
+        <div className="space-y-2.5 text-xs">
+          {result.error && (
+            <p className="text-yellow-400">⚠ {result.reasoning}</p>
+          )}
+
+          {t && (t.object_name || t.system_mileage_km != null) && (
+            <div className="bg-base rounded-lg px-3 py-2.5 space-y-2">
+              {t.flags.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {t.flags.map(f => (
+                    <span key={f} className="px-2 py-0.5 rounded-full bg-yellow-500/15 text-yellow-300 text-[10px]">
+                      {FLAG_LABELS[f] ?? f}
+                    </span>
+                  ))}
+                </div>
+              )}
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+                <Fact label="Объект" value={t.object_name} />
+                <Fact label="Гос.номер" value={p?.plate} />
+                <Fact label="Дата" value={p?.date} />
+                <Fact label="Путевой лист" value={p?.sheet_mileage_km != null ? `${p.sheet_mileage_km} км` : null} />
+                <Fact label="По системе" value={t.system_mileage_km != null ? `${t.system_mileage_km} км` : null} />
+                <Fact label="Макс. скорость" value={t.max_speed != null ? `${t.max_speed} км/ч` : null} />
+                <Fact label="В движении" value={t.move_time_min != null ? `${t.move_time_min} мин` : null} />
+                <Fact label="Спутники (ср.)" value={t.avg_sat} warn={(t.avg_sat ?? 99) < 6} />
+                <Fact label="Питание (мин.)" value={t.min_power_v != null ? `${t.min_power_v} В` : null} warn={(t.min_power_v ?? 99) < 7} />
+                <Fact label="Обрыв трека" value={t.max_gap_min != null ? `${t.max_gap_min} мин` : null} warn={(t.max_gap_min ?? 0) > 30} />
+                <Fact label="Пакетов" value={t.packets} />
+              </div>
+            </div>
+          )}
+
+          {result.draft_answer && (
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-2">
+                <span className="px-2 py-0.5 rounded bg-accent/15 text-accent text-[10px] font-semibold">{result.category}</span>
+                <span className={`text-[10px] ${result.needs_review ? 'text-yellow-400' : 'text-green-400'}`}>
+                  уверенность {conf}%{result.needs_review ? ' · нужна проверка' : ''}
+                </span>
+              </div>
+              <p className="text-white/90 leading-relaxed bg-surface rounded-lg px-3 py-2.5 whitespace-pre-wrap">
+                {result.draft_answer}
+              </p>
+              {result.reasoning && !result.error && (
+                <p className="text-muted leading-relaxed text-[11px]">💡 {result.reasoning}</p>
+              )}
+              <button
+                onClick={() => onUseDraft(result.draft_answer)}
+                className="w-full bg-accent/90 hover:bg-accent text-black text-xs font-semibold py-1.5 rounded transition-colors"
+              >
+                ↓ Вставить ответ в комментарий
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function IssueDetail() {
   const { selectedIssueId, selectIssue } = useIssuesStore()
   const queryClient = useQueryClient()
@@ -604,6 +713,10 @@ export function IssueDetail() {
         {/* Analysis */}
         <div className="border border-border rounded-lg p-4 space-y-3">
           <h3 className="text-[10px] font-semibold uppercase tracking-widest text-muted/60">Анализ пробега</h3>
+
+          <AutoAnalysis issueId={issue.id} onUseDraft={(text) => { setComment(text); setCommentPublic(true) }} />
+
+          <div className="pt-2 border-t border-border" />
 
           {latest_analysis ? (
             <div className="text-xs space-y-1.5">

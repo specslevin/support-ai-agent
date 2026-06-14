@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { IssuesListResponse, IssueDetail, Comment, Analysis, Template } from '../types'
+import type { IssuesListResponse, IssueDetail, Comment, Analysis, Template, AutomationResult } from '../types'
 
 const http = axios.create({
   baseURL: '/api/v1',
@@ -35,6 +35,10 @@ export const api = {
 
   submitAnalysis(id: number, mileage_from_sheet: number, notes?: string): Promise<Analysis> {
     return http.post(`/issues/${id}/analysis`, { mileage_from_sheet, notes }).then(r => r.data)
+  },
+
+  automateIssue(id: number): Promise<AutomationResult> {
+    return http.post(`/issues/${id}/automate`).then(r => r.data)
   },
 
   refreshCache(): Promise<{ ok: boolean; synced: number }> {
