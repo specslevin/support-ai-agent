@@ -51,3 +51,19 @@ class OkdeskClient:
 
     async def list_equipment_by_company(self, company_id: int) -> Any:
         return await self._request("GET", "equipments/list", params={"company_id": company_id})
+
+    async def get_attachment_url(self, issue_id: int, attachment_id: int) -> str | None:
+        """Resolve the (short-lived, presigned) download URL for an attachment."""
+        data = await self._request("GET", f"issues/{issue_id}/attachments/{attachment_id}")
+        if isinstance(data, dict):
+            return data.get("attachment_url")
+        return None
+
+    async def download_attachment(self, issue_id: int, attachment_id: int) -> tuple[bytes, str] | None:
+        """Download attachment bytes. Returns (data, content_type) or None."""
+        url = await self.get_attachment_url(issue_id, attachment_id)
+        if not url:
+            return None
+        r = await self._client.get(url, follow_redirects=True)
+        r.raise_for_status()
+        return r.content, r.headers.get("content-type", "application/octet-stream")

@@ -139,6 +139,18 @@ class IssueParameter(BaseModel):
     value: str | None = None
 
 
+class Attachment(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: int
+    attachment_file_name: str | None = None
+    attachment_file_size: int | None = None
+    is_public: bool | None = None
+    description: str | None = None
+    created_at: str | None = None
+    comment_id: int | None = None
+
+
 class Issue(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -159,6 +171,7 @@ class Issue(BaseModel):
     parent_id: int | None = None
     child_ids: list[int] = []
     parameters: list[IssueParameter] = []
+    attachments: list[Attachment] = []
     status: IssueStatus | None = None
     type: IssueType | None = None
     priority: IssuePriority | None = None

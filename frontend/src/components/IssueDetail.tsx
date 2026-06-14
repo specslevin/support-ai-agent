@@ -638,6 +638,57 @@ function AutoAnalysis({ issueId, onUseDraft }: { issueId: number; onUseDraft: (t
   )
 }
 
+const KIND_ICON: Record<string, string> = {
+  pdf: '📕', word: '📘', excel: '📗', image: '🖼', text: '📄', other: '📎',
+}
+
+function formatSize(bytes: number | null): string {
+  if (!bytes) return ''
+  if (bytes < 1024) return `${bytes} Б`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} КБ`
+  return `${(bytes / 1024 / 1024).toFixed(1)} МБ`
+}
+
+function AttachmentsSection({ issueId }: { issueId: number }) {
+  const { data: items = [] } = useQuery({
+    queryKey: ['attachments', issueId],
+    queryFn: () => api.listAttachments(issueId),
+    staleTime: 5 * 60_000,
+  })
+
+  if (items.length === 0) return null
+
+  return (
+    <div className="space-y-2">
+      <h3 className="text-[10px] font-semibold uppercase tracking-widest text-muted/60">
+        Вложения ({items.length})
+      </h3>
+      <div className="space-y-1.5">
+        {items.map(a => (
+          <a
+            key={a.id}
+            href={api.attachmentUrl(issueId, a.id)}
+            target="_blank"
+            rel="noreferrer"
+            className="flex items-center gap-2.5 bg-surface hover:bg-white/5 border border-border rounded-lg px-3 py-2 transition-colors group"
+          >
+            <span className="text-base shrink-0">{KIND_ICON[a.kind] ?? '📎'}</span>
+            <div className="flex-1 min-w-0">
+              <div className="text-xs text-white group-hover:text-accent truncate">{a.name ?? `#${a.id}`}</div>
+              <div className="text-[10px] text-muted flex items-center gap-1.5">
+                {formatSize(a.size)}
+                {a.extractable && <span className="text-green-400/80">· 🤖 ИИ читает</span>}
+                {a.kind === 'image' && <span className="text-yellow-400/70">· скан (OCR позже)</span>}
+              </div>
+            </div>
+            <span className="text-muted/50 text-xs shrink-0">↗</span>
+          </a>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export function IssueDetail() {
   const { selectedIssueId, selectIssue, trackOpen, setTrackOpen, lastTemplate } = useIssuesStore()
   const queryClient = useQueryClient()
@@ -811,6 +862,9 @@ export function IssueDetail() {
             </div>
           )}
         </div>
+
+        {/* Attachments */}
+        <AttachmentsSection issueId={issue.id} />
 
         {/* Comments */}
         <div className="space-y-3">

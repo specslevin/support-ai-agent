@@ -132,10 +132,11 @@ class IssueAutomationService:
 
     # ----- parsing -------------------------------------------------------
     def parse_issue(self, title: str | None, description: str | None,
-                    params: list[dict[str, Any]] | None = None) -> ParsedIssue:
+                    params: list[dict[str, Any]] | None = None,
+                    extra_text: str | None = None) -> ParsedIssue:
         title = title or ""
         body = _strip_html(description)
-        text = f"{title} {body}"
+        text = f"{title} {body} {extra_text or ''}"
         parsed = ParsedIssue()
 
         m = _PLATE_RE.search(title) or _PLATE_RE.search(text)
@@ -276,7 +277,8 @@ class IssueAutomationService:
         return "Данные верны"
 
     # ----- LLM refinement ------------------------------------------------
-    async def _draft_with_llm(self, parsed: ParsedIssue, f: TelemetryFacts, hint: str) -> dict[str, Any]:
+    async def _draft_with_llm(self, parsed: ParsedIssue, f: TelemetryFacts, hint: str,
+                              attachments_text: str | None = None) -> dict[str, Any]:
         catalog = "\n".join(
             f"- {c['key']}: {c['when']}\n  Шаблон: {c['template']}" for c in _CATEGORY_CATALOG
         )
@@ -307,9 +309,13 @@ class IssueAutomationService:
             "Не выдумывай данные, которых нет. Верни СТРОГО JSON без пояснений: "
             '{"category": "...", "answer": "...", "confidence": 0.0-1.0, "reasoning": "..."}'
         )
+        att_block = ""
+        if attachments_text and attachments_text.strip():
+            att_block = f"\nТекст из вложений заявки (путевые листы и т.п.):\n{attachments_text[:4000]}\n"
         user = (
             f"Каталог категорий ответов:\n{catalog}\n\n"
-            f"Факты по заявке (JSON):\n{json.dumps(facts, ensure_ascii=False)}\n\n"
+            f"Факты по заявке (JSON):\n{json.dumps(facts, ensure_ascii=False)}\n"
+            f"{att_block}\n"
             f"Подсказка эвристики (вероятная категория): {hint}\n\n"
             "Ответ строго в JSON."
         )
@@ -329,10 +335,31 @@ class IssueAutomationService:
             return {}
 
     # ----- orchestration -------------------------------------------------
+    async def read_attachments(self, issue_external_id: int, attachments: list[Any]) -> str:
+        """Download + extract text from extractable attachments, concatenated."""
+        from app.services import attachment_reader
+
+        parts: list[str] = []
+        for a in attachments:
+            name = getattr(a, "attachment_file_name", None) or ""
+            if not attachment_reader.is_extractable(name):
+                continue
+            try:
+                result = await self._okdesk.download_attachment(issue_external_id, a.id)
+                if not result:
+                    continue
+                text = attachment_reader.extract_text(name, result[0])
+                if text.strip():
+                    parts.append(f"=== Вложение: {name} ===\n{text}")
+            except Exception:  # pragma: no cover - best effort
+                log.warning("attachment_read_failed", issue=issue_external_id, name=name)
+        return "\n\n".join(parts)
+
     async def automate(self, title: str | None, description: str | None,
                        params: list[dict[str, Any]] | None = None,
-                       issue_type: str | None = None) -> AutomationResult:
-        parsed = self.parse_issue(title, description, params)
+                       issue_type: str | None = None,
+                       attachments_text: str | None = None) -> AutomationResult:
+        parsed = self.parse_issue(title, description, params, extra_text=attachments_text)
         telemetry = TelemetryFacts()
         if not parsed.plate:
             is_mileage = bool(issue_type and "пробег" in issue_type.lower())
@@ -375,7 +402,7 @@ class IssueAutomationService:
             )
 
         hint = self._heuristic_category(parsed, telemetry)
-        llm = await self._draft_with_llm(parsed, telemetry, hint)
+        llm = await self._draft_with_llm(parsed, telemetry, hint, attachments_text=attachments_text)
         category = llm.get("category") or hint
         draft = (llm.get("answer") or "").strip()
         confidence = float(llm.get("confidence") or 0.0)

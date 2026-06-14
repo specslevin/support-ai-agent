@@ -126,6 +126,15 @@ export interface TrackData {
   error?: string
 }
 
+export interface IssueAttachment {
+  id: number
+  name: string | null
+  size: number | null
+  is_public: boolean | null
+  kind: string
+  extractable: boolean
+}
+
 export interface Template {
   id: number
   name: string

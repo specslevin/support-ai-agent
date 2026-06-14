@@ -15,3 +15,8 @@ aiohttp-socks>=0.8.0
 openai>=1.55.0
 sqlalchemy[asyncio]>=2.0.36
 aiosqlite>=0.20.0
+
+# Attachment text extraction (Phase B) — let AI read PDF/Word/Excel without spending tokens on raw files
+pypdf>=5.1.0
+python-docx>=1.1.2
+openpyxl>=3.1.5

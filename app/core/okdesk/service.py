@@ -56,6 +56,9 @@ class OkdeskService:
         data = await self._client._request("GET", f"issues/{issue_id}")
         return Issue.model_validate(data)
 
+    async def download_attachment(self, issue_id: int, attachment_id: int) -> tuple[bytes, str] | None:
+        return await self._client.download_attachment(issue_id, attachment_id)
+
     async def get_issue_comments(self, issue_id: int) -> list[IssueComment]:
         data = await self._client.get_issue_comments(issue_id)
         rows = _ensure_list(data)

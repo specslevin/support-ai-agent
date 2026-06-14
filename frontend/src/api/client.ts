@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { IssuesListResponse, IssueDetail, Comment, Analysis, Template, AutomationResult, TrackData } from '../types'
+import type { IssuesListResponse, IssueDetail, Comment, Analysis, Template, AutomationResult, TrackData, IssueAttachment } from '../types'
 
 const http = axios.create({
   baseURL: '/api/v1',
@@ -43,6 +43,14 @@ export const api = {
 
   getTrack(id: number): Promise<TrackData> {
     return http.get(`/issues/${id}/track`).then(r => r.data)
+  },
+
+  listAttachments(id: number): Promise<IssueAttachment[]> {
+    return http.get(`/issues/${id}/attachments`).then(r => r.data)
+  },
+
+  attachmentUrl(id: number, attId: number): string {
+    return `/api/v1/issues/${id}/attachments/${attId}/download`
   },
 
   refreshCache(): Promise<{ ok: boolean; synced: number }> {

@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import urllib.parse
+
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
+
+from app.services import attachment_reader
 
 from app.api.v1.schemas.issues import (
     AnalysisInput,
@@ -223,11 +228,15 @@ async def automate_issue(
         external_id = issue_data["issue"].external_id
         live = await okdesk.get_issue(external_id)
         params = _build_parameters(live.parameters)
+        attachments_text = ""
+        if live.attachments:
+            attachments_text = await automation.read_attachments(external_id, live.attachments)
         result = await automation.automate(
             live.title,
             live.description,
             params,
             issue_type=live.type.name if live.type else None,
+            attachments_text=attachments_text or None,
         )
 
         # Persist the analysis so the dashboard can show it later.
@@ -249,6 +258,70 @@ async def automate_issue(
     except Exception:
         log.exception("automate_issue_failed", issue_id=issue_id)
         raise HTTPException(status_code=500, detail="Automation failed")
+
+
+@router.get("/{issue_id}/attachments")
+async def list_issue_attachments(
+    issue_id: int,
+    cache: CacheService = Depends(get_cache_service),
+    okdesk: OkdeskService = Depends(get_okdesk_service),
+) -> list[dict[str, object]]:
+    """List attachments of an issue with type/extractable flags."""
+    try:
+        issue_data = await cache.get_issue_with_analysis(issue_id)
+        if not issue_data:
+            raise HTTPException(status_code=404, detail="Issue not found")
+        external_id = issue_data["issue"].external_id
+        live = await okdesk.get_issue(external_id)
+        return [
+            {
+                "id": a.id,
+                "name": a.attachment_file_name,
+                "size": a.attachment_file_size,
+                "is_public": a.is_public,
+                "kind": attachment_reader.kind(a.attachment_file_name or ""),
+                "extractable": attachment_reader.is_extractable(a.attachment_file_name or ""),
+            }
+            for a in live.attachments
+        ]
+    except HTTPException:
+        raise
+    except Exception:
+        log.exception("list_attachments_failed", issue_id=issue_id)
+        raise HTTPException(status_code=500, detail="Failed to list attachments")
+
+
+@router.get("/{issue_id}/attachments/{attachment_id}/download")
+async def download_issue_attachment(
+    issue_id: int,
+    attachment_id: int,
+    cache: CacheService = Depends(get_cache_service),
+    okdesk: OkdeskService = Depends(get_okdesk_service),
+) -> Response:
+    """Proxy-download an attachment (so the token/presigned URL stays server-side)."""
+    try:
+        issue_data = await cache.get_issue_with_analysis(issue_id)
+        if not issue_data:
+            raise HTTPException(status_code=404, detail="Issue not found")
+        external_id = issue_data["issue"].external_id
+        live = await okdesk.get_issue(external_id)
+        meta = next((a for a in live.attachments if a.id == attachment_id), None)
+        result = await okdesk.download_attachment(external_id, attachment_id)
+        if not result:
+            raise HTTPException(status_code=404, detail="Attachment not available")
+        data, content_type = result
+        name = (meta.attachment_file_name if meta else None) or f"attachment_{attachment_id}"
+        quoted = urllib.parse.quote(name)
+        return Response(
+            content=data,
+            media_type=content_type,
+            headers={"Content-Disposition": f"inline; filename*=UTF-8''{quoted}"},
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        log.exception("download_attachment_failed", issue_id=issue_id, attachment_id=attachment_id)
+        raise HTTPException(status_code=500, detail="Failed to download attachment")
 
 
 @router.get("/{issue_id}/track")
