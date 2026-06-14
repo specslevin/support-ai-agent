@@ -9,7 +9,7 @@ import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.db.models import AnalysisCache, IssueCache, Object, Company
+from app.core.db.models import AnalysisCache, IssueCache, Object, Company, TrainingSample
 from app.core.okdesk.service import OkdeskService
 
 log = structlog.get_logger(__name__)
@@ -244,6 +244,28 @@ class CacheService:
         await self.db.commit()
         await self.db.refresh(row)
         return row
+
+    async def save_training_sample(
+        self, issue_external_id: int, payload: dict[str, Any],
+        ai_category: str | None = None, ai_was_used: bool = False,
+    ) -> None:
+        """Persist an operator decision + telemetry as a future training example."""
+        row = TrainingSample(
+            issue_external_id=issue_external_id,
+            issue_title=payload.get("issue_title"),
+            issue_description=payload.get("issue_description"),
+            plate=payload.get("plate"),
+            fault_date=payload.get("fault_date"),
+            mileage_sheet_km=payload.get("mileage_sheet_km"),
+            mileage_system_km=payload.get("mileage_system_km"),
+            telemetry_json=payload.get("telemetry_json"),
+            ai_category=ai_category,
+            ai_was_used=1 if ai_was_used else 0,
+            operator_answer=payload.get("operator_answer"),
+            final_status=payload.get("final_status"),
+        )
+        self.db.add(row)
+        await self.db.commit()
 
     # ------------------------------------------------------------------
     # Helpers

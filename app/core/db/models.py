@@ -126,6 +126,38 @@ class AnalysisCache(Base):
     issue: Mapped["IssueCache"] = relationship("IssueCache", back_populates="analyses")
 
 
+class TrainingSample(Base):
+    """Groundwork for AI training: operator decisions paired with telemetry facts.
+
+    Each row is one resolved issue — the telemetry we computed + what the
+    operator actually answered and which status they set. Accumulated over time
+    this becomes the dataset for few-shot retrieval and/or fine-tuning.
+    """
+
+    __tablename__ = "training_samples"
+    __table_args__ = (
+        Index("ix_training_samples_issue", "issue_external_id"),
+        Index("ix_training_samples_created", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    issue_external_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    issue_title: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    issue_description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    plate: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    fault_date: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    mileage_sheet_km: Mapped[float | None] = mapped_column(Float, nullable=True)
+    mileage_system_km: Mapped[float | None] = mapped_column(Float, nullable=True)
+    telemetry_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ai_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ai_was_used: Mapped[bool] = mapped_column(Integer, default=0, nullable=False)
+    operator_answer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    final_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+
+
 class ChatHistory(Base):
     __tablename__ = "chat_history"
 

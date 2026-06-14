@@ -454,6 +454,35 @@ class IssueAutomationService:
             "teleports": [index_map[i] for i in teleports if i in index_map],
         }
 
+    async def build_training_sample(
+        self, title: str | None, description: str | None,
+        operator_answer: str, final_status: str,
+    ) -> dict[str, Any] | None:
+        """Build a (telemetry facts → operator decision) sample for later AI training.
+
+        Best-effort: returns None if the issue isn't a parseable mileage ticket.
+        Never raises — callers log decisions, they must not fail on this.
+        """
+        parsed = self.parse_issue(title, description, None)
+        if not parsed.plate or not parsed.date:
+            return None
+        telemetry = TelemetryFacts()
+        try:
+            telemetry = await self.gather_telemetry(parsed.plate, parsed.date)
+        except Exception:  # pragma: no cover - best effort
+            log.warning("training_sample_telemetry_failed", plate=parsed.plate)
+        return {
+            "issue_title": title,
+            "issue_description": description,
+            "plate": parsed.plate,
+            "fault_date": parsed.date,
+            "mileage_sheet_km": parsed.sheet_mileage_km,
+            "mileage_system_km": telemetry.system_mileage_km,
+            "telemetry_json": json.dumps(asdict(telemetry), ensure_ascii=False),
+            "operator_answer": operator_answer,
+            "final_status": final_status,
+        }
+
     def to_dict(self, r: AutomationResult) -> dict[str, Any]:
         return {
             "parsed": asdict(r.parsed),

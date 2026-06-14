@@ -12,16 +12,16 @@ function formatDate(iso: string | null) {
     + d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
 }
 
-function IssueRow({ issue, selected, onClick }: { issue: Issue; selected: boolean; onClick: () => void }) {
+function IssueRow({ issue, highlighted, onClick }: { issue: Issue; highlighted: boolean; onClick: () => void }) {
   return (
     <tr
       onClick={onClick}
       className={`border-b border-border cursor-pointer transition-colors text-sm ${
-        selected ? 'bg-white/5' : 'hover:bg-white/[0.03]'
+        highlighted ? 'bg-accent/10' : 'hover:bg-white/[0.03]'
       }`}
     >
       <td className="px-3 py-2.5 text-xs font-mono text-muted w-24 whitespace-nowrap">
-        {selected && <span className="text-accent mr-1">▶</span>}
+        {highlighted && <span className="text-accent mr-1">▶</span>}
         #{issue.external_id}
       </td>
       <td className="px-3 py-2.5 text-xs text-muted whitespace-nowrap w-44">
@@ -47,7 +47,7 @@ function IssueRow({ issue, selected, onClick }: { issue: Issue; selected: boolea
 }
 
 export function IssuesList() {
-  const { status, company, search, page, limit, selectedIssueId, setPage, setLimit, selectIssue } = useIssuesStore()
+  const { status, company, search, page, limit, selectedIssueId, highlightId, setPage, setLimit, selectIssue } = useIssuesStore()
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ['issues', { status, company, search, page, limit }],
@@ -92,7 +92,7 @@ export function IssuesList() {
               <IssueRow
                 key={issue.id}
                 issue={issue}
-                selected={issue.id === selectedIssueId}
+                highlighted={issue.id === highlightId}
                 onClick={() => selectIssue(issue.id === selectedIssueId ? null : issue.id)}
               />
             ))}

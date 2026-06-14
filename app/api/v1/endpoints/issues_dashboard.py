@@ -388,6 +388,7 @@ async def resolve_issue(
     delay_to: str | None = Query(None, description="Required when status_code=delayed (ISO datetime)"),
     cache: CacheService = Depends(get_cache_service),
     okdesk: OkdeskService = Depends(get_okdesk_service),
+    automation: IssueAutomationService = Depends(get_issue_automation_service),
 ) -> dict[str, object]:
     """Send a comment and change issue status in one action."""
     ALLOWED = {"completed", "delayed", "opened"}
@@ -405,6 +406,23 @@ async def resolve_issue(
         status_changed = status_result.get("code") == status_code
 
         await cache.refresh_single_issue(issue_id, external_id)
+
+        # Groundwork for AI training: record (telemetry → operator decision).
+        # Best-effort, must never break the resolve action.
+        try:
+            live = await okdesk.get_issue(external_id)
+            sample = await automation.build_training_sample(
+                live.title, live.description, comment, status_code
+            )
+            if sample:
+                latest = (issue_data.get("latest_analysis"))
+                await cache.save_training_sample(
+                    external_id, sample,
+                    ai_category=getattr(latest, "recommendation", None),
+                    ai_was_used=latest is not None,
+                )
+        except Exception:
+            log.warning("training_sample_record_failed", issue_id=issue_id)
 
         return {
             "ok": True,
