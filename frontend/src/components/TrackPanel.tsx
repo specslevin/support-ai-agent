@@ -69,6 +69,9 @@ function TrackMap({ data, apiRef }: { data: TrackData; apiRef: React.MutableRefO
       map.setView([55.75, 37.62], 5)
     }
     setTimeout(() => map.invalidateSize(), 100)
+    // Re-measure on any container resize (panel slide animation, window resize)
+    const ro = new ResizeObserver(() => map.invalidateSize())
+    ro.observe(ref.current)
 
     apiRef.current = {
       show: (lat, lng) => {
@@ -77,7 +80,7 @@ function TrackMap({ data, apiRef }: { data: TrackData; apiRef: React.MutableRefO
         cursor.bringToFront()
       },
     }
-    return () => { map.remove(); apiRef.current = null }
+    return () => { ro.disconnect(); map.remove(); apiRef.current = null }
   }, [data, apiRef])
 
   return <div ref={ref} className="w-full h-full rounded-lg overflow-hidden" />
@@ -125,9 +128,13 @@ function TelemetryCharts({ data, apiRef }: { data: TrackData; apiRef: React.Muta
       },
     }
     const u = new uPlot(opts, [xs, speed, pwr, sat], ref.current)
-    const onResize = () => u.setSize({ width: ref.current!.clientWidth || width, height: 260 })
-    window.addEventListener('resize', onResize)
-    return () => { window.removeEventListener('resize', onResize); u.destroy() }
+    // Track real container width (panel slide animation, window resize, etc.)
+    const ro = new ResizeObserver(() => {
+      const w = ref.current?.clientWidth || 0
+      if (w > 0) u.setSize({ width: w, height: 260 })
+    })
+    ro.observe(ref.current)
+    return () => { ro.disconnect(); u.destroy() }
   }, [data, apiRef])
 
   return <div ref={ref} className="w-full" />
