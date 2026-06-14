@@ -28,7 +28,9 @@ _MIN_SAT = 4
 # A gap in telemetry longer than this (minutes) during the day is a track break.
 _TRACK_GAP_MIN = 30
 
-_PLATE_RE = re.compile(r"[АВЕКМНОРСТУХABEKMHOPCTYX]\d{3}[АВЕКМНОРСТУХABEKMHOPCTYX]{2}\d{2,3}", re.I)
+# Plate: letter + 3 digits + 2 letters, optional 2-3 region digits
+# (some tickets omit the region, e.g. "Х774НВ").
+_PLATE_RE = re.compile(r"[АВЕКМНОРСТУХABEKMHOPCTYX]\d{3}[АВЕКМНОРСТУХABEKMHOPCTYX]{2}\d{0,3}", re.I)
 _DATE_RE = re.compile(r"(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{4})")
 
 
