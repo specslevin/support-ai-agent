@@ -156,7 +156,7 @@ export function TrackPanel({ issueId }: { issueId: number }) {
   }
   if (data.error || !data.points.length) {
     const msg = data.error === 'object_not_found' ? 'Объект не найден в geo'
-      : data.error === 'no_plate_or_date' ? 'Не удалось определить гос.номер или дату'
+      : data.error === 'no_plate_or_date' ? 'В заявке не указан один гос.номер ТС или дата (возможно, это общая/внутренняя заявка на несколько ТС)'
       : 'Нет данных трека за дату'
     return <div className="flex items-center justify-center h-full text-muted text-sm">{msg}</div>
   }

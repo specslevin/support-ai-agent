@@ -30,9 +30,23 @@ def _ext(filename: str) -> str:
     return filename[i:].lower() if i >= 0 else ""
 
 
+# OCR (scanned PDFs / photos). Best-effort: needs tesseract + PyMuPDF.
+_OCR_LANG = "rus+eng"
+_OCR_MAX_PAGES = 6
+_OCR_DPI = 200
+
+
+def _ocr_available() -> bool:
+    import importlib.util as u
+    return bool(u.find_spec("pytesseract") and u.find_spec("PIL"))
+
+
 def is_extractable(filename: str) -> bool:
     e = _ext(filename)
-    return e in _TEXT_EXTS | _PDF_EXTS | _DOCX_EXTS | _XLSX_EXTS
+    if e in _TEXT_EXTS | _PDF_EXTS | _DOCX_EXTS | _XLSX_EXTS:
+        return True
+    # Images are extractable only when OCR is available
+    return e in _IMAGE_EXTS and _ocr_available()
 
 
 def kind(filename: str) -> str:
@@ -69,6 +83,8 @@ def extract_text(filename: str, data: bytes) -> str:
             return _truncate(_xlsx(data))
         if e in _TEXT_EXTS:
             return _truncate(_plain(data))
+        if e in _IMAGE_EXTS:
+            return _truncate(_ocr_image(data))
     except Exception:  # pragma: no cover - never break the caller
         log.warning("attachment_extract_failed", filename=filename)
     return ""
@@ -94,11 +110,46 @@ def _pdf(data: bytes) -> str:
     text = "\n".join(parts)
     # Scanned PDFs (no text layer) come back empty; some have broken font
     # encodings that decode to Latin mojibake. Our domain is Russian docs —
-    # if there's almost no Cyrillic, the text layer is unreliable: drop it
-    # rather than feed garbage to the AI. (Such files need OCR — future work.)
-    if len(text) > 40 and _cyrillic_ratio(text) < 0.15:
-        return ""
+    # if the text layer is missing/unreliable (almost no Cyrillic), fall back
+    # to OCR rendering the pages as images.
+    if len(text) < 40 or _cyrillic_ratio(text) < 0.15:
+        ocr = _pdf_ocr(data)
+        if ocr.strip():
+            return ocr
+        return "" if _cyrillic_ratio(text) < 0.15 else text
     return text
+
+
+def _ocr_image(data: bytes) -> str:
+    if not _ocr_available():
+        return ""
+    import pytesseract
+    from PIL import Image
+
+    img = Image.open(io.BytesIO(data))
+    return pytesseract.image_to_string(img, lang=_OCR_LANG)
+
+
+def _pdf_ocr(data: bytes) -> str:
+    """Render scanned PDF pages to images and OCR them."""
+    import importlib.util as u
+    if not _ocr_available() or not u.find_spec("fitz"):
+        return ""
+    import fitz  # PyMuPDF
+
+    parts: list[str] = []
+    doc = fitz.open(stream=data, filetype="pdf")
+    try:
+        zoom = _OCR_DPI / 72.0
+        matrix = fitz.Matrix(zoom, zoom)
+        for page in doc[:_OCR_MAX_PAGES]:
+            pix = page.get_pixmap(matrix=matrix)
+            t = _ocr_image(pix.tobytes("png"))
+            if t.strip():
+                parts.append(t)
+    finally:
+        doc.close()
+    return "\n".join(parts)
 
 
 def _docx(data: bytes) -> str:

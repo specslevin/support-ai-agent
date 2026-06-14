@@ -678,7 +678,7 @@ function AttachmentsSection({ issueId }: { issueId: number }) {
               <div className="text-[10px] text-muted flex items-center gap-1.5">
                 {formatSize(a.size)}
                 {a.extractable && <span className="text-green-400/80">· 🤖 ИИ читает</span>}
-                {a.kind === 'image' && <span className="text-yellow-400/70">· скан (OCR позже)</span>}
+                {!a.extractable && a.kind === 'image' && <span className="text-yellow-400/70">· скан (OCR недоступен)</span>}
               </div>
             </div>
             <span className="text-muted/50 text-xs shrink-0">↗</span>
