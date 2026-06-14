@@ -90,6 +90,9 @@ support-ai-agent/
 | **Wialon** | ⚠️ Заглушка | клиент есть, в агент НЕ подключён |
 | **Автоанализ заявки** | ✅ Phase A | парсинг → geo DailyStat+ObjectPackets → классификация (DeepSeek) → черновик ответа |
 | **Пагинация persist** | ✅ | `limit` сохраняется в localStorage (issues-prefs) |
+| **Вложения + OCR** | ✅ Фаза B | список/просмотр + ИИ читает PDF/Word/Excel/сканы (tesseract rus+eng, PyMuPDF) |
+| **Карта+графики заявки** | ✅ | Leaflet трек + uPlot телеметрия, зум, синк с картой |
+| **Задел обучения ИИ** | ✅ | таблица training_samples при решении заявки |
 
 ---
 
