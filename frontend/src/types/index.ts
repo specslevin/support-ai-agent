@@ -89,6 +89,10 @@ export interface AutomationTelemetry {
   power_off_ratio: number | null
   max_gap_min: number | null
   zero_coord_moving_ratio: number | null
+  max_speed_packet: number | null
+  speed_spike_count: number
+  teleport_jumps: number
+  max_implied_kmh: number | null
   flags: string[]
 }
 

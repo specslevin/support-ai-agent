@@ -561,6 +561,9 @@ function AutoAnalysis({ issueId, onUseDraft }: { issueId: number; onUseDraft: (t
                 <Fact label="Спутники (ср.)" value={t.avg_sat} warn={(t.avg_sat ?? 99) < 6} />
                 <Fact label="Питание (мин.)" value={t.min_power_v != null ? `${t.min_power_v} В` : null} warn={(t.min_power_v ?? 99) < 7} />
                 <Fact label="Обрыв трека" value={t.max_gap_min != null ? `${t.max_gap_min} мин` : null} warn={(t.max_gap_min ?? 0) > 30} />
+                <Fact label="Макс. скорость (пакеты)" value={t.max_speed_packet != null ? `${t.max_speed_packet} км/ч` : null} warn={(t.max_speed_packet ?? 0) > 110} />
+                <Fact label="Выбросы скорости" value={t.speed_spike_count > 0 ? `${t.speed_spike_count}` : null} warn={t.speed_spike_count > 0} />
+                <Fact label="Телепорты трека" value={t.teleport_jumps > 0 ? `${t.teleport_jumps}` : null} warn={t.teleport_jumps > 0} />
                 <Fact label="Пакетов" value={t.packets} />
               </div>
             </div>

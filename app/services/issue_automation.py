@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import math
 import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -27,6 +28,20 @@ _POWER_OFF_V = 7.0
 _MIN_SAT = 4
 # A gap in telemetry longer than this (minutes) during the day is a track break.
 _TRACK_GAP_MIN = 30
+# Implied speed (km/h) between two consecutive points above this = a "teleport"
+# (track shot / прострел) — a strong GPS jamming/spoofing signature.
+_TELEPORT_KMH = 150
+# Plausible top speed (km/h) for the tracked vehicles; spikes above = spoofing.
+_SPEED_SPIKE_KMH = 110
+
+
+def _haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    r = 6371000.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dlat = math.radians(lat2 - lat1)
+    dlng = math.radians(lng2 - lng1)
+    a = math.sin(dlat / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlng / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(a))
 
 # Plate: letter + 3 digits + 2 letters, optional 2-3 region digits
 # (some tickets omit the region, e.g. "Х774НВ").
@@ -73,6 +88,10 @@ class TelemetryFacts:
     power_off_ratio: float | None = None  # доля пакетов с pwr_ext < _POWER_OFF_V
     max_gap_min: float | None = None  # макс разрыв трека, минут
     zero_coord_moving_ratio: float | None = None  # координаты 0 при скорости>0 (глушение)
+    max_speed_packet: float | None = None  # макс скорость по сырым пакетам
+    speed_spike_count: int = 0  # пакетов со скоростью > _SPEED_SPIKE_KMH
+    teleport_jumps: int = 0  # «прострелы» трека (телепорты координат)
+    max_implied_kmh: float | None = None  # макс расчётная скорость между точками
     flags: list[str] = field(default_factory=list)
 
 
@@ -193,6 +212,28 @@ class IssueAutomationService:
             gaps = [(times[i] - times[i - 1]) for i in range(1, len(times))]
             facts.max_gap_min = round(max(gaps) / 60000.0, 1) if gaps else 0.0
 
+            # speed spikes (spoofing): implausibly high reported speed
+            speeds = [p.get("speed") or 0 for p in packets]
+            facts.max_speed_packet = max(speeds) if speeds else 0
+            facts.speed_spike_count = sum(1 for s in speeds if s > _SPEED_SPIKE_KMH)
+
+            # teleport jumps (track shots / прострелы): distance/time → impossible speed
+            jumps = 0
+            max_impl = 0.0
+            for i in range(1, len(packets)):
+                a, b = packets[i - 1], packets[i]
+                if not (a.get("lat") and a.get("lng") and b.get("lat") and b.get("lng")):
+                    continue
+                dt = ((b.get("time") or 0) - (a.get("time") or 0)) / 1000.0
+                if dt <= 0:
+                    continue
+                impl = _haversine_m(a["lat"], a["lng"], b["lat"], b["lng"]) / dt * 3.6
+                max_impl = max(max_impl, impl)
+                if impl > _TELEPORT_KMH:
+                    jumps += 1
+            facts.teleport_jumps = jumps
+            facts.max_implied_kmh = round(max_impl, 1)
+
         self._derive_flags(facts)
         return facts
 
@@ -200,7 +241,13 @@ class IssueAutomationService:
     def _derive_flags(f: TelemetryFacts) -> None:
         if f.power_off_ratio and f.power_off_ratio > 0.2:
             f.flags.append("power_off")
-        if (f.low_sat_ratio and f.low_sat_ratio > 0.3) or (f.zero_coord_moving_ratio and f.zero_coord_moving_ratio > 0.2):
+        jamming = (
+            f.teleport_jumps >= 2
+            or f.speed_spike_count >= 2
+            or (f.low_sat_ratio is not None and f.low_sat_ratio > 0.05)
+            or (f.zero_coord_moving_ratio is not None and f.zero_coord_moving_ratio > 0.1)
+        )
+        if jamming:
             f.flags.append("jamming")
         if f.max_gap_min and f.max_gap_min > _TRACK_GAP_MIN:
             f.flags.append("track_gap")
@@ -242,6 +289,10 @@ class IssueAutomationService:
             "доля_без_питания": f.power_off_ratio,
             "макс_разрыв_трека_мин": f.max_gap_min,
             "доля_нулевых_координат_в_движении": f.zero_coord_moving_ratio,
+            "макс_скорость_по_пакетам": f.max_speed_packet,
+            "выбросов_скорости_свыше_110": f.speed_spike_count,
+            "телепортов_трека": f.teleport_jumps,
+            "макс_расчётная_скорость_между_точками": f.max_implied_kmh,
             "признаки": f.flags,
         }
         system = (
