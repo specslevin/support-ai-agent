@@ -223,7 +223,12 @@ async def automate_issue(
         external_id = issue_data["issue"].external_id
         live = await okdesk.get_issue(external_id)
         params = _build_parameters(live.parameters)
-        result = await automation.automate(live.title, live.description, params)
+        result = await automation.automate(
+            live.title,
+            live.description,
+            params,
+            issue_type=live.type.name if live.type else None,
+        )
 
         # Persist the analysis so the dashboard can show it later.
         try:

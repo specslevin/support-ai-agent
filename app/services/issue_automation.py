@@ -274,13 +274,25 @@ class IssueAutomationService:
 
     # ----- orchestration -------------------------------------------------
     async def automate(self, title: str | None, description: str | None,
-                       params: list[dict[str, Any]] | None = None) -> AutomationResult:
+                       params: list[dict[str, Any]] | None = None,
+                       issue_type: str | None = None) -> AutomationResult:
         parsed = self.parse_issue(title, description, params)
         telemetry = TelemetryFacts()
         if not parsed.plate:
+            is_mileage = bool(issue_type and "пробег" in issue_type.lower())
+            if issue_type and not is_mileage:
+                reason = (
+                    f"Заявка типа «{issue_type}» — автоанализ расхождения пробега неприменим. "
+                    "Инструмент работает с заявками о расхождении пробега."
+                )
+            else:
+                reason = (
+                    "Не удалось определить гос.номер ТС из заявки. "
+                    "Проверьте, что номер указан в теме или описании."
+                )
             return AutomationResult(
                 parsed=parsed, telemetry=telemetry, category="Диагностика",
-                confidence=0.0, draft_answer="", reasoning="Не удалось определить гос.номер ТС из заявки.",
+                confidence=0.0, draft_answer="", reasoning=reason,
                 error="plate_not_parsed",
             )
         if not parsed.date:

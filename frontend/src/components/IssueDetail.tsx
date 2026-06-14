@@ -494,12 +494,24 @@ function Fact({ label, value, warn }: { label: string; value: React.ReactNode; w
 function AutoAnalysis({ issueId, onUseDraft }: { issueId: number; onUseDraft: (text: string) => void }) {
   const queryClient = useQueryClient()
   const [result, setResult] = useState<AutomationResult | null>(null)
+  const [confirmResolve, setConfirmResolve] = useState(false)
 
   const run = useMutation({
     mutationFn: () => api.automateIssue(issueId),
     onSuccess: (data) => {
       setResult(data)
+      setConfirmResolve(false)
       queryClient.invalidateQueries({ queryKey: ['issue', issueId] })
+    },
+  })
+
+  const resolve = useMutation({
+    mutationFn: (text: string) => api.resolveIssue(issueId, 'completed', text, undefined, true),
+    onSuccess: () => {
+      setConfirmResolve(false)
+      queryClient.invalidateQueries({ queryKey: ['issue', issueId] })
+      queryClient.invalidateQueries({ queryKey: ['issues'] })
+      queryClient.invalidateQueries({ queryKey: ['comments', issueId] })
     },
   })
 
@@ -541,7 +553,7 @@ function AutoAnalysis({ issueId, onUseDraft }: { issueId: number; onUseDraft: (t
               <div className="grid grid-cols-2 gap-x-4 gap-y-1">
                 <Fact label="Объект" value={t.object_name} />
                 <Fact label="Гос.номер" value={p?.plate} />
-                <Fact label="Дата" value={p?.date} />
+                <Fact label="Дата неисправности" value={p?.date} />
                 <Fact label="Путевой лист" value={p?.sheet_mileage_km != null ? `${p.sheet_mileage_km} км` : null} />
                 <Fact label="По системе" value={t.system_mileage_km != null ? `${t.system_mileage_km} км` : null} />
                 <Fact label="Макс. скорость" value={t.max_speed != null ? `${t.max_speed} км/ч` : null} />
@@ -568,12 +580,38 @@ function AutoAnalysis({ issueId, onUseDraft }: { issueId: number; onUseDraft: (t
               {result.reasoning && !result.error && (
                 <p className="text-muted leading-relaxed text-[11px]">💡 {result.reasoning}</p>
               )}
-              <button
-                onClick={() => onUseDraft(result.draft_answer)}
-                className="w-full bg-accent/90 hover:bg-accent text-black text-xs font-semibold py-1.5 rounded transition-colors"
-              >
-                ↓ Вставить ответ в комментарий
-              </button>
+              {resolve.isSuccess ? (
+                <p className="text-xs text-green-400 text-center py-1.5">✓ Заявка решена, ответ отправлен клиенту</p>
+              ) : (
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => onUseDraft(result.draft_answer)}
+                    className="flex-1 bg-surface border border-border hover:border-accent text-white text-xs font-semibold py-1.5 rounded transition-colors"
+                  >
+                    ↓ В комментарий
+                  </button>
+                  {confirmResolve ? (
+                    <button
+                      onClick={() => resolve.mutate(result.draft_answer)}
+                      disabled={resolve.isPending}
+                      className="flex-1 bg-green-600 hover:bg-green-500 text-white text-xs font-semibold py-1.5 rounded transition-colors disabled:opacity-50"
+                    >
+                      {resolve.isPending ? 'Отправка...' : 'Точно решить? ✓'}
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => setConfirmResolve(true)}
+                      title="Отправить ответ клиенту и перевести заявку в «Решена»"
+                      className="flex-1 bg-green-600/90 hover:bg-green-500 text-white text-xs font-semibold py-1.5 rounded transition-colors"
+                    >
+                      ✓ Ответить и решить
+                    </button>
+                  )}
+                </div>
+              )}
+              {resolve.isError && (
+                <p className="text-xs text-red-400">Ошибка при отправке. Попробуйте снова.</p>
+              )}
             </div>
           )}
         </div>
