@@ -124,6 +124,33 @@ class OkdeskService:
         rows = _ensure_list(data)
         return [Employee.model_validate(r) for r in rows]
 
+    async def create_child_issue(
+        self, parent_id: int, title: str, description: str,
+        address: str | None = None, contact_id: int | None = None,
+        type_code: str = "mileage",
+    ) -> Issue:
+        """Create a child issue linked to ``parent_id``. Okdesk requires the
+        «Местоположение техники» (address) custom param for mileage issues, and
+        ignores type on create — so we set the type with a follow-up call."""
+        fields: dict[str, Any] = {
+            "title": title,
+            "description": description or "",
+            "parent_id": parent_id,
+            "custom_parameters": {
+                "address": address or "-",
+                "contact_person": "-",
+                "tel_person": "-",
+            },
+        }
+        if contact_id:
+            fields["contact_id"] = contact_id
+        created = await self.create_issue(**fields)
+        try:
+            await self.change_issue_type(created.id, type_code)
+        except Exception:
+            pass  # issue is created; type can be set manually if this fails
+        return created
+
     async def create_issue(self, **fields: Any) -> Issue:
         data = await self._client._request("POST", "issues", json={"issue": fields})
         return Issue.model_validate(data)

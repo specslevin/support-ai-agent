@@ -142,6 +142,7 @@ export interface BatchObject {
   date: string | null
   sheet_mileage_km: number | null
   system_mileage_km: number | null
+  address?: string | null
   flags: string[]
   teleport_jumps: number
   verdict: string

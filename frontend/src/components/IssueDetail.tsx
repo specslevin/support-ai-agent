@@ -509,6 +509,15 @@ function AutoAnalysis({ issueId, onUseDraft, latestAnalysis }: { issueId: number
   const [result, setResult] = useState<AutomationResult | null>(null)
   const [confirmResolve, setConfirmResolve] = useState(false)
 
+  // Multi-attachment («общая») issue → single-object analysis is misleading
+  // (it picks just the first plate). Defer to «Разбор по объектам» below.
+  const { data: attachments = [] } = useQuery({
+    queryKey: ['attachments', issueId],
+    queryFn: () => api.listAttachments(issueId),
+    staleTime: 5 * 60_000,
+  })
+  const isBatch = attachments.filter(a => a.extractable).length >= 2
+
   const run = useMutation({
     mutationFn: () => api.automateIssue(issueId),
     onSuccess: (data) => {
@@ -531,6 +540,15 @@ function AutoAnalysis({ issueId, onUseDraft, latestAnalysis }: { issueId: number
   const t = result?.telemetry
   const p = result?.parsed
   const conf = result ? Math.round(result.confidence * 100) : 0
+
+  if (isBatch) {
+    return (
+      <p className="text-[11px] text-muted leading-relaxed">
+        🗂 Заявка содержит несколько объектов — используйте «Разбор по объектам» ниже
+        (одиночный автоанализ показал бы только один ТС).
+      </p>
+    )
+  }
 
   return (
     <div className="space-y-3">
@@ -679,12 +697,17 @@ const JAMMING_BLANKET =
   'определить местоположение и пробег. Устранить эти сбои невозможно, оборудование исправно.'
 
 function BatchAnalysis({ issueId, onUseDraft }: { issueId: number; onUseDraft: (text: string) => void }) {
+  const queryClient = useQueryClient()
   const { data: attachments = [] } = useQuery({
     queryKey: ['attachments', issueId],
     queryFn: () => api.listAttachments(issueId),
     staleTime: 5 * 60_000,
   })
   const run = useMutation({ mutationFn: () => api.automateBatch(issueId) })
+  const createMut = useMutation({
+    mutationFn: (objs: import('../types').BatchObject[]) => api.createChildren(issueId, objs),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['issues'] }),
+  })
 
   // Show only for batch issues (several extractable attachments / vehicles)
   const extractable = attachments.filter(a => a.extractable)
@@ -736,9 +759,23 @@ function BatchAnalysis({ issueId, onUseDraft }: { issueId: number; onUseDraft: (
             </button>
           )}
           {res.ok_count > 0 && (
-            <p className="text-[11px] text-muted leading-relaxed">
-              💡 По объектам «данные верны» ({res.ok_count}) лучше ответить отдельно — у них пробег сошёлся с путевым листом.
-            </p>
+            <>
+              <p className="text-[11px] text-muted leading-relaxed">
+                💡 По объектам «данные верны» ({res.ok_count}) пробег сошёлся — для них лучше отдельные заявки.
+              </p>
+              {createMut.isSuccess ? (
+                <p className="text-xs text-green-400">✓ Создано вложенных заявок: {createMut.data.created}{createMut.data.failed ? `, ошибок ${createMut.data.failed}` : ''}</p>
+              ) : (
+                <button
+                  onClick={() => createMut.mutate(res.objects.filter(o => o.verdict === 'Данные верны'))}
+                  disabled={createMut.isPending}
+                  className="w-full bg-surface border border-accent/50 text-accent hover:bg-accent/10 text-xs font-semibold py-1.5 rounded transition-colors disabled:opacity-50"
+                >
+                  {createMut.isPending ? 'Создаю…' : `📋 Создать ${res.ok_count} вложенных заявок по «данные верны»`}
+                </button>
+              )}
+              {createMut.isError && <p className="text-xs text-red-400">Ошибка создания. Попробуйте снова.</p>}
+            </>
           )}
         </div>
       )}
@@ -806,6 +843,13 @@ export function IssueDetail() {
   const [statusDropdownOpen, setStatusDropdownOpen] = useState(false)
   const [pendingStatus, setPendingStatus] = useState<typeof ALL_STATUSES[number] | null>(null)
   const [resolveNotice, setResolveNotice] = useState<string | null>(null)
+  const [toast, setToast] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!toast) return
+    const id = setTimeout(() => setToast(null), 3500)
+    return () => clearTimeout(id)
+  }, [toast])
 
   // On opening a new issue, prefill the comment with the last-used template
   // (until the operator picks another). Empty if none chosen yet.
@@ -1036,7 +1080,13 @@ export function IssueDetail() {
               </button>
               <button
                 disabled={!comment || quickResolve.isPending}
-                onClick={() => quickResolve.mutate('completed')}
+                onClick={() => {
+                  if (!od?.type_code || od.type_code === 'inner') {
+                    setToast('⚠ Сначала укажите тип заявки')
+                    return
+                  }
+                  quickResolve.mutate('completed')
+                }}
                 title="Отправить ответ клиенту и перевести в «Решена»"
                 className="flex-1 bg-green-600/90 hover:bg-green-500 text-white text-xs font-semibold py-1.5 rounded transition-colors disabled:opacity-40"
               >
@@ -1056,6 +1106,12 @@ export function IssueDetail() {
         onClose={() => setPendingStatus(null)}
         onDone={(notice) => { setPendingStatus(null); if (notice) setResolveNotice(notice) }}
       />
+    )}
+
+    {toast && (
+      <div className="fixed bottom-5 right-5 z-[60] bg-yellow-500/95 text-black text-xs font-semibold px-4 py-2.5 rounded-lg shadow-2xl animate-pulse">
+        {toast}
+      </div>
     )}
     </>
   )

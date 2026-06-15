@@ -75,3 +75,15 @@ class BulkStatus(BaseModel):
     comment: str | None = None
     comment_public: bool = True
     delay_to: str | None = None
+
+
+class ChildIssueItem(BaseModel):
+    plate: str
+    date: str | None = None
+    address: str | None = None
+    sheet_mileage_km: float | None = None
+    system_mileage_km: float | None = None
+
+
+class CreateChildren(BaseModel):
+    objects: list[ChildIssueItem] = Field(..., min_length=1)

@@ -47,6 +47,14 @@ export const api = {
     return http.post(`/issues/${id}/automate_batch`).then(r => r.data)
   },
 
+  createChildren(id: number, objects: import('../types').BatchObject[]): Promise<{ ok: boolean; created: number; failed: number; results: { plate: string; issue_id?: number; ok: boolean }[] }> {
+    const payload = objects.map(o => ({
+      plate: o.plate, date: o.date, address: o.address,
+      sheet_mileage_km: o.sheet_mileage_km, system_mileage_km: o.system_mileage_km,
+    }))
+    return http.post(`/issues/${id}/create_children`, { objects: payload }).then(r => r.data)
+  },
+
   getTrack(id: number): Promise<TrackData> {
     return http.get(`/issues/${id}/track`).then(r => r.data)
   },

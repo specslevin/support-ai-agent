@@ -577,12 +577,15 @@ class IssueAutomationService:
             if not text.strip():
                 continue
             parsed = self.parse_issue("", "", None, extra_text=text)
+            addr_m = re.search(r"по\s+адресу[:\s]+(.{5,120}?)(?:\s+и\s+состав|\s+наход|\.|$)", text, re.I | re.S)
+            address = re.sub(r"\s+", " ", addr_m.group(1)).strip() if addr_m else None
             item: dict[str, Any] = {
                 "file": name,
                 "plate": parsed.plate,
                 "date": parsed.date,
                 "sheet_mileage_km": parsed.sheet_mileage_km,
                 "system_mileage_km": None,
+                "address": address,
                 "flags": [],
                 "teleport_jumps": 0,
                 "verdict": "Нет номера/даты",

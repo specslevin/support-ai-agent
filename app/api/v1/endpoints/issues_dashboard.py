@@ -16,6 +16,7 @@ from app.api.v1.schemas.issues import (
     BulkAssignee,
     BulkStatus,
     BulkType,
+    CreateChildren,
     IssueResponse,
     PaginatedIssuesResponse,
 )
@@ -434,6 +435,48 @@ async def automate_batch(
     except Exception:
         log.exception("automate_batch_failed", issue_id=issue_id)
         raise HTTPException(status_code=500, detail="Batch analysis failed")
+
+
+@router.post("/{issue_id}/create_children")
+async def create_children(
+    issue_id: int,
+    body: CreateChildren,
+    cache: CacheService = Depends(get_cache_service),
+    okdesk: OkdeskService = Depends(get_okdesk_service),
+) -> dict[str, object]:
+    """Create child («вложенные») issues under a batch issue — one per object."""
+    try:
+        issue_data = await cache.get_issue_with_analysis(issue_id)
+        if not issue_data:
+            raise HTTPException(status_code=404, detail="Issue not found")
+        external_id = issue_data["issue"].external_id
+        parent = await okdesk.get_issue(external_id)
+        contact_id = parent.contact.id if parent.contact else None
+
+        created = []
+        for obj in body.objects:
+            title = obj.plate
+            desc = (
+                f"Расхождение пробега за {obj.date or '—'}. "
+                f"По системе {obj.system_mileage_km if obj.system_mileage_km is not None else '—'} км, "
+                f"путевой лист {obj.sheet_mileage_km if obj.sheet_mileage_km is not None else '—'} км. "
+                f"(создано из общей заявки #{external_id})"
+            )
+            try:
+                child = await okdesk.create_child_issue(
+                    external_id, title, desc, address=obj.address, contact_id=contact_id,
+                )
+                created.append({"plate": obj.plate, "issue_id": child.id, "ok": True})
+            except Exception:
+                log.warning("create_child_failed", plate=obj.plate)
+                created.append({"plate": obj.plate, "ok": False})
+        ok = sum(1 for c in created if c["ok"])
+        return {"ok": True, "created": ok, "failed": len(created) - ok, "results": created}
+    except HTTPException:
+        raise
+    except Exception:
+        log.exception("create_children_failed", issue_id=issue_id)
+        raise HTTPException(status_code=500, detail="Failed to create child issues")
 
 
 @router.get("/{issue_id}/track")
