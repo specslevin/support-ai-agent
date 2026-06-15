@@ -663,6 +663,90 @@ function AutoAnalysis({ issueId, onUseDraft, latestAnalysis }: { issueId: number
   )
 }
 
+const VERDICT_STYLE: Record<string, string> = {
+  'Глушение': 'text-yellow-400',
+  'Данные верны': 'text-green-400',
+  'Не было питания': 'text-orange-400',
+  'Объект не найден': 'text-red-400',
+  'Нет данных': 'text-muted',
+  'Нет номера/даты': 'text-muted',
+  'Проверить': 'text-cyan-400',
+}
+
+const JAMMING_BLANKET =
+  'Добрый день! Расхождение пробега по перечисленным ТС за указанную дату связано с проездом в зоне ' +
+  'глушения GPS/ГЛОНАСС-сигнала (воздействие средств РЭБ). В такие моменты терминал не может корректно ' +
+  'определить местоположение и пробег. Устранить эти сбои невозможно, оборудование исправно.'
+
+function BatchAnalysis({ issueId, onUseDraft }: { issueId: number; onUseDraft: (text: string) => void }) {
+  const { data: attachments = [] } = useQuery({
+    queryKey: ['attachments', issueId],
+    queryFn: () => api.listAttachments(issueId),
+    staleTime: 5 * 60_000,
+  })
+  const run = useMutation({ mutationFn: () => api.automateBatch(issueId) })
+
+  // Show only for batch issues (several extractable attachments / vehicles)
+  const extractable = attachments.filter(a => a.extractable)
+  if (extractable.length < 2) return null
+
+  const res = run.data
+  return (
+    <div className="space-y-2 border-t border-border pt-3">
+      <button
+        onClick={() => run.mutate()}
+        disabled={run.isPending}
+        className="w-full bg-gradient-to-r from-sky-600/90 to-indigo-600/90 hover:from-sky-600 hover:to-indigo-600 text-white text-xs font-semibold py-2 rounded transition-colors disabled:opacity-50"
+      >
+        {run.isPending ? `🗂 Разбираю ${extractable.length} объектов…` : `🗂 Разбор по объектам (${extractable.length})`}
+      </button>
+
+      {res && (
+        <div className="space-y-2 text-xs">
+          <div className="text-[11px] text-muted">
+            Всего {res.total} · <span className="text-yellow-400">глушение {res.jamming_count}</span> · <span className="text-green-400">данные верны {res.ok_count}</span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-[11px]">
+              <thead className="text-muted/60">
+                <tr className="text-left">
+                  <th className="py-1 pr-2">Гос.номер</th><th className="pr-2">Дата</th>
+                  <th className="pr-2">ПЛ</th><th className="pr-2">Система</th><th>Вердикт</th>
+                </tr>
+              </thead>
+              <tbody>
+                {res.objects.map((o, idx) => (
+                  <tr key={idx} className="border-t border-border/50">
+                    <td className="py-1 pr-2 font-mono">{o.plate ?? '—'}</td>
+                    <td className="pr-2">{o.date ?? '—'}</td>
+                    <td className="pr-2">{o.sheet_mileage_km ?? '—'}</td>
+                    <td className="pr-2">{o.system_mileage_km ?? '—'}</td>
+                    <td className={VERDICT_STYLE[o.verdict] ?? 'text-white'}>{o.verdict}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {res.jamming_count > 0 && (
+            <button
+              onClick={() => onUseDraft(JAMMING_BLANKET)}
+              className="w-full bg-accent/90 hover:bg-accent text-black text-xs font-semibold py-1.5 rounded transition-colors"
+            >
+              ↓ Ответ про глушение (массово) в комментарий
+            </button>
+          )}
+          {res.ok_count > 0 && (
+            <p className="text-[11px] text-muted leading-relaxed">
+              💡 По объектам «данные верны» ({res.ok_count}) лучше ответить отдельно — у них пробег сошёлся с путевым листом.
+            </p>
+          )}
+        </div>
+      )}
+      {run.isError && <p className="text-xs text-red-400">Ошибка разбора. Попробуйте снова.</p>}
+    </div>
+  )
+}
+
 const KIND_ICON: Record<string, string> = {
   pdf: '📕', word: '📘', excel: '📗', image: '🖼', text: '📄', other: '📎',
 }
@@ -869,6 +953,11 @@ export function IssueDetail() {
             issueId={issue.id}
             onUseDraft={(text) => { setComment(text); setCommentPublic(true) }}
             latestAnalysis={latest_analysis}
+          />
+
+          <BatchAnalysis
+            issueId={issue.id}
+            onUseDraft={(text) => { setComment(text); setCommentPublic(true) }}
           />
         </div>
 

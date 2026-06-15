@@ -406,6 +406,36 @@ async def download_issue_attachment(
         raise HTTPException(status_code=500, detail="Failed to download attachment")
 
 
+@router.post("/{issue_id}/automate_batch")
+async def automate_batch(
+    issue_id: int,
+    cache: CacheService = Depends(get_cache_service),
+    okdesk: OkdeskService = Depends(get_okdesk_service),
+    automation: IssueAutomationService = Depends(get_issue_automation_service),
+) -> dict[str, object]:
+    """Per-object analysis for «общая» issues with many attachments (one act per ТС)."""
+    try:
+        issue_data = await cache.get_issue_with_analysis(issue_id)
+        if not issue_data:
+            raise HTTPException(status_code=404, detail="Issue not found")
+        external_id = issue_data["issue"].external_id
+        live = await okdesk.get_issue(external_id)
+        objects = await automation.analyze_batch(external_id, live.attachments)
+        jamming = sum(1 for o in objects if o.get("verdict") == "Глушение")
+        ok_data = sum(1 for o in objects if o.get("verdict") == "Данные верны")
+        return {
+            "total": len(objects),
+            "jamming_count": jamming,
+            "ok_count": ok_data,
+            "objects": objects,
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        log.exception("automate_batch_failed", issue_id=issue_id)
+        raise HTTPException(status_code=500, detail="Batch analysis failed")
+
+
 @router.get("/{issue_id}/track")
 async def get_issue_track(
     issue_id: int,

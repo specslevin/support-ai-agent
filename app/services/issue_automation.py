@@ -555,6 +555,62 @@ class IssueAutomationService:
             "teleports": [index_map[i] for i in teleports if i in index_map],
         }
 
+    async def analyze_batch(self, issue_external_id: int, attachments: list[Any]) -> list[dict[str, Any]]:
+        """Per-object analysis of a batch/«общая» issue (one vehicle act per attachment).
+
+        Returns a list of {file, plate, date, sheet_mileage_km, system_mileage_km,
+        flags, teleport_jumps, verdict}. Mass issues are usually jamming, but some
+        objects have correct data (system ≈ waybill) and need separate handling.
+        """
+        from app.services import attachment_reader
+
+        results: list[dict[str, Any]] = []
+        for a in attachments:
+            name = getattr(a, "attachment_file_name", None) or ""
+            if not attachment_reader.is_extractable(name):
+                continue
+            try:
+                res = await self._okdesk.download_attachment(issue_external_id, a.id)
+                text = attachment_reader.extract_text(name, res[0]) if res else ""
+            except Exception:
+                text = ""
+            if not text.strip():
+                continue
+            parsed = self.parse_issue("", "", None, extra_text=text)
+            item: dict[str, Any] = {
+                "file": name,
+                "plate": parsed.plate,
+                "date": parsed.date,
+                "sheet_mileage_km": parsed.sheet_mileage_km,
+                "system_mileage_km": None,
+                "flags": [],
+                "teleport_jumps": 0,
+                "verdict": "Нет номера/даты",
+            }
+            if parsed.plate and parsed.date:
+                try:
+                    t = await self.gather_telemetry(parsed.plate, parsed.date)
+                    item["system_mileage_km"] = t.system_mileage_km
+                    item["flags"] = t.flags
+                    item["teleport_jumps"] = t.teleport_jumps
+                    sheet, system = parsed.sheet_mileage_km, t.system_mileage_km
+                    if "object_not_found" in t.flags:
+                        item["verdict"] = "Объект не найден"
+                    elif "no_data" in t.flags:
+                        item["verdict"] = "Нет данных"
+                    elif sheet and system is not None and abs(sheet - system) <= max(5.0, sheet * 0.1):
+                        item["verdict"] = "Данные верны"
+                    elif "power_off" in t.flags:
+                        item["verdict"] = "Не было питания"
+                    elif "jamming" in t.flags:
+                        item["verdict"] = "Глушение"
+                    else:
+                        item["verdict"] = "Проверить"
+                except Exception:
+                    item["verdict"] = "Ошибка данных"
+            results.append(item)
+        return results
+
     async def build_training_sample(
         self, title: str | None, description: str | None,
         operator_answer: str, final_status: str,

@@ -136,6 +136,24 @@ export interface TrackData {
   error?: string
 }
 
+export interface BatchObject {
+  file: string
+  plate: string | null
+  date: string | null
+  sheet_mileage_km: number | null
+  system_mileage_km: number | null
+  flags: string[]
+  teleport_jumps: number
+  verdict: string
+}
+
+export interface BatchResult {
+  total: number
+  jamming_count: number
+  ok_count: number
+  objects: BatchObject[]
+}
+
 export interface IssueAttachment {
   id: number
   name: string | null
