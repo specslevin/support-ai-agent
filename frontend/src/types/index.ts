@@ -116,10 +116,20 @@ export interface TrackPoint {
   pwr: number | null
 }
 
+export interface TrackObjectStatus {
+  online?: boolean
+  last_time?: number
+  speed?: number
+  sat?: number
+}
+
 export interface TrackData {
   parsed: AutomationParsed
   object_id?: number
   object_name?: string
+  imei?: string | null
+  phone?: string | null
+  status?: TrackObjectStatus
   total_packets?: number
   points: TrackPoint[]
   teleports?: number[]

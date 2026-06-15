@@ -529,10 +529,27 @@ class IssueAutomationService:
                 "sat": p.get("sat") or 0,
                 "pwr": round(tags.get("pwr_ext"), 1) if tags.get("pwr_ext") is not None else None,
             })
+        # Current object status (online/offline, last fix time) — best effort.
+        status: dict[str, Any] = {}
+        try:
+            st = await self._geo.get_object_status(oid)
+            if st is not None:
+                status = {
+                    "online": st.online,
+                    "last_time": st.time,  # unix seconds of last packet
+                    "speed": st.speed,
+                    "sat": st.sat,
+                }
+        except Exception:  # pragma: no cover - best effort
+            pass
+
         return {
             "parsed": asdict(parsed),
             "object_id": oid,
             "object_name": obj.get("name"),
+            "imei": obj.get("imei"),
+            "phone": obj.get("phone") or obj.get("phone1"),
+            "status": status,
             "total_packets": len(packets),
             "points": points,
             "teleports": [index_map[i] for i in teleports if i in index_map],

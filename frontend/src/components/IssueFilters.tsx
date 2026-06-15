@@ -1,4 +1,5 @@
 import { useIssuesStore } from '../store/issuesStore'
+import { EMPLOYEES } from '../store/userStore'
 
 const STATUSES = [
   { value: '', label: 'Все статусы' },
@@ -11,25 +12,48 @@ const STATUSES = [
 ]
 
 export function IssueFilters() {
-  const { status, company, search, setFilter, resetFilters } = useIssuesStore()
+  const { status, company, search, assignee, issueId, setFilter, resetFilters } = useIssuesStore()
+  const hasAny = status || company || search || assignee || issueId
+
+  const inputCls = 'bg-surface border border-border rounded px-3 py-1.5 text-sm text-white placeholder-muted focus:outline-none focus:border-accent'
 
   return (
     <div className="flex flex-wrap gap-2 items-center">
+      <input
+        type="number"
+        placeholder="№ заявки"
+        value={issueId}
+        onChange={e => setFilter('issueId', e.target.value)}
+        className={`${inputCls} w-28`}
+      />
+
       <input
         type="text"
         placeholder="Поиск по теме..."
         value={search}
         onChange={e => setFilter('search', e.target.value)}
-        className="bg-surface border border-border rounded px-3 py-1.5 text-sm text-white placeholder-muted focus:outline-none focus:border-accent w-52"
+        className={`${inputCls} w-48`}
       />
 
       <select
         value={status}
         onChange={e => setFilter('status', e.target.value)}
-        className="bg-surface border border-border rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-accent"
+        className={inputCls}
       >
         {STATUSES.map(s => (
           <option key={s.value} value={s.value}>{s.label}</option>
+        ))}
+      </select>
+
+      <select
+        value={assignee}
+        onChange={e => setFilter('assignee', e.target.value)}
+        className={inputCls}
+      >
+        <option value="">Все ответственные</option>
+        <option value="__none__">Не назначен</option>
+        {EMPLOYEES.map(e => (
+          <option key={e.id} value={e.name}>{e.name}</option>
         ))}
       </select>
 
@@ -38,10 +62,10 @@ export function IssueFilters() {
         placeholder="Компания..."
         value={company}
         onChange={e => setFilter('company', e.target.value)}
-        className="bg-surface border border-border rounded px-3 py-1.5 text-sm text-white placeholder-muted focus:outline-none focus:border-accent w-40"
+        className={`${inputCls} w-40`}
       />
 
-      {(status || company || search) && (
+      {hasAny && (
         <button
           onClick={resetFilters}
           className="text-xs text-muted hover:text-white px-2 py-1.5 transition-colors"

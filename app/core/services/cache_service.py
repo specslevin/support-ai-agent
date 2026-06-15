@@ -133,6 +133,8 @@ class CacheService:
         status: str | None = None,
         company: str | None = None,
         search: str | None = None,
+        assignee: str | None = None,
+        issue_id: int | None = None,
         sort: str = "created_at",
         order: str = "desc",
     ) -> list[IssueCache]:
@@ -143,6 +145,13 @@ class CacheService:
             stmt = stmt.where(IssueCache.company_name.ilike(f"%{company}%"))
         if search:
             stmt = stmt.where(IssueCache.subject.ilike(f"%{search}%"))
+        if assignee:
+            if assignee == "__none__":
+                stmt = stmt.where(IssueCache.assignee_name.is_(None))
+            else:
+                stmt = stmt.where(IssueCache.assignee_name.ilike(f"%{assignee}%"))
+        if issue_id:
+            stmt = stmt.where(IssueCache.external_id == issue_id)
 
         col = getattr(IssueCache, sort, IssueCache.created_at)
         stmt = stmt.order_by(col.desc() if order == "desc" else col.asc())

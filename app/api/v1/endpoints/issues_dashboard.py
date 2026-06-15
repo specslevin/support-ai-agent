@@ -38,6 +38,8 @@ async def list_issues(
     status: str | None = Query(None, description="Filter by status code"),
     company: str | None = Query(None, description="Filter by company name (partial)"),
     search: str | None = Query(None, description="Search in subject"),
+    assignee: str | None = Query(None, description="Filter by assignee name, or '__none__' for unassigned"),
+    issue_id: int | None = Query(None, description="Exact Okdesk issue number (external_id)"),
     page: int = Query(1, ge=1),
     limit: int = Query(10, ge=1, le=100),
     sort: str = Query("created_at"),
@@ -47,7 +49,8 @@ async def list_issues(
     """Return a paginated list of cached issues with optional filters."""
     try:
         issues = await cache.get_issues_from_cache(
-            status=status, company=company, search=search, sort=sort, order=order
+            status=status, company=company, search=search,
+            assignee=assignee, issue_id=issue_id, sort=sort, order=order,
         )
         total = len(issues)
         start = (page - 1) * limit

@@ -171,14 +171,16 @@ function IssueRow({ issue, highlighted, checked, onToggle, onClick }: { issue: I
 }
 
 export function IssuesList() {
-  const { status, company, search, page, limit, selectedIssueId, highlightId, checkedIds, setPage, setLimit, selectIssue, toggleChecked, setChecked, clearChecked } = useIssuesStore()
+  const { status, company, search, assignee, issueId, page, limit, selectedIssueId, highlightId, checkedIds, setPage, setLimit, selectIssue, toggleChecked, setChecked, clearChecked } = useIssuesStore()
 
   const { data, isLoading, isError } = useQuery({
-    queryKey: ['issues', { status, company, search, page, limit }],
+    queryKey: ['issues', { status, company, search, assignee, issueId, page, limit }],
     queryFn: () => api.listIssues({
       status: status || undefined,
       company: company || undefined,
       search: search || undefined,
+      assignee: assignee || undefined,
+      issue_id: issueId ? Number(issueId) : undefined,
       page,
       limit,
     }),

@@ -10,6 +10,8 @@ export interface IssuesQuery {
   status?: string
   company?: string
   search?: string
+  assignee?: string
+  issue_id?: number
   page?: number
   limit?: number
   sort?: string

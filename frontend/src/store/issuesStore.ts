@@ -5,6 +5,8 @@ interface FiltersState {
   status: string
   company: string
   search: string
+  assignee: string
+  issueId: string
   page: number
   limit: number
   selectedIssueId: number | null
@@ -12,7 +14,7 @@ interface FiltersState {
   trackOpen: boolean
   lastTemplate: string
   checkedIds: number[]
-  setFilter: (key: 'status' | 'company' | 'search', value: string) => void
+  setFilter: (key: 'status' | 'company' | 'search' | 'assignee' | 'issueId', value: string) => void
   setPage: (page: number) => void
   setLimit: (limit: number) => void
   selectIssue: (id: number | null) => void
@@ -30,6 +32,8 @@ export const useIssuesStore = create<FiltersState>()(
       status: '',
       company: '',
       search: '',
+      assignee: '',
+      issueId: '',
       page: 1,
       limit: 20,
       selectedIssueId: null,
@@ -57,7 +61,7 @@ export const useIssuesStore = create<FiltersState>()(
       })),
       setTrackOpen: open => set({ trackOpen: open }),
       setLastTemplate: content => set({ lastTemplate: content }),
-      resetFilters: () => set({ status: '', company: '', search: '', page: 1 }),
+      resetFilters: () => set({ status: '', company: '', search: '', assignee: '', issueId: '', page: 1 }),
     }),
     {
       name: 'issues-prefs',
