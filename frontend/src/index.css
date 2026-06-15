@@ -15,3 +15,30 @@
   ::-webkit-scrollbar-track { @apply bg-base; }
   ::-webkit-scrollbar-thumb { @apply bg-border rounded; }
 }
+
+@layer components {
+  /* Neutral grey selection checkbox (default white box was too distracting) */
+  .ck {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 0.9rem;
+    height: 0.9rem;
+    border-radius: 0.25rem;
+    @apply border border-border bg-surface;
+    display: inline-block;
+    vertical-align: middle;
+    position: relative;
+    transition: background-color .12s, border-color .12s;
+  }
+  .ck:hover { @apply border-muted; }
+  .ck:checked { @apply bg-accent/70 border-accent/70; }
+  .ck:checked::after {
+    content: "";
+    position: absolute;
+    left: 4px; top: 1px;
+    width: 4px; height: 8px;
+    border: solid #fff;
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+  }
+}

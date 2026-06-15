@@ -136,31 +136,29 @@ function TypeSection({ issueId, typeName, typeCode }: { issueId: number; typeNam
   const isDefault = !typeCode || typeCode === 'inner'
 
   return (
-    <div className="col-span-2 flex items-center gap-2">
+    <div className="col-span-2 flex items-center gap-2 relative">
       <span className="text-muted shrink-0">Тип</span>
-      {open ? (
-        <div className="flex items-center gap-1.5 flex-1">
-          <select
-            autoFocus
-            className="flex-1 bg-surface border border-border rounded px-2 py-0.5 text-xs text-white"
-            defaultValue={typeCode ?? ''}
-            onChange={e => e.target.value && mutation.mutate(e.target.value)}
-            onBlur={() => setOpen(false)}
-          >
-            <option value="" disabled>Выберите тип...</option>
+      <button
+        onClick={() => setOpen(o => !o)}
+        className={`text-left hover:text-white transition-colors ${isDefault ? 'text-yellow-400' : 'text-white'}`}
+      >
+        {mutation.isPending ? 'Меняю…' : isDefault ? '⚠ Не указан — нажмите чтобы выбрать' : typeName} ▾
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute left-10 top-full mt-1 z-50 bg-surface border border-border rounded-lg py-1 min-w-[200px] max-h-72 overflow-y-auto shadow-xl">
             {types.map(t => (
-              <option key={t.code} value={t.code}>{t.name}</option>
+              <button
+                key={t.code}
+                onClick={() => { mutation.mutate(t.code); setOpen(false) }}
+                className={`w-full text-left px-4 py-1.5 text-xs hover:bg-white/5 transition-colors ${t.code === typeCode ? 'text-accent' : 'text-white'}`}
+              >
+                {t.name}
+              </button>
             ))}
-          </select>
-          <button onClick={() => setOpen(false)} className="text-muted hover:text-white leading-none">✕</button>
-        </div>
-      ) : (
-        <button
-          onClick={() => setOpen(true)}
-          className={`text-left hover:text-white transition-colors ${isDefault ? 'text-yellow-400' : 'text-white'}`}
-        >
-          {isDefault ? '⚠ Не указан — нажмите чтобы выбрать' : typeName}
-        </button>
+          </div>
+        </>
       )}
     </div>
   )
@@ -785,7 +783,7 @@ export function IssueDetail() {
     <>
     <div className="flex flex-col h-full overflow-y-auto">
       {/* Header */}
-      <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-border shrink-0">
+      <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-border shrink-0 sticky top-0 bg-base z-20">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1">
             <span className="text-muted text-xs font-mono">#{issue.external_id}</span>

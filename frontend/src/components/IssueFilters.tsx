@@ -20,10 +20,11 @@ export function IssueFilters() {
   return (
     <div className="flex flex-wrap gap-2 items-center">
       <input
-        type="number"
+        type="text"
+        inputMode="numeric"
         placeholder="№ заявки"
         value={issueId}
-        onChange={e => setFilter('issueId', e.target.value)}
+        onChange={e => setFilter('issueId', e.target.value.replace(/\D/g, ''))}
         className={`${inputCls} w-28`}
       />
 

@@ -142,7 +142,7 @@ function IssueRow({ issue, highlighted, checked, onToggle, onClick }: { issue: I
       }`}
     >
       <td className="px-3 py-2.5 w-8" onClick={e => e.stopPropagation()}>
-        <input type="checkbox" checked={checked} onChange={onToggle} className="w-3.5 h-3.5 accent-accent cursor-pointer" />
+        <input type="checkbox" checked={checked} onChange={onToggle} className="ck cursor-pointer" />
       </td>
       <td className="px-3 py-2.5 text-xs font-mono text-muted w-24 whitespace-nowrap">
         {highlighted && <span className="text-accent mr-1">▶</span>}
@@ -212,7 +212,7 @@ export function IssuesList() {
                   type="checkbox"
                   checked={allChecked}
                   onChange={() => allChecked ? clearChecked() : setChecked(pageIds)}
-                  className="w-3.5 h-3.5 accent-accent cursor-pointer"
+                  className="ck cursor-pointer"
                 />
               </th>
               <th className="px-3 py-2 font-medium">№ заявки</th>

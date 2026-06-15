@@ -99,10 +99,12 @@ class GpsposGeoService:
         return result
 
     _PLATE_CORE = re.compile(r"[АВЕКМНОРСТУХABEKMHOPCTYX]\d{3}[АВЕКМНОРСТУХABEKMHOPCTYX]{2}", re.I)
+    # Latin lookalikes → Cyrillic, so "A759PC" (latin) matches "А759РС" (cyrillic).
+    _TRANSLIT = str.maketrans("ABEKMHOPCTYX", "АВЕКМНОРСТУХ")
 
-    @staticmethod
-    def _norm_plate(value: Any) -> str:
-        return str(value or "").replace(" ", "").upper()
+    @classmethod
+    def _norm_plate(cls, value: Any) -> str:
+        return str(value or "").replace(" ", "").upper().translate(cls._TRANSLIT)
 
     @classmethod
     def _plate_core(cls, norm: str) -> str:
