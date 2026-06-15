@@ -143,9 +143,15 @@ class IssueAutomationService:
         if m:
             parsed.plate = m.group(0).upper()
 
-        # Date priority: title date → «за <дата>» (fault date) → first date in
-        # text. The first raw date in the body is often the report/creation
-        # date, not the fault date (e.g. «11.06 выяснилось, что за 10.05…»).
+        # Fault-date detection. The fault date is rarely the first date in the
+        # text — that's usually the report/send/act date (e.g. Волжское ПО акты:
+        # «Акт № 3 от 08.06 … осмотр 08.06 … в системе 03.06» — неисправность 03.06).
+        # Priority of explicit markers:
+        #   1. «Дата неисправности <date>» (табличный акт)
+        #   2. «в системе [с] <date>» (когда в системе произошёл сбой)
+        #   3. «за <date>» (расхождение пробега за …)
+        #   4. дата в теме (формат Оренбурга: «10-06-2026 Х774НВ»)
+        #   5. первая дата в тексте
         def _from_match(mm: "re.Match[str] | None") -> str | None:
             if not mm:
                 return None
@@ -154,10 +160,12 @@ class IssueAutomationService:
             except (ValueError, IndexError):
                 return None
 
-        za_re = r"за\s*(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{4})"
+        d = r"(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{4})"
         parsed.date = (
-            _from_match(_DATE_RE.search(title))
-            or _from_match(re.search(za_re, text, re.I))
+            _from_match(re.search(r"дат\w*\s+неисправност\w*[^\d]{0,30}" + d, text, re.I | re.S))
+            or _from_match(re.search(r"в\s+системе(?:\s+с)?[^\d]{0,20}" + d, text, re.I))
+            or _from_match(re.search(r"за\s*" + d, text, re.I))
+            or _from_match(_DATE_RE.search(title))
             or _from_match(_DATE_RE.search(text))
         )
 

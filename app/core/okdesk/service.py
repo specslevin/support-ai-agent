@@ -17,6 +17,7 @@ def _ensure_list(data: Any) -> list[dict[str, Any]]:
 class OkdeskService:
     def __init__(self, client: OkdeskClient) -> None:
         self._client = client
+        self._emp_group_cache: dict[int, int | None] = {}
 
     async def get_me(self) -> dict[str, Any]:
         data = await self._client._request("GET", "employees/list", params={"limit": 1})
@@ -95,10 +96,26 @@ class OkdeskService:
         issue = Issue.model_validate(data)
         return {"code": issue.type.code if issue.type else None, "name": issue.type.name if issue.type else None}
 
-    async def assign_issue(self, issue_id: int, assignee_id: int) -> Issue:
+    async def _employee_group_id(self, employee_id: int) -> int | None:
+        """Resolve an employee's first group id (Okdesk requires the assignee's
+        group to match when changing the responsible)."""
+        if not self._emp_group_cache:
+            data = await self._client._request("GET", "employees/list")
+            for e in _ensure_list(data):
+                groups = e.get("groups") or []
+                self._emp_group_cache[e.get("id")] = groups[0].get("id") if groups else None
+        return self._emp_group_cache.get(employee_id)
+
+    async def assign_issue(self, issue_id: int, assignee_id: int, group_id: int | None = None) -> Issue:
+        # Correct endpoint is PATCH issues/{id}/assignees (plural) with
+        # {assignee_id, group_id}; the employee's group must match.
+        if group_id is None:
+            group_id = await self._employee_group_id(assignee_id)
+        body: dict[str, Any] = {"assignee_id": assignee_id}
+        if group_id is not None:
+            body["group_id"] = group_id
         data = await self._client._request(
-            "PATCH", f"issues/{issue_id}/assignee",
-            json={"assignee_id": assignee_id},
+            "PATCH", f"issues/{issue_id}/assignees", json=body,
         )
         return Issue.model_validate(data)
 

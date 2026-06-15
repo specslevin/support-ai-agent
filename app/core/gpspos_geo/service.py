@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
 
@@ -97,27 +98,36 @@ class GpsposGeoService:
                 continue
         return result
 
+    _PLATE_CORE = re.compile(r"[АВЕКМНОРСТУХABEKMHOPCTYX]\d{3}[АВЕКМНОРСТУХABEKMHOPCTYX]{2}", re.I)
+
     @staticmethod
     def _norm_plate(value: Any) -> str:
         return str(value or "").replace(" ", "").upper()
 
+    @classmethod
+    def _plate_core(cls, norm: str) -> str:
+        """Plate core without region code (Х371РХ64 → Х371РХ)."""
+        m = cls._PLATE_CORE.search(norm)
+        return m.group(0) if m else norm
+
     async def find_object_by_plate(self, plate: str) -> dict[str, Any] | None:
         """Find a tracked object by license plate (gosnumber).
 
-        Rosseti objects usually store the plate inside the ``name`` field
-        (e.g. ``"УАЗ-390995 Т489КО56"``), sometimes in ``stateNumber``/``number``.
-        Returns the raw object dict (id, name, stateNumber, ...) or None.
+        Rosseti objects store the plate inside ``name`` (e.g. ``"УАЗ-390995 Т489КО56"``),
+        sometimes in ``stateNumber``/``number``. The region code may be missing in
+        geo (``"Х371РХ ГАЗ"`` vs issue ``"Х371РХ64"``), so we also match by the plate
+        core (letters+digits without region). Returns the raw object dict or None.
         """
         needle = self._norm_plate(plate)
         if not needle:
             return None
+        core = self._plate_core(needle)
         raw = await self._client.request("GET", "Objects")
         rows = _unwrap_list(raw)
-        exact: dict[str, Any] | None = None
         partial: dict[str, Any] | None = None
+        core_match: dict[str, Any] | None = None
         for r in rows:
-            fields = (r.get("stateNumber"), r.get("name"), r.get("number"))
-            for f in fields:
+            for f in (r.get("stateNumber"), r.get("name"), r.get("number")):
                 nf = self._norm_plate(f)
                 if not nf:
                     continue
@@ -125,7 +135,9 @@ class GpsposGeoService:
                     return r
                 if needle in nf and partial is None:
                     partial = r
-        return exact or partial
+                elif core and core in nf and core_match is None:
+                    core_match = r
+        return partial or core_match
 
     async def get_daily_stats(
         self, object_id: int, from_ms: int, till_ms: int
