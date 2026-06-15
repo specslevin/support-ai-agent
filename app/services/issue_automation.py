@@ -609,16 +609,21 @@ class IssueAutomationService:
                     item["flags"] = t.flags
                     item["teleport_jumps"] = t.teleport_jumps
                     sheet, system = parsed.sheet_mileage_km, t.system_mileage_km
+                    # Order matters: jamming/power-off take precedence over a
+                    # mileage match. Spoofing (e.g. a perfect circle on the map,
+                    # many teleports) makes the track unreliable even if the
+                    # total mileage coincidentally equals the waybill — so it must
+                    # NOT be classified «Данные верны» (see С400ХТ in 64142).
                     if "object_not_found" in t.flags:
                         item["verdict"] = "Объект не найден"
                     elif "no_data" in t.flags:
                         item["verdict"] = "Нет данных"
-                    elif sheet and system is not None and abs(sheet - system) <= max(5.0, sheet * 0.1):
-                        item["verdict"] = "Данные верны"
-                    elif "power_off" in t.flags:
-                        item["verdict"] = "Не было питания"
                     elif "jamming" in t.flags:
                         item["verdict"] = "Глушение"
+                    elif "power_off" in t.flags:
+                        item["verdict"] = "Не было питания"
+                    elif sheet and system is not None and abs(sheet - system) <= max(5.0, sheet * 0.1):
+                        item["verdict"] = "Данные верны"
                     else:
                         item["verdict"] = "Проверить"
                 except Exception:
