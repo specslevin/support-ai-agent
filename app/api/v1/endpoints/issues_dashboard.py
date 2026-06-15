@@ -420,7 +420,12 @@ async def get_issue_track(
             raise HTTPException(status_code=404, detail="Issue not found")
         external_id = issue_data["issue"].external_id
         live = await okdesk.get_issue(external_id)
-        return await automation.build_track(live.title, live.description)
+        attachments_text = ""
+        if live.attachments:
+            attachments_text = await automation.read_attachments(external_id, live.attachments)
+        return await automation.build_track(
+            live.title, live.description, attachments_text=attachments_text or None,
+        )
     except HTTPException:
         raise
     except Exception:
