@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import csv
 import io
+import os
 from typing import Any
 
 import structlog
@@ -120,12 +121,27 @@ def _pdf(data: bytes) -> str:
     return text
 
 
+def _ensure_tesseract_cmd() -> None:
+    """Point pytesseract at the tesseract binary explicitly — the systemd
+    service runs with a minimal PATH (venv only), so auto-discovery fails."""
+    import shutil
+
+    import pytesseract
+
+    current = getattr(pytesseract.pytesseract, "tesseract_cmd", "tesseract")
+    if current and current != "tesseract" and os.path.exists(current):
+        return
+    cmd = shutil.which("tesseract") or "/usr/bin/tesseract"
+    pytesseract.pytesseract.tesseract_cmd = cmd
+
+
 def _ocr_image(data: bytes) -> str:
     if not _ocr_available():
         return ""
     import pytesseract
     from PIL import Image
 
+    _ensure_tesseract_cmd()
     img = Image.open(io.BytesIO(data))
     return pytesseract.image_to_string(img, lang=_OCR_LANG)
 
