@@ -115,8 +115,8 @@ _CATEGORY_CATALOG: list[dict[str, str]] = [
      "template": "Добрый день! Расхождение пробега связано с проездом в зоне глушения GPS/ГЛОНАСС-сигнала (воздействие средств РЭБ). В такие моменты терминал не может корректно определить местоположение и пробег. Устранить эти сбои невозможно, оборудование исправно."},
     {"key": "Не было питания", "when": "Напряжение внешнего питания падало до нуля — терминал был обесточен, трек за этот период восстановить нельзя.",
      "template": "Здравствуйте! В указанную дату ({date}) отсутствовало питающее напряжение на входах терминала. Нет возможности восстановить трек за период, когда питание терминала было отключено."},
-    {"key": "Терминал подключился", "when": "Терминал выгрузил данные позже, пробег теперь корректный и близок к ПЛ.",
-     "template": "Добрый день! Терминал подключился и выгрузил данные. Пробег за {date} составил {system_km} км."},
+    {"key": "Терминал подключился", "when": "Пробег по системе заметно МЕНЬШЕ путевого листа при в целом чистом треке — терминал терял связь/питание, данные копились в чёрном ящике и выгрузились (или выгрузятся) позже, после чего пробег сходится с ПЛ. Если в системе уже сошлось — указать актуальный пробег; если ещё нет — предупредить, что данные догрузятся.",
+     "template": "Добрый день! Терминал временно терял связь, данные из внутренней памяти выгрузились. Пробег за {date} составил {system_km} км. Если терминал ещё не выгрузил все данные за период потери связи, пробег обновится после восстановления связи."},
     {"key": "Изменили настройки", "when": "Трек был, но детектор поездок занижал пробег; после корректировки настроек пробег отобразился полностью.",
      "template": "Добрый день! Изменили настройки детектора поездок. Трек отобразился полностью, пробег за {date} составил {system_km} км."},
     {"key": "Диагностика", "when": "Терминал не на связи / нет данных за дату и нет признаков глушения или штатного отключения — нужна удалённая диагностика силами клиента.",
@@ -268,12 +268,18 @@ class IssueAutomationService:
         if "jamming" in f.flags:
             return "Глушение"
         if parsed.sheet_mileage_km and f.system_mileage_km is not None:
-            diff = abs(parsed.sheet_mileage_km - f.system_mileage_km)
-            tol = max(5.0, parsed.sheet_mileage_km * 0.1)
-            if diff <= tol:
+            sheet = parsed.sheet_mileage_km
+            system = f.system_mileage_km
+            tol = max(5.0, sheet * 0.1)
+            if abs(sheet - system) <= tol:
                 return "Данные верны"
             if "track_gap" in f.flags:
                 return "Изменили настройки"
+        # System lower than the waybill with a clean track is ambiguous —
+        # could be legitimate (пробуксовка/малая скорость → «Данные верны») or
+        # a delayed black-box upload (→ «Терминал подключился»). We don't force
+        # it here; the LLM decides with the catalog guidance and the operator
+        # confirms (large gaps are flagged needs_review in automate()).
         return "Данные верны"
 
     # ----- LLM refinement ------------------------------------------------
@@ -306,6 +312,10 @@ class IssueAutomationService:
             "Ты — ассистент техподдержки GPSPOS. По данным телеметрии классифицируй причину "
             "расхождения пробега и составь короткий вежливый ответ клиенту на русском. "
             "Выбери одну категорию из каталога. Подставь реальные числа (дату, пробег) в ответ. "
+            "Важно: если пробег по системе заметно МЕНЬШЕ путевого листа, а трек чистый (нет глушения/обрывов) — "
+            "это почти всегда временная потеря связи/питания терминала: данные копятся в чёрном ящике и "
+            "выгружаются позже, пробег потом сходится. В этом случае НЕ выбирай «Данные верны», ставь умеренную "
+            "уверенность (≤0.7) и рекомендуй перепроверить пробег после выгрузки. "
             "Не выдумывай данные, которых нет. Верни СТРОГО JSON без пояснений: "
             '{"category": "...", "answer": "...", "confidence": 0.0-1.0, "reasoning": "..."}'
         )
@@ -416,10 +426,20 @@ class IssueAutomationService:
             )
             confidence = confidence or 0.4
             reasoning = reasoning or f"Эвристика: {hint}"
+        # Large under-recording (system << waybill) means the snapshot may be
+        # incomplete (delayed black-box upload) — always send to review and
+        # cap confidence, no matter how sure the model sounded.
+        under_recording = (
+            parsed.sheet_mileage_km
+            and telemetry.system_mileage_km is not None
+            and telemetry.system_mileage_km < parsed.sheet_mileage_km * 0.7
+        )
+        if under_recording:
+            confidence = min(confidence, 0.7)
         return AutomationResult(
             parsed=parsed, telemetry=telemetry, category=category,
             confidence=confidence, draft_answer=draft, reasoning=reasoning,
-            needs_review=confidence < 0.85,
+            needs_review=confidence < 0.85 or bool(under_recording),
         )
 
     async def build_track(self, title: str | None, description: str | None,
