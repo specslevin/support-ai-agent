@@ -9,7 +9,7 @@ import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.db.models import AnalysisCache, IssueCache, Object, Company, TrainingSample
+from app.core.db.models import AnalysisCache, IssueCache, Object, Company, TrainingSample, ResultCache
 from app.core.okdesk.service import OkdeskService
 
 log = structlog.get_logger(__name__)
@@ -253,6 +253,36 @@ class CacheService:
         await self.db.commit()
         await self.db.refresh(row)
         return row
+
+    async def save_result_cache(self, external_id: int, kind: str, result_json: str) -> None:
+        """Upsert a cached analysis result for (issue, kind)."""
+        existing = await self.db.execute(
+            select(ResultCache).where(
+                ResultCache.issue_external_id == external_id, ResultCache.kind == kind
+            )
+        )
+        row = existing.scalar_one_or_none()
+        if row:
+            row.result_json = result_json
+        else:
+            self.db.add(ResultCache(issue_external_id=external_id, kind=kind, result_json=result_json))
+        await self.db.commit()
+
+    async def get_result_cache(self, external_id: int, kind: str) -> dict[str, Any] | None:
+        import json as _json
+        res = await self.db.execute(
+            select(ResultCache).where(
+                ResultCache.issue_external_id == external_id, ResultCache.kind == kind
+            )
+        )
+        row = res.scalar_one_or_none()
+        if not row:
+            return None
+        try:
+            data = _json.loads(row.result_json)
+        except (ValueError, TypeError):
+            return None
+        return {"data": data, "created_at": row.created_at.isoformat()}
 
     async def save_training_sample(
         self, issue_external_id: int, payload: dict[str, Any],

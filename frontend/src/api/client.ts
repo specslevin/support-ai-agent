@@ -43,8 +43,16 @@ export const api = {
     return http.post(`/issues/${id}/automate`).then(r => r.data)
   },
 
+  getCachedAutomate(id: number): Promise<(AutomationResult & { cached: boolean; created_at?: string })> {
+    return http.get(`/issues/${id}/automate`).then(r => r.data)
+  },
+
   automateBatch(id: number): Promise<BatchResult> {
     return http.post(`/issues/${id}/automate_batch`).then(r => r.data)
+  },
+
+  getCachedBatch(id: number): Promise<(BatchResult & { cached: boolean; created_at?: string })> {
+    return http.get(`/issues/${id}/automate_batch`).then(r => r.data)
   },
 
   createChildren(id: number, objects: import('../types').BatchObject[]): Promise<{ ok: boolean; created: number; failed: number; results: { plate: string; issue_id?: number; ok: boolean }[] }> {
@@ -55,8 +63,9 @@ export const api = {
     return http.post(`/issues/${id}/create_children`, { objects: payload }).then(r => r.data)
   },
 
-  getTrack(id: number): Promise<TrackData> {
-    return http.get(`/issues/${id}/track`).then(r => r.data)
+  getTrack(id: number, plate?: string | null, date?: string | null): Promise<TrackData> {
+    const params = plate && date ? { plate, date } : undefined
+    return http.get(`/issues/${id}/track`, { params }).then(r => r.data)
   },
 
   listAttachments(id: number): Promise<IssueAttachment[]> {

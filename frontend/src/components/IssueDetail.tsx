@@ -4,7 +4,7 @@ import { api } from '../api/client'
 import { useIssuesStore } from '../store/issuesStore'
 import { useUserStore, EMPLOYEES } from '../store/userStore'
 import { StatusBadge } from './StatusBadge'
-import type { OkdeskDetail, Template, AutomationResult, Analysis } from '../types'
+import type { OkdeskDetail, Template, AutomationResult, Analysis, BatchResult } from '../types'
 
 function formatDate(iso: string | null | undefined) {
   if (!iso) return null
@@ -518,12 +518,22 @@ function AutoAnalysis({ issueId, onUseDraft, latestAnalysis }: { issueId: number
   })
   const isBatch = attachments.filter(a => a.extractable).length >= 2
 
+  // Cached result — show last analysis without re-running the AI (saves tokens).
+  const cachedQ = useQuery({
+    queryKey: ['automate-cached', issueId],
+    queryFn: () => api.getCachedAutomate(issueId),
+    enabled: !isBatch,
+    staleTime: 5 * 60_000,
+  })
+  const cached = cachedQ.data?.cached ? cachedQ.data : null
+
   const run = useMutation({
     mutationFn: () => api.automateIssue(issueId),
     onSuccess: (data) => {
       setResult(data)
       setConfirmResolve(false)
       queryClient.invalidateQueries({ queryKey: ['issue', issueId] })
+      queryClient.invalidateQueries({ queryKey: ['automate-cached', issueId] })
     },
   })
 
@@ -537,9 +547,11 @@ function AutoAnalysis({ issueId, onUseDraft, latestAnalysis }: { issueId: number
     },
   })
 
-  const t = result?.telemetry
-  const p = result?.parsed
-  const conf = result ? Math.round(result.confidence * 100) : 0
+  const shown = result ?? (cached as AutomationResult | null)
+  const t = shown?.telemetry
+  const p = shown?.parsed
+  const conf = shown ? Math.round(shown.confidence * 100) : 0
+  const isCached = !result && !!cached
 
   if (isBatch) {
     return (
@@ -557,17 +569,21 @@ function AutoAnalysis({ issueId, onUseDraft, latestAnalysis }: { issueId: number
         disabled={run.isPending}
         className="w-full bg-gradient-to-r from-violet-600/90 to-fuchsia-600/90 hover:from-violet-600 hover:to-fuchsia-600 text-white text-xs font-semibold py-2 rounded transition-colors disabled:opacity-50"
       >
-        {run.isPending ? '🤖 Анализирую заявку и данные geo...' : '🤖 Автоанализ заявки'}
+        {run.isPending ? '🤖 Анализирую заявку и данные geo...' : shown ? '🔄 Обновить анализ' : '🤖 Автоанализ заявки'}
       </button>
+
+      {isCached && (
+        <p className="text-[10px] text-muted/70">💾 показан сохранённый анализ{cachedQ.data?.created_at ? ` от ${new Date(cachedQ.data.created_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}` : ''}</p>
+      )}
 
       {run.isError && (
         <p className="text-xs text-red-400">Ошибка анализа. Попробуйте снова.</p>
       )}
 
-      {result && (
+      {shown && (
         <div className="space-y-2.5 text-xs">
-          {result.error && (
-            <p className="text-yellow-400">⚠ {result.reasoning}</p>
+          {shown.error && (
+            <p className="text-yellow-400">⚠ {shown.reasoning}</p>
           )}
 
           {t && (t.object_name || t.system_mileage_km != null) && (
@@ -600,19 +616,19 @@ function AutoAnalysis({ issueId, onUseDraft, latestAnalysis }: { issueId: number
             </div>
           )}
 
-          {result.draft_answer && (
+          {shown.draft_answer && (
             <div className="space-y-1.5">
               <div className="flex items-center gap-2">
-                <span className="px-2 py-0.5 rounded bg-accent/15 text-accent text-[10px] font-semibold">{result.category}</span>
-                <span className={`text-[10px] ${result.needs_review ? 'text-yellow-400' : 'text-green-400'}`}>
-                  уверенность {conf}%{result.needs_review ? ' · нужна проверка' : ''}
+                <span className="px-2 py-0.5 rounded bg-accent/15 text-accent text-[10px] font-semibold">{shown.category}</span>
+                <span className={`text-[10px] ${shown.needs_review ? 'text-yellow-400' : 'text-green-400'}`}>
+                  уверенность {conf}%{shown.needs_review ? ' · нужна проверка' : ''}
                 </span>
               </div>
               <p className="text-white/90 leading-relaxed bg-surface rounded-lg px-3 py-2.5 whitespace-pre-wrap">
-                {result.draft_answer}
+                {shown.draft_answer}
               </p>
-              {result.reasoning && !result.error && (
-                <p className="text-muted leading-relaxed text-[11px]">💡 {result.reasoning}</p>
+              {shown.reasoning && !shown.error && (
+                <p className="text-muted leading-relaxed text-[11px]">💡 {shown.reasoning}</p>
               )}
             </div>
           )}
@@ -641,21 +657,21 @@ function AutoAnalysis({ issueId, onUseDraft, latestAnalysis }: { issueId: number
       )}
 
       {/* Действия — в самом низу блока, после всех данных */}
-      {result?.draft_answer && (
+      {shown?.draft_answer && (
         resolve.isSuccess ? (
           <p className="text-xs text-green-400 text-center py-1.5 border-t border-border">✓ Заявка решена, ответ отправлен клиенту</p>
         ) : (
           <div className="space-y-1.5 pt-2 border-t border-border">
             <div className="flex gap-2">
               <button
-                onClick={() => onUseDraft(result.draft_answer)}
+                onClick={() => onUseDraft(shown.draft_answer)}
                 className="flex-1 bg-surface border border-border hover:border-accent text-white text-xs font-semibold py-1.5 rounded transition-colors"
               >
                 ↓ В комментарий
               </button>
               {confirmResolve ? (
                 <button
-                  onClick={() => resolve.mutate(result.draft_answer)}
+                  onClick={() => resolve.mutate(shown.draft_answer)}
                   disabled={resolve.isPending}
                   className="flex-1 bg-green-600 hover:bg-green-500 text-white text-xs font-semibold py-1.5 rounded transition-colors disabled:opacity-50"
                 >
@@ -698,22 +714,37 @@ const JAMMING_BLANKET =
 
 function BatchAnalysis({ issueId, onUseDraft }: { issueId: number; onUseDraft: (text: string) => void }) {
   const queryClient = useQueryClient()
+  const openTrack = useIssuesStore(s => s.openTrack)
   const { data: attachments = [] } = useQuery({
     queryKey: ['attachments', issueId],
     queryFn: () => api.listAttachments(issueId),
     staleTime: 5 * 60_000,
   })
-  const run = useMutation({ mutationFn: () => api.automateBatch(issueId) })
+  const extractable = attachments.filter(a => a.extractable)
+  const isBatch = extractable.length >= 2
+
+  const cachedQ = useQuery({
+    queryKey: ['batch-cached', issueId],
+    queryFn: () => api.getCachedBatch(issueId),
+    enabled: isBatch,
+    staleTime: 5 * 60_000,
+  })
+  const cached = cachedQ.data?.cached ? cachedQ.data : null
+
+  const run = useMutation({
+    mutationFn: () => api.automateBatch(issueId),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['batch-cached', issueId] }),
+  })
   const createMut = useMutation({
     mutationFn: (objs: import('../types').BatchObject[]) => api.createChildren(issueId, objs),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['issues'] }),
   })
 
   // Show only for batch issues (several extractable attachments / vehicles)
-  const extractable = attachments.filter(a => a.extractable)
-  if (extractable.length < 2) return null
+  if (!isBatch) return null
 
-  const res = run.data
+  const res = run.data ?? (cached as BatchResult | null)
+  const isCached = !run.data && !!cached
   return (
     <div className="space-y-2 border-t border-border pt-3">
       <button
@@ -721,8 +752,11 @@ function BatchAnalysis({ issueId, onUseDraft }: { issueId: number; onUseDraft: (
         disabled={run.isPending}
         className="w-full bg-gradient-to-r from-sky-600/90 to-indigo-600/90 hover:from-sky-600 hover:to-indigo-600 text-white text-xs font-semibold py-2 rounded transition-colors disabled:opacity-50"
       >
-        {run.isPending ? `🗂 Разбираю ${extractable.length} объектов…` : `🗂 Разбор по объектам (${extractable.length})`}
+        {run.isPending ? `🗂 Разбираю ${extractable.length} объектов…` : res ? '🔄 Обновить разбор' : `🗂 Разбор по объектам (${extractable.length})`}
       </button>
+      {isCached && (
+        <p className="text-[10px] text-muted/70">💾 показан сохранённый разбор{cachedQ.data?.created_at ? ` от ${new Date(cachedQ.data.created_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}` : ''}</p>
+      )}
 
       {res && (
         <div className="space-y-2 text-xs">
@@ -734,7 +768,7 @@ function BatchAnalysis({ issueId, onUseDraft }: { issueId: number; onUseDraft: (
               <thead className="text-muted/60">
                 <tr className="text-left">
                   <th className="py-1 pr-2">Гос.номер</th><th className="pr-2">Дата</th>
-                  <th className="pr-2">ПЛ</th><th className="pr-2">Система</th><th>Вердикт</th>
+                  <th className="pr-2">ПЛ</th><th className="pr-2">Система</th><th className="pr-2">Вердикт</th><th></th>
                 </tr>
               </thead>
               <tbody>
@@ -745,6 +779,15 @@ function BatchAnalysis({ issueId, onUseDraft }: { issueId: number; onUseDraft: (
                     <td className="pr-2">{o.sheet_mileage_km ?? '—'}</td>
                     <td className="pr-2">{o.system_mileage_km ?? '—'}</td>
                     <td className={VERDICT_STYLE[o.verdict] ?? 'text-white'}>{o.verdict}</td>
+                    <td className="pl-1">
+                      {o.plate && o.date && (
+                        <button
+                          onClick={() => openTrack(o.plate, o.date)}
+                          title="Карта и графики этого ТС"
+                          className="text-muted hover:text-accent transition-colors"
+                        >🗺</button>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -836,7 +879,7 @@ function AttachmentsSection({ issueId }: { issueId: number }) {
 }
 
 export function IssueDetail() {
-  const { selectedIssueId, selectIssue, trackOpen, setTrackOpen, lastTemplate } = useIssuesStore()
+  const { selectedIssueId, selectIssue, trackOpen, setTrackOpen, openTrack, lastTemplate } = useIssuesStore()
   const queryClient = useQueryClient()
   const [comment, setComment] = useState('')
   const [commentPublic, setCommentPublic] = useState(true)
@@ -951,7 +994,7 @@ export function IssueDetail() {
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <button
-            onClick={() => setTrackOpen(!trackOpen)}
+            onClick={() => trackOpen ? setTrackOpen(false) : openTrack()}
             title="Карта трека и графики телеметрии"
             className={`text-xs px-2.5 py-1 rounded border transition-colors ${trackOpen ? 'border-accent text-accent bg-accent/10' : 'border-border text-muted hover:text-white hover:border-accent'}`}
           >

@@ -492,13 +492,18 @@ class IssueAutomationService:
         )
 
     async def build_track(self, title: str | None, description: str | None,
-                          max_points: int = 2500, attachments_text: str | None = None) -> dict[str, Any]:
+                          max_points: int = 2500, attachments_text: str | None = None,
+                          plate: str | None = None, fault_date: str | None = None) -> dict[str, Any]:
         """Return track points + telemetry series for map/charts rendering.
 
         Points: {t(ms), lat, lng, speed, sat, pwr}. ``teleports`` are indices i
         where the jump from point i-1 to i is physically impossible (GPS spoofing).
+        ``plate``/``fault_date`` override parsing (per-object track из разбора).
         """
-        parsed = self.parse_issue(title, description, None, extra_text=attachments_text)
+        if plate and fault_date:
+            parsed = ParsedIssue(plate=plate, date=fault_date)
+        else:
+            parsed = self.parse_issue(title, description, None, extra_text=attachments_text)
         if not parsed.plate or not parsed.date:
             return {"error": "no_plate_or_date", "parsed": asdict(parsed), "points": []}
         obj = await self._geo.find_object_by_plate(parsed.plate)

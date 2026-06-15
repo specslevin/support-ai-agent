@@ -241,13 +241,15 @@ function TelemetryCharts({ data, apiRef, onRange }: { data: TrackData; apiRef: R
 export function TrackPanel({ issueId }: { issueId: number }) {
   const mapApi = useRef<MapApi | null>(null)
   const setTrackOpen = useIssuesStore(s => s.setTrackOpen)
+  const trackPlate = useIssuesStore(s => s.trackPlate)
+  const trackDate = useIssuesStore(s => s.trackDate)
   const [range, setRange] = useState<[number, number] | null>(null)
   const fullRangeRef = useRef<[number, number] | null>(null)
   const onRange = useCallback((min: number, max: number) => setRange([min, max]), [])
 
   const { data, isPending, isError } = useQuery({
-    queryKey: ['track', issueId],
-    queryFn: () => api.getTrack(issueId),
+    queryKey: ['track', issueId, trackPlate, trackDate],
+    queryFn: () => api.getTrack(issueId, trackPlate, trackDate),
     staleTime: 5 * 60_000,
   })
 

@@ -126,6 +126,24 @@ class AnalysisCache(Base):
     issue: Mapped["IssueCache"] = relationship("IssueCache", back_populates="analyses")
 
 
+class ResultCache(Base):
+    """Cached analysis results (automate / batch) so we don't re-run the AI and
+    re-spend tokens on every open. Keyed by (issue_external_id, kind)."""
+
+    __tablename__ = "result_cache"
+    __table_args__ = (
+        Index("ix_result_cache_lookup", "issue_external_id", "kind"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    issue_external_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)  # 'automate' | 'batch'
+    result_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+
+
 class TrainingSample(Base):
     """Groundwork for AI training: operator decisions paired with telemetry facts.
 

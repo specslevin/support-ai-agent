@@ -12,6 +12,8 @@ interface FiltersState {
   selectedIssueId: number | null
   highlightId: number | null
   trackOpen: boolean
+  trackPlate: string | null
+  trackDate: string | null
   lastTemplate: string
   checkedIds: number[]
   setFilter: (key: 'status' | 'company' | 'search' | 'assignee' | 'issueId', value: string) => void
@@ -19,6 +21,7 @@ interface FiltersState {
   setLimit: (limit: number) => void
   selectIssue: (id: number | null) => void
   setTrackOpen: (open: boolean) => void
+  openTrack: (plate?: string | null, date?: string | null) => void
   setLastTemplate: (content: string) => void
   toggleChecked: (id: number) => void
   setChecked: (ids: number[]) => void
@@ -39,6 +42,8 @@ export const useIssuesStore = create<FiltersState>()(
       selectedIssueId: null,
       highlightId: null,
       trackOpen: false,
+      trackPlate: null,
+      trackDate: null,
       lastTemplate: '',
       checkedIds: [],
 
@@ -58,8 +63,11 @@ export const useIssuesStore = create<FiltersState>()(
         selectedIssueId: id,
         highlightId: id ?? state.highlightId,
         trackOpen: false,
+        trackPlate: null,
+        trackDate: null,
       })),
       setTrackOpen: open => set({ trackOpen: open }),
+      openTrack: (plate = null, date = null) => set({ trackOpen: true, trackPlate: plate, trackDate: date }),
       setLastTemplate: content => set({ lastTemplate: content }),
       resetFilters: () => set({ status: '', company: '', search: '', assignee: '', issueId: '', page: 1 }),
     }),

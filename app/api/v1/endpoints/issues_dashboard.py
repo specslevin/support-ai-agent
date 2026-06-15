@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import urllib.parse
 
 import structlog
@@ -335,12 +336,39 @@ async def automate_issue(
         except Exception:
             log.warning("automate_save_analysis_failed", issue_id=issue_id)
 
-        return automation.to_dict(result)
+        result_dict = automation.to_dict(result)
+        try:
+            await cache.save_result_cache(external_id, "automate", json.dumps(result_dict, ensure_ascii=False))
+        except Exception:
+            log.warning("automate_cache_save_failed", issue_id=issue_id)
+        return result_dict
     except HTTPException:
         raise
     except Exception:
         log.exception("automate_issue_failed", issue_id=issue_id)
         raise HTTPException(status_code=500, detail="Automation failed")
+
+
+@router.get("/{issue_id}/automate")
+async def get_cached_automate(
+    issue_id: int,
+    cache: CacheService = Depends(get_cache_service),
+) -> dict[str, object]:
+    """Return the last cached automate result (no AI re-run, no token spend)."""
+    try:
+        issue_data = await cache.get_issue_with_analysis(issue_id)
+        if not issue_data:
+            raise HTTPException(status_code=404, detail="Issue not found")
+        external_id = issue_data["issue"].external_id
+        cached = await cache.get_result_cache(external_id, "automate")
+        if not cached:
+            return {"cached": False}
+        return {"cached": True, "created_at": cached["created_at"], **cached["data"]}
+    except HTTPException:
+        raise
+    except Exception:
+        log.exception("get_cached_automate_failed", issue_id=issue_id)
+        raise HTTPException(status_code=500, detail="Failed to read cached analysis")
 
 
 @router.get("/{issue_id}/attachments")
@@ -424,17 +452,44 @@ async def automate_batch(
         objects = await automation.analyze_batch(external_id, live.attachments)
         jamming = sum(1 for o in objects if o.get("verdict") == "Глушение")
         ok_data = sum(1 for o in objects if o.get("verdict") == "Данные верны")
-        return {
+        payload = {
             "total": len(objects),
             "jamming_count": jamming,
             "ok_count": ok_data,
             "objects": objects,
         }
+        try:
+            await cache.save_result_cache(external_id, "batch", json.dumps(payload, ensure_ascii=False))
+        except Exception:
+            log.warning("batch_cache_save_failed", issue_id=issue_id)
+        return payload
     except HTTPException:
         raise
     except Exception:
         log.exception("automate_batch_failed", issue_id=issue_id)
         raise HTTPException(status_code=500, detail="Batch analysis failed")
+
+
+@router.get("/{issue_id}/automate_batch")
+async def get_cached_batch(
+    issue_id: int,
+    cache: CacheService = Depends(get_cache_service),
+) -> dict[str, object]:
+    """Return the last cached batch result (no re-run)."""
+    try:
+        issue_data = await cache.get_issue_with_analysis(issue_id)
+        if not issue_data:
+            raise HTTPException(status_code=404, detail="Issue not found")
+        external_id = issue_data["issue"].external_id
+        cached = await cache.get_result_cache(external_id, "batch")
+        if not cached:
+            return {"cached": False}
+        return {"cached": True, "created_at": cached["created_at"], **cached["data"]}
+    except HTTPException:
+        raise
+    except Exception:
+        log.exception("get_cached_batch_failed", issue_id=issue_id)
+        raise HTTPException(status_code=500, detail="Failed to read cached batch")
 
 
 @router.post("/{issue_id}/create_children")
@@ -491,6 +546,8 @@ async def create_children(
 @router.get("/{issue_id}/track")
 async def get_issue_track(
     issue_id: int,
+    plate: str | None = Query(None, description="Override plate (per-object track from batch)"),
+    date: str | None = Query(None, description="Override fault date YYYY-MM-DD"),
     cache: CacheService = Depends(get_cache_service),
     okdesk: OkdeskService = Depends(get_okdesk_service),
     automation: IssueAutomationService = Depends(get_issue_automation_service),
@@ -501,6 +558,9 @@ async def get_issue_track(
         if not issue_data:
             raise HTTPException(status_code=404, detail="Issue not found")
         external_id = issue_data["issue"].external_id
+        # Per-object track (from batch разбор) — skip attachment OCR, use plate/date directly.
+        if plate and date:
+            return await automation.build_track("", "", plate=plate, fault_date=date)
         live = await okdesk.get_issue(external_id)
         attachments_text = ""
         if live.attachments:
