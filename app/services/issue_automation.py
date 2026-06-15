@@ -47,9 +47,9 @@ def _haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
 # (some tickets omit the region, e.g. "Х774НВ").
 _L = "АВЕКМНОРСТУХABEKMHOPCTYX"
 _PLATE_RE = re.compile(
-    rf"[{_L}]\d{{3}}[{_L}]{{2}}\d{{0,3}}"   # обычный: А123ВС[64]
-    rf"|\d{{4}}\s?[{_L}]{{2}}"              # спецтехника: 5297СУ
-    rf"|[{_L}]{{2}}\s?\d{{4}}",             # спецтехника (обратный порядок): СУ5297
+    rf"[{_L}]\s?\d{{3}}\s?[{_L}]{{2}}\s?\d{{0,3}}"   # обычный: А123ВС[64], в т.ч. «М 396 УМ 763»
+    rf"|\d{{4}}\s?[{_L}]{{2}}"                       # спецтехника: 5297СУ
+    rf"|[{_L}]{{2}}\s?\d{{4}}",                      # спецтехника (обратный порядок): СУ5297
     re.I,
 )
 _DATE_RE = re.compile(r"(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{4})")
@@ -147,7 +147,7 @@ class IssueAutomationService:
 
         m = _PLATE_RE.search(title) or _PLATE_RE.search(text)
         if m:
-            parsed.plate = m.group(0).upper()
+            parsed.plate = re.sub(r"\s", "", m.group(0)).upper()
 
         # Fault-date detection. The fault date is rarely the first date in the
         # text — that's usually the report/send/act date (e.g. Волжское ПО акты:

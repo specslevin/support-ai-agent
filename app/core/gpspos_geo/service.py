@@ -115,13 +115,15 @@ class GpsposGeoService:
         return m.group(0) if m else norm
 
     @classmethod
-    def _special_sig(cls, norm: str) -> str | None:
-        """Canonical signature for special-equipment plates: «DDDDLL» regardless
-        of order (СУ5297 / 5297СУ → '5297СУ'). None if not a special plate."""
+    def _special_candidates(cls, norm: str) -> tuple[str, str] | None:
+        """Both orderings of a special-equipment plate (СУ5297 → ('5297СУ','СУ5297')).
+        Used to substring-search the object name (whose model часть, напр. «РТ 300»,
+        иначе ломает однозначную сигнатуру). None if not a special plate."""
         m = cls._SPECIAL_RE.search(norm)
         if not m:
             return None
-        return (m.group(1) + m.group(2)) if m.group(1) else (m.group(4) + m.group(3))
+        digits, letters = (m.group(1), m.group(2)) if m.group(1) else (m.group(4), m.group(3))
+        return (digits + letters, letters + digits)
 
     async def find_object_by_plate(self, plate: str) -> dict[str, Any] | None:
         """Find a tracked object by license plate (gosnumber).
@@ -135,7 +137,7 @@ class GpsposGeoService:
         if not needle:
             return None
         core = self._plate_core(needle)
-        special = self._special_sig(needle)  # for спецтехника (5297СУ / СУ5297)
+        special = self._special_candidates(needle)  # for спецтехника (5297СУ / СУ5297)
         raw = await self._client.request("GET", "Objects")
         rows = _unwrap_list(raw)
         partial: dict[str, Any] | None = None
@@ -152,7 +154,7 @@ class GpsposGeoService:
                     partial = r
                 elif core and core in nf and core_match is None:
                     core_match = r
-                elif special and special_match is None and self._special_sig(nf) == special:
+                elif special and special_match is None and (special[0] in nf or special[1] in nf):
                     special_match = r
         return partial or core_match or special_match
 
