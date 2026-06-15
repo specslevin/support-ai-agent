@@ -143,21 +143,33 @@ class IssueAutomationService:
         if m:
             parsed.plate = m.group(0).upper()
 
-        dm = _DATE_RE.search(text)
-        if dm:
-            d, mo, y = int(dm.group(1)), int(dm.group(2)), int(dm.group(3))
+        # Date priority: title date → «за <дата>» (fault date) → first date in
+        # text. The first raw date in the body is often the report/creation
+        # date, not the fault date (e.g. «11.06 выяснилось, что за 10.05…»).
+        def _from_match(mm: "re.Match[str] | None") -> str | None:
+            if not mm:
+                return None
             try:
-                parsed.date = _dt.date(y, mo, d).isoformat()
-            except ValueError:
-                pass
+                return _dt.date(int(mm.group(3)), int(mm.group(2)), int(mm.group(1))).isoformat()
+            except (ValueError, IndexError):
+                return None
 
-        # по путевому листу / по ПЛ / по одометру <num> <unit>
-        sm = re.search(r"(?:путев\w*\s+лист\w*|одометр\w*|по\s*ПЛ|ПЛ)\D{0,6}(\d+(?:[.,]\d+)?)\s*(км|м)?", text, re.I)
+        za_re = r"за\s*(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{4})"
+        parsed.date = (
+            _from_match(_DATE_RE.search(title))
+            or _from_match(re.search(za_re, text, re.I))
+            or _from_match(_DATE_RE.search(text))
+        )
+
+        # по путевому листу / по ПЛ / по одометру <num> <unit>.
+        # Единица (км/м) ОБЯЗАТЕЛЬНА — иначе регулярка цепляет даты (10.05.2026)
+        # и прочие числа. Допускаем «составил – », «равен» между словом и числом.
+        sm = re.search(r"(?:путев\w*\s+лист\w*|одометр\w*|по\s*ПЛ|ПЛ)[^\d\n]{0,18}(\d+(?:[.,]\d+)?)\s*(км|м)\b", text, re.I)
         if sm:
             parsed.sheet_mileage_km = _to_km(_parse_number(sm.group(1)), sm.group(2))
 
         # «в ПК <num> <unit>» — то, что клиент видит в системе
-        cm = re.search(r"в\s*ПК\D{0,6}(\d+(?:[.,]\d+)?)\s*(км|м)?", text, re.I)
+        cm = re.search(r"в\s*ПК[^\d\n]{0,6}(\d+(?:[.,]\d+)?)\s*(км|м)\b", text, re.I)
         if cm:
             parsed.declared_system_km = _to_km(_parse_number(cm.group(1)), cm.group(2))
         return parsed
@@ -285,8 +297,11 @@ class IssueAutomationService:
             tol = max(5.0, sheet * 0.1)
             if abs(sheet - system) <= tol:
                 return "Данные верны"
-            if "track_gap" in f.flags:
-                return "Изменили настройки"
+        # A long telemetry gap means the terminal lost connection/power: data
+        # is buffered in the black box and uploads late, so the mileage catches
+        # up afterwards. That's «Терминал подключился», not «Данные верны».
+        if "track_gap" in f.flags:
+            return "Терминал подключился"
         # System lower than the waybill with a clean track is ambiguous —
         # could be legitimate (пробуксовка/малая скорость → «Данные верны») or
         # a delayed black-box upload (→ «Терминал подключился»). We don't force
@@ -328,6 +343,8 @@ class IssueAutomationService:
             "это почти всегда временная потеря связи/питания терминала: данные копятся в чёрном ящике и "
             "выгружаются позже, пробег потом сходится. В этом случае НЕ выбирай «Данные верны», ставь умеренную "
             "уверенность (≤0.7) и рекомендуй перепроверить пробег после выгрузки. "
+            "Если в фактах есть большой обрыв трека (макс_разрыв_трека_мин велик) или признак track_gap — "
+            "терминал терял связь, данные за этот период догрузятся из чёрного ящика; выбирай «Терминал подключился». "
             "Не выдумывай данные, которых нет. Верни СТРОГО JSON без пояснений: "
             '{"category": "...", "answer": "...", "confidence": 0.0-1.0, "reasoning": "..."}'
         )
