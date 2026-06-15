@@ -4,7 +4,7 @@ import { api } from '../api/client'
 import { useIssuesStore } from '../store/issuesStore'
 import { useUserStore, EMPLOYEES } from '../store/userStore'
 import { StatusBadge } from './StatusBadge'
-import type { OkdeskDetail, Template, AutomationResult } from '../types'
+import type { OkdeskDetail, Template, AutomationResult, Analysis } from '../types'
 
 function formatDate(iso: string | null | undefined) {
   if (!iso) return null
@@ -506,7 +506,7 @@ function Fact({ label, value, warn }: { label: string; value: React.ReactNode; w
   )
 }
 
-function AutoAnalysis({ issueId, onUseDraft }: { issueId: number; onUseDraft: (text: string) => void }) {
+function AutoAnalysis({ issueId, onUseDraft, latestAnalysis }: { issueId: number; onUseDraft: (text: string) => void; latestAnalysis: Analysis | null }) {
   const queryClient = useQueryClient()
   const [result, setResult] = useState<AutomationResult | null>(null)
   const [confirmResolve, setConfirmResolve] = useState(false)
@@ -598,41 +598,68 @@ function AutoAnalysis({ issueId, onUseDraft }: { issueId: number; onUseDraft: (t
               {result.reasoning && !result.error && (
                 <p className="text-muted leading-relaxed text-[11px]">💡 {result.reasoning}</p>
               )}
-              {resolve.isSuccess ? (
-                <p className="text-xs text-green-400 text-center py-1.5">✓ Заявка решена, ответ отправлен клиенту</p>
-              ) : (
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => onUseDraft(result.draft_answer)}
-                    className="flex-1 bg-surface border border-border hover:border-accent text-white text-xs font-semibold py-1.5 rounded transition-colors"
-                  >
-                    ↓ В комментарий
-                  </button>
-                  {confirmResolve ? (
-                    <button
-                      onClick={() => resolve.mutate(result.draft_answer)}
-                      disabled={resolve.isPending}
-                      className="flex-1 bg-green-600 hover:bg-green-500 text-white text-xs font-semibold py-1.5 rounded transition-colors disabled:opacity-50"
-                    >
-                      {resolve.isPending ? 'Отправка...' : 'Точно решить? ✓'}
-                    </button>
-                  ) : (
-                    <button
-                      onClick={() => setConfirmResolve(true)}
-                      title="Отправить ответ клиенту и перевести заявку в «Решена»"
-                      className="flex-1 bg-green-600/90 hover:bg-green-500 text-white text-xs font-semibold py-1.5 rounded transition-colors"
-                    >
-                      ✓ Ответить и решить
-                    </button>
-                  )}
-                </div>
-              )}
-              {resolve.isError && (
-                <p className="text-xs text-red-400">Ошибка при отправке. Попробуйте снова.</p>
-              )}
             </div>
           )}
         </div>
+      )}
+
+      {/* Прошлый анализ */}
+      {latestAnalysis && latestAnalysis.mileage_from_system != null && (
+        <div className="text-xs space-y-1.5 pt-2 border-t border-border">
+          <span className="text-[10px] text-muted/60">Прошлый анализ</span>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+            <span className="text-muted">Путевой лист</span>
+            <span>{latestAnalysis.mileage_from_sheet?.toLocaleString('ru-RU') ?? '—'} км</span>
+            <span className="text-muted">По системе</span>
+            <span>{latestAnalysis.mileage_from_system?.toLocaleString('ru-RU')} км</span>
+            {latestAnalysis.discrepancy_percent != null && (
+              <>
+                <span className="text-muted">Расхождение</span>
+                <span className={Math.abs(latestAnalysis.discrepancy_percent) > 5 ? 'text-yellow-400' : 'text-green-400'}>
+                  {latestAnalysis.discrepancy_percent.toFixed(1)}%
+                </span>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Действия — в самом низу блока, после всех данных */}
+      {result?.draft_answer && (
+        resolve.isSuccess ? (
+          <p className="text-xs text-green-400 text-center py-1.5 border-t border-border">✓ Заявка решена, ответ отправлен клиенту</p>
+        ) : (
+          <div className="space-y-1.5 pt-2 border-t border-border">
+            <div className="flex gap-2">
+              <button
+                onClick={() => onUseDraft(result.draft_answer)}
+                className="flex-1 bg-surface border border-border hover:border-accent text-white text-xs font-semibold py-1.5 rounded transition-colors"
+              >
+                ↓ В комментарий
+              </button>
+              {confirmResolve ? (
+                <button
+                  onClick={() => resolve.mutate(result.draft_answer)}
+                  disabled={resolve.isPending}
+                  className="flex-1 bg-green-600 hover:bg-green-500 text-white text-xs font-semibold py-1.5 rounded transition-colors disabled:opacity-50"
+                >
+                  {resolve.isPending ? 'Отправка...' : 'Точно решить? ✓'}
+                </button>
+              ) : (
+                <button
+                  onClick={() => setConfirmResolve(true)}
+                  title="Отправить ответ клиенту и перевести заявку в «Решена»"
+                  className="flex-1 bg-green-600/90 hover:bg-green-500 text-white text-xs font-semibold py-1.5 rounded transition-colors"
+                >
+                  ✓ Ответить и решить
+                </button>
+              )}
+            </div>
+            {resolve.isError && (
+              <p className="text-xs text-red-400">Ошибка при отправке. Попробуйте снова.</p>
+            )}
+          </div>
+        )
       )}
     </div>
   )
@@ -840,27 +867,11 @@ export function IssueDetail() {
         <div className="border border-border rounded-lg p-4 space-y-3">
           <h3 className="text-[10px] font-semibold uppercase tracking-widest text-muted/60">Анализ пробега</h3>
 
-          <AutoAnalysis issueId={issue.id} onUseDraft={(text) => { setComment(text); setCommentPublic(true) }} />
-
-          {latest_analysis && latest_analysis.mileage_from_system != null && (
-            <div className="text-xs space-y-1.5 pt-2 border-t border-border">
-              <span className="text-[10px] text-muted/60">Прошлый анализ</span>
-              <div className="grid grid-cols-2 gap-x-4 gap-y-1">
-                <span className="text-muted">Путевой лист</span>
-                <span>{latest_analysis.mileage_from_sheet?.toLocaleString('ru-RU') ?? '—'} км</span>
-                <span className="text-muted">По системе</span>
-                <span>{latest_analysis.mileage_from_system?.toLocaleString('ru-RU')} км</span>
-                {latest_analysis.discrepancy_percent != null && (
-                  <>
-                    <span className="text-muted">Расхождение</span>
-                    <span className={Math.abs(latest_analysis.discrepancy_percent) > 5 ? 'text-yellow-400' : 'text-green-400'}>
-                      {latest_analysis.discrepancy_percent.toFixed(1)}%
-                    </span>
-                  </>
-                )}
-              </div>
-            </div>
-          )}
+          <AutoAnalysis
+            issueId={issue.id}
+            onUseDraft={(text) => { setComment(text); setCommentPublic(true) }}
+            latestAnalysis={latest_analysis}
+          />
         </div>
 
         {/* Attachments */}
