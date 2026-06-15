@@ -456,8 +456,17 @@ async def create_children(
         created = []
         for obj in body.objects:
             title = obj.plate
+            # Use DD.MM.YYYY + explicit «Дата неисправности» marker so the child
+            # issue's own automate can parse the date back (ISO wasn't readable).
+            date_ru = "—"
+            if obj.date:
+                try:
+                    import datetime as _d
+                    date_ru = _d.date.fromisoformat(obj.date).strftime("%d.%m.%Y")
+                except ValueError:
+                    date_ru = obj.date
             desc = (
-                f"Расхождение пробега за {obj.date or '—'}. "
+                f"Расхождение пробега. Дата неисправности: {date_ru}. "
                 f"По системе {obj.system_mileage_km if obj.system_mileage_km is not None else '—'} км, "
                 f"путевой лист {obj.sheet_mileage_km if obj.sheet_mileage_km is not None else '—'} км. "
                 f"(создано из общей заявки #{external_id})"

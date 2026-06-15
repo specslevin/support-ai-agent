@@ -160,13 +160,25 @@ class IssueAutomationService:
             except (ValueError, IndexError):
                 return None
 
+        def _from_iso(mm: "re.Match[str] | None") -> str | None:
+            if not mm:
+                return None
+            try:
+                return _dt.date(int(mm.group(1)), int(mm.group(2)), int(mm.group(3))).isoformat()
+            except (ValueError, IndexError):
+                return None
+
         d = r"(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{4})"
+        iso = r"(\d{4})-(\d{2})-(\d{2})"
         parsed.date = (
             _from_match(re.search(r"дат\w*\s+неисправност\w*[^\d]{0,30}" + d, text, re.I | re.S))
+            or _from_iso(re.search(r"дат\w*\s+неисправност\w*[^\d]{0,30}" + iso, text, re.I | re.S))
             or _from_match(re.search(r"в\s+системе(?:\s+с)?[^\d]{0,20}" + d, text, re.I))
             or _from_match(re.search(r"за\s*" + d, text, re.I))
+            or _from_iso(re.search(r"за\s*" + iso, text, re.I))
             or _from_match(_DATE_RE.search(title))
             or _from_match(_DATE_RE.search(text))
+            or _from_iso(re.search(iso, text))
         )
 
         # по путевому листу / по ПЛ / по одометру <num> <unit>.
