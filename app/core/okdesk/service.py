@@ -82,7 +82,7 @@ class OkdeskService:
         return {"code": issue.status.code if issue.status else None, "name": issue.status.name if issue.status else None}
 
     async def list_issue_types(self) -> list[dict[str, Any]]:
-        data = await self._client._request("GET", "references/issue_types")
+        data = await self._client._request("GET", "issues/types")
         if isinstance(data, list):
             return [{"code": t.get("code"), "name": t.get("name")} for t in data if not t.get("inner", False)]
         return []

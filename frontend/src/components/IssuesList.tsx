@@ -4,6 +4,7 @@ import { api } from '../api/client'
 import { useIssuesStore } from '../store/issuesStore'
 import { EMPLOYEES } from '../store/userStore'
 import { StatusBadge } from './StatusBadge'
+import { TemplatePicker } from './IssueDetail'
 import type { Issue } from '../types'
 
 function formatDate(iso: string | null) {
@@ -117,12 +118,15 @@ function BulkActionBar() {
         ))}
       </Dropdown>
 
-      <input
-        value={comment}
-        onChange={e => setComment(e.target.value)}
-        placeholder="Комментарий (для статуса)"
-        className="flex-1 min-w-[160px] bg-base border border-border rounded px-2.5 py-1 text-xs focus:outline-none focus:border-accent"
-      />
+      <div className="flex items-center gap-1.5 flex-1 min-w-[180px]">
+        <input
+          value={comment}
+          onChange={e => setComment(e.target.value)}
+          placeholder="Комментарий (для статуса)"
+          className="flex-1 bg-base border border-border rounded px-2.5 py-1 text-xs focus:outline-none focus:border-accent"
+        />
+        <TemplatePicker onSelect={text => setComment(text)} />
+      </div>
 
       <button onClick={clearChecked} className="text-xs text-muted hover:text-white px-2">✕ снять</button>
     </div>

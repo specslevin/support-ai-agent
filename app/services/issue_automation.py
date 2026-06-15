@@ -218,9 +218,15 @@ class IssueAutomationService:
             facts.max_speed_packet = max(speeds) if speeds else 0
             facts.speed_spike_count = sum(1 for s in speeds if s > _SPEED_SPIKE_KMH)
 
-            # teleport jumps (track shots / прострелы): distance/time → impossible speed
+            # teleport jumps (track shots / прострелы): distance/time → impossible speed.
+            # Also sum the REAL driven distance from the track (excluding teleport
+            # jumps) — this is the live source of truth and reflects data that the
+            # terminal uploaded late from its black box, unlike the precomputed
+            # DailyStat.length which can lag badly (see issue 64070: DailyStat 53.9 km
+            # vs real track 178.8 km after the buffer caught up).
             jumps = 0
             max_impl = 0.0
+            track_m = 0.0
             for i in range(1, len(packets)):
                 a, b = packets[i - 1], packets[i]
                 if not (a.get("lat") and a.get("lng") and b.get("lat") and b.get("lng")):
@@ -228,12 +234,18 @@ class IssueAutomationService:
                 dt = ((b.get("time") or 0) - (a.get("time") or 0)) / 1000.0
                 if dt <= 0:
                     continue
-                impl = _haversine_m(a["lat"], a["lng"], b["lat"], b["lng"]) / dt * 3.6
+                dist = _haversine_m(a["lat"], a["lng"], b["lat"], b["lng"])
+                impl = dist / dt * 3.6
                 max_impl = max(max_impl, impl)
                 if impl > _TELEPORT_KMH:
                     jumps += 1
+                else:
+                    track_m += dist
             facts.teleport_jumps = jumps
             facts.max_implied_kmh = round(max_impl, 1)
+            # Prefer the live track distance over the (possibly stale) DailyStat.
+            if track_m > 0:
+                facts.system_mileage_km = round(track_m / 1000.0, 2)
 
         self._derive_flags(facts)
         return facts

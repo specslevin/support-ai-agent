@@ -249,7 +249,7 @@ const CATEGORY_COLORS: Record<string, string> = {
   dark: 'text-gray-500',
 }
 
-function TemplatePicker({ onSelect }: { onSelect: (content: string) => void }) {
+export function TemplatePicker({ onSelect }: { onSelect: (content: string) => void }) {
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
   const setLastTemplate = useIssuesStore(s => s.setLastTemplate)
