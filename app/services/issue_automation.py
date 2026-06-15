@@ -151,8 +151,8 @@ class IssueAutomationService:
             except ValueError:
                 pass
 
-        # по путевому листу / по ПЛ <num> <unit>
-        sm = re.search(r"(?:путев\w*\s+лист\w*|по\s*ПЛ|ПЛ)\D{0,6}(\d+(?:[.,]\d+)?)\s*(км|м)?", text, re.I)
+        # по путевому листу / по ПЛ / по одометру <num> <unit>
+        sm = re.search(r"(?:путев\w*\s+лист\w*|одометр\w*|по\s*ПЛ|ПЛ)\D{0,6}(\d+(?:[.,]\d+)?)\s*(км|м)?", text, re.I)
         if sm:
             parsed.sheet_mileage_km = _to_km(_parse_number(sm.group(1)), sm.group(2))
 
@@ -242,14 +242,14 @@ class IssueAutomationService:
     def _derive_flags(f: TelemetryFacts) -> None:
         if f.power_off_ratio and f.power_off_ratio > 0.2:
             f.flags.append("power_off")
-        # Jamming needs strong / corroborated evidence — a couple of brief
-        # GPS hiccups (2-3 teleports at ~160 km/h) are normal noise, not РЭБ.
-        # True jamming (e.g. 64051) shows many teleports, impossible implied
-        # speeds, speed spikes and satellite dropouts together.
+        # Jamming = the GPS POSITION is corrupted: track shots (teleports) and/or
+        # loss of satellites. Isolated speed spikes alone are NOT enough — a
+        # terminal can report a bogus 138 km/h on a single noisy fix while the
+        # track stays clean (e.g. 64070). Real jamming (64051) shows many
+        # teleports with impossible implied speeds and/or satellite dropouts.
         jamming = (
             f.teleport_jumps >= 5
             or (f.max_implied_kmh is not None and f.max_implied_kmh > 500 and f.teleport_jumps >= 2)
-            or f.speed_spike_count >= 3
             or (f.low_sat_ratio is not None and f.low_sat_ratio > 0.08)
             or (f.zero_coord_moving_ratio is not None and f.zero_coord_moving_ratio > 0.15)
         )

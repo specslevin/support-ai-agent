@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState, useMemo, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import L from 'leaflet'
 import uPlot from 'uplot'
@@ -86,7 +86,72 @@ function TrackMap({ data, apiRef }: { data: TrackData; apiRef: React.MutableRefO
   return <div ref={ref} className="w-full h-full rounded-lg overflow-hidden" />
 }
 
-function TelemetryCharts({ data, apiRef }: { data: TrackData; apiRef: React.MutableRefObject<MapApi | null> }) {
+function haversine(a: number, b: number, c: number, d: number): number {
+  const R = 6371000, rad = Math.PI / 180
+  const dlat = (c - a) * rad, dlng = (d - b) * rad
+  const x = Math.sin(dlat / 2) ** 2 + Math.cos(a * rad) * Math.cos(c * rad) * Math.sin(dlng / 2) ** 2
+  return 2 * R * Math.asin(Math.sqrt(x))
+}
+
+interface IntervalStats {
+  distanceKm: number; maxSpeed: number; avgSpeed: number
+  avgSat: number; minPwr: number | null; durationMin: number; points: number
+}
+
+function computeStats(points: TrackPoint[], minSec: number, maxSec: number): IntervalStats {
+  const inRange = points.filter(p => {
+    const t = (p.t ?? 0) / 1000
+    return t >= minSec && t <= maxSec
+  })
+  let dist = 0
+  let prev: TrackPoint | null = null
+  let maxSpeed = 0
+  let satSum = 0, satN = 0
+  let minPwr: number | null = null
+  for (const p of inRange) {
+    maxSpeed = Math.max(maxSpeed, p.speed)
+    if (p.sat != null) { satSum += p.sat; satN++ }
+    if (p.pwr != null) minPwr = minPwr == null ? p.pwr : Math.min(minPwr, p.pwr)
+    if (prev && prev.lat != null && prev.lng != null && p.lat != null && p.lng != null) {
+      dist += haversine(prev.lat, prev.lng, p.lat, p.lng)
+    }
+    if (p.lat != null && p.lng != null) prev = p
+  }
+  const durationMin = (maxSec - minSec) / 60
+  const distanceKm = dist / 1000
+  const avgSpeed = durationMin > 0 ? distanceKm / (durationMin / 60) : 0
+  return {
+    distanceKm, maxSpeed, avgSpeed,
+    avgSat: satN ? satSum / satN : 0,
+    minPwr, durationMin, points: inRange.length,
+  }
+}
+
+function StatsBar({ s, zoomed }: { s: IntervalStats; zoomed: boolean }) {
+  const cell = (label: string, value: string) => (
+    <div className="flex flex-col">
+      <span className="text-[9px] uppercase tracking-wider text-muted/50">{label}</span>
+      <span className="text-xs text-white">{value}</span>
+    </div>
+  )
+  return (
+    <div className="px-3 py-2 border-t border-border bg-surface/40">
+      <div className="text-[9px] uppercase tracking-widest text-muted/40 mb-1.5">
+        {zoomed ? 'Выбранный интервал' : 'За день'}
+      </div>
+      <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
+        {cell('Пробег', `${s.distanceKm.toFixed(1)} км`)}
+        {cell('Макс. скорость', `${Math.round(s.maxSpeed)} км/ч`)}
+        {cell('Ср. скорость', `${Math.round(s.avgSpeed)} км/ч`)}
+        {cell('Спутники', s.avgSat.toFixed(1))}
+        {cell('Питание мин.', s.minPwr != null ? `${s.minPwr} В` : '—')}
+        {cell('Длительность', s.durationMin >= 60 ? `${(s.durationMin / 60).toFixed(1)} ч` : `${Math.round(s.durationMin)} мин`)}
+      </div>
+    </div>
+  )
+}
+
+function TelemetryCharts({ data, apiRef, onRange }: { data: TrackData; apiRef: React.MutableRefObject<MapApi | null>; onRange: (min: number, max: number) => void }) {
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -125,9 +190,17 @@ function TelemetryCharts({ data, apiRef }: { data: TrackData; apiRef: React.Muta
             if (p?.lat != null && p?.lng != null) apiRef.current?.show(p.lat, p.lng)
           },
         ],
+        setScale: [
+          (u, key) => {
+            if (key === 'x' && u.scales.x.min != null && u.scales.x.max != null) {
+              onRange(u.scales.x.min, u.scales.x.max)
+            }
+          },
+        ],
       },
     }
     const u = new uPlot(opts, [xs, speed, pwr, sat], ref.current)
+    if (xs.length) onRange(xs[0], xs[xs.length - 1])
     // Track real container width (panel slide animation, window resize, etc.)
     const ro = new ResizeObserver(() => {
       const w = ref.current?.clientWidth || 0
@@ -142,11 +215,27 @@ function TelemetryCharts({ data, apiRef }: { data: TrackData; apiRef: React.Muta
 
 export function TrackPanel({ issueId }: { issueId: number }) {
   const mapApi = useRef<MapApi | null>(null)
+  const [range, setRange] = useState<[number, number] | null>(null)
+  const fullRangeRef = useRef<[number, number] | null>(null)
+  const onRange = useCallback((min: number, max: number) => setRange([min, max]), [])
+
   const { data, isPending, isError } = useQuery({
     queryKey: ['track', issueId],
     queryFn: () => api.getTrack(issueId),
     staleTime: 5 * 60_000,
   })
+
+  const stats = useMemo(() => {
+    if (!data?.points?.length || !range) return null
+    return computeStats(data.points, range[0], range[1])
+  }, [data, range])
+
+  const fullSpan = data?.points?.length
+    ? [(data.points[0].t ?? 0) / 1000, (data.points[data.points.length - 1].t ?? 0) / 1000]
+    : null
+  if (fullSpan) fullRangeRef.current = fullSpan as [number, number]
+  const zoomed = !!(range && fullRangeRef.current &&
+    (range[0] > fullRangeRef.current[0] + 1 || range[1] < fullRangeRef.current[1] - 1))
 
   if (isPending) {
     return <div className="flex items-center justify-center h-full text-muted text-sm">Загрузка трека...</div>
@@ -172,15 +261,16 @@ export function TrackPanel({ issueId }: { issueId: number }) {
           )}
         </div>
       </div>
-      <div className="h-[55%] min-h-[260px] p-3 shrink-0">
+      <div className="h-[50%] min-h-[240px] p-3 shrink-0">
         <TrackMap data={data} apiRef={mapApi} />
       </div>
+      {stats && <StatsBar s={stats} zoomed={zoomed} />}
       <div className="border-t border-border p-3">
         <div className="flex items-center justify-between mb-2">
           <span className="text-[10px] font-semibold uppercase tracking-widest text-muted/60">Телеметрия за день</span>
           <span className="text-[10px] text-muted/50">колёсико — зум · наведение — точка на карте</span>
         </div>
-        <TelemetryCharts data={data} apiRef={mapApi} />
+        <TelemetryCharts data={data} apiRef={mapApi} onRange={onRange} />
       </div>
     </div>
   )
