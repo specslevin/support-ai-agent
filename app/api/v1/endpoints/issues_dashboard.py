@@ -13,6 +13,9 @@ from app.services import attachment_reader
 from app.api.v1.schemas.issues import (
     AnalysisInput,
     AnalysisResult,
+    BulkAssignee,
+    BulkStatus,
+    BulkType,
     IssueResponse,
     PaginatedIssuesResponse,
 )
@@ -74,6 +77,82 @@ async def refresh_cache(
     except Exception:
         log.exception("refresh_cache_failed")
         raise HTTPException(status_code=500, detail="Cache refresh failed")
+
+
+async def _external_id(cache: CacheService, issue_id: int) -> int | None:
+    data = await cache.get_issue_with_analysis(issue_id)
+    return data["issue"].external_id if data else None
+
+
+@router.post("/bulk/assignee")
+async def bulk_assign(
+    body: BulkAssignee,
+    cache: CacheService = Depends(get_cache_service),
+) -> dict[str, object]:
+    """Assign many issues to one employee."""
+    results = []
+    for iid in body.issue_ids:
+        try:
+            row = await cache.assign_issue(iid, body.assignee_id)
+            results.append({"issue_id": iid, "ok": bool(row)})
+        except Exception:
+            log.warning("bulk_assign_item_failed", issue_id=iid)
+            results.append({"issue_id": iid, "ok": False})
+    ok = sum(1 for r in results if r["ok"])
+    return {"ok": True, "succeeded": ok, "failed": len(results) - ok, "results": results}
+
+
+@router.post("/bulk/type")
+async def bulk_change_type(
+    body: BulkType,
+    cache: CacheService = Depends(get_cache_service),
+    okdesk: OkdeskService = Depends(get_okdesk_service),
+) -> dict[str, object]:
+    """Change the type of many issues."""
+    results = []
+    for iid in body.issue_ids:
+        try:
+            ext = await _external_id(cache, iid)
+            if ext is None:
+                results.append({"issue_id": iid, "ok": False})
+                continue
+            await okdesk.change_issue_type(ext, body.type_code)
+            results.append({"issue_id": iid, "ok": True})
+        except Exception:
+            log.warning("bulk_type_item_failed", issue_id=iid)
+            results.append({"issue_id": iid, "ok": False})
+    ok = sum(1 for r in results if r["ok"])
+    return {"ok": True, "succeeded": ok, "failed": len(results) - ok, "results": results}
+
+
+@router.post("/bulk/status")
+async def bulk_change_status(
+    body: BulkStatus,
+    cache: CacheService = Depends(get_cache_service),
+    okdesk: OkdeskService = Depends(get_okdesk_service),
+) -> dict[str, object]:
+    """Change status (with optional comment) for many issues."""
+    if body.status_code == "delayed" and not body.delay_to:
+        raise HTTPException(status_code=400, detail="delay_to is required for status 'delayed'")
+    results = []
+    for iid in body.issue_ids:
+        try:
+            ext = await _external_id(cache, iid)
+            if ext is None:
+                results.append({"issue_id": iid, "ok": False})
+                continue
+            res = await okdesk.change_issue_status(
+                ext, body.status_code,
+                comment=body.comment, comment_public=body.comment_public,
+                delay_to=body.delay_to,
+            )
+            await cache.refresh_single_issue(iid, ext)
+            results.append({"issue_id": iid, "ok": res.get("code") == body.status_code})
+        except Exception:
+            log.warning("bulk_status_item_failed", issue_id=iid)
+            results.append({"issue_id": iid, "ok": False})
+    ok = sum(1 for r in results if r["ok"])
+    return {"ok": True, "succeeded": ok, "failed": len(results) - ok, "results": results}
 
 
 import re as _re

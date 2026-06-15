@@ -1,6 +1,8 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
 import { api } from '../api/client'
 import { useIssuesStore } from '../store/issuesStore'
+import { EMPLOYEES } from '../store/userStore'
 import { StatusBadge } from './StatusBadge'
 import type { Issue } from '../types'
 
@@ -12,14 +14,132 @@ function formatDate(iso: string | null) {
     + d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
 }
 
-function IssueRow({ issue, highlighted, onClick }: { issue: Issue; highlighted: boolean; onClick: () => void }) {
+const BULK_STATUSES = [
+  { code: 'opened', label: 'Открыть' },
+  { code: 'completed', label: 'Решить' },
+  { code: 'closed', label: 'Закрыть' },
+  { code: 'delayed', label: 'Ожидание' },
+]
+
+function Dropdown({ label, children }: { label: string; children: (close: () => void) => React.ReactNode }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="text-xs px-2.5 py-1 rounded border border-border hover:border-accent text-white transition-colors"
+      >
+        {label} ▾
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute left-0 top-full mt-1 z-50 bg-surface border border-border rounded-lg py-1 min-w-[180px] max-h-72 overflow-y-auto shadow-xl">
+            {children(() => setOpen(false))}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+function BulkActionBar() {
+  const { checkedIds, clearChecked } = useIssuesStore()
+  const queryClient = useQueryClient()
+  const [comment, setComment] = useState('')
+  const [notice, setNotice] = useState<string | null>(null)
+
+  const { data: types = [] } = useQuery({
+    queryKey: ['issue-types'],
+    queryFn: () => api.listIssueTypes(),
+    staleTime: 5 * 60 * 1000,
+  })
+
+  const done = (label: string) => (res: { succeeded: number; failed: number }) => {
+    queryClient.invalidateQueries({ queryKey: ['issues'] })
+    setNotice(`${label}: успешно ${res.succeeded}${res.failed ? `, ошибок ${res.failed}` : ''}`)
+    clearChecked()
+    setComment('')
+  }
+
+  const assign = useMutation({ mutationFn: (id: number) => api.bulkAssign(checkedIds, id), onSuccess: done('Ответственный') })
+  const setType = useMutation({ mutationFn: (code: string) => api.bulkType(checkedIds, code), onSuccess: done('Тип') })
+  const setStatus = useMutation({
+    mutationFn: (code: string) => {
+      const delay = code === 'delayed'
+        ? (() => { const d = new Date(); d.setDate(d.getDate() + 3); return d.toISOString().slice(0, 16) })()
+        : undefined
+      return api.bulkStatus(checkedIds, code, comment || undefined, delay)
+    },
+    onSuccess: done('Статус'),
+  })
+
+  const busy = assign.isPending || setType.isPending || setStatus.isPending
+  const groups = EMPLOYEES.reduce<Record<string, typeof EMPLOYEES>>((acc, e) => { (acc[e.group] ??= []).push(e); return acc }, {})
+
+  if (checkedIds.length === 0) {
+    return notice ? (
+      <div className="flex items-center gap-2 px-4 py-2 bg-green-500/10 border-b border-green-500/30 text-xs text-green-300">
+        <span>✓ {notice}</span>
+        <button onClick={() => setNotice(null)} className="ml-auto text-green-400/60 hover:text-green-300">✕</button>
+      </div>
+    ) : null
+  }
+
+  return (
+    <div className="flex items-center gap-2 px-4 py-2 bg-accent/10 border-b border-accent/30 flex-wrap">
+      <span className="text-xs font-semibold text-white">{checkedIds.length} выбрано</span>
+      {busy && <span className="text-[10px] text-muted animate-pulse">применяю...</span>}
+
+      <Dropdown label="Ответственный">
+        {(close) => Object.entries(groups).map(([group, members]) => (
+          <div key={group}>
+            <div className="px-3 py-1 text-[10px] uppercase tracking-widest text-muted/60">{group}</div>
+            {members.map(emp => (
+              <button key={emp.id} onClick={() => { assign.mutate(emp.id); close() }}
+                className="w-full text-left px-4 py-1.5 text-xs text-white hover:bg-white/5">{emp.name}</button>
+            ))}
+          </div>
+        ))}
+      </Dropdown>
+
+      <Dropdown label="Тип">
+        {(close) => types.map(t => (
+          <button key={t.code} onClick={() => { setType.mutate(t.code); close() }}
+            className="w-full text-left px-4 py-1.5 text-xs text-white hover:bg-white/5">{t.name}</button>
+        ))}
+      </Dropdown>
+
+      <Dropdown label="Статус">
+        {(close) => BULK_STATUSES.map(s => (
+          <button key={s.code} onClick={() => { setStatus.mutate(s.code); close() }}
+            className="w-full text-left px-4 py-1.5 text-xs text-white hover:bg-white/5">{s.label}</button>
+        ))}
+      </Dropdown>
+
+      <input
+        value={comment}
+        onChange={e => setComment(e.target.value)}
+        placeholder="Комментарий (для статуса)"
+        className="flex-1 min-w-[160px] bg-base border border-border rounded px-2.5 py-1 text-xs focus:outline-none focus:border-accent"
+      />
+
+      <button onClick={clearChecked} className="text-xs text-muted hover:text-white px-2">✕ снять</button>
+    </div>
+  )
+}
+
+function IssueRow({ issue, highlighted, checked, onToggle, onClick }: { issue: Issue; highlighted: boolean; checked: boolean; onToggle: () => void; onClick: () => void }) {
   return (
     <tr
       onClick={onClick}
       className={`border-b border-border cursor-pointer transition-colors text-sm ${
-        highlighted ? 'bg-accent/10' : 'hover:bg-white/[0.03]'
+        highlighted ? 'bg-accent/10' : checked ? 'bg-white/[0.04]' : 'hover:bg-white/[0.03]'
       }`}
     >
+      <td className="px-3 py-2.5 w-8" onClick={e => e.stopPropagation()}>
+        <input type="checkbox" checked={checked} onChange={onToggle} className="w-3.5 h-3.5 accent-accent cursor-pointer" />
+      </td>
       <td className="px-3 py-2.5 text-xs font-mono text-muted w-24 whitespace-nowrap">
         {highlighted && <span className="text-accent mr-1">▶</span>}
         #{issue.external_id}
@@ -47,7 +167,7 @@ function IssueRow({ issue, highlighted, onClick }: { issue: Issue; highlighted: 
 }
 
 export function IssuesList() {
-  const { status, company, search, page, limit, selectedIssueId, highlightId, setPage, setLimit, selectIssue } = useIssuesStore()
+  const { status, company, search, page, limit, selectedIssueId, highlightId, checkedIds, setPage, setLimit, selectIssue, toggleChecked, setChecked, clearChecked } = useIssuesStore()
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ['issues', { status, company, search, page, limit }],
@@ -71,13 +191,24 @@ export function IssuesList() {
 
   const issues = data?.data ?? []
   const pagination = data?.pagination
+  const pageIds = issues.map((i: Issue) => i.id)
+  const allChecked = pageIds.length > 0 && pageIds.every((id: number) => checkedIds.includes(id))
 
   return (
     <div className="flex flex-col h-full min-h-0">
+      <BulkActionBar />
       <div className="overflow-auto flex-1">
         <table className="w-full text-left border-collapse">
           <thead className="sticky top-0 bg-base z-10">
             <tr className="border-b border-border text-muted text-xs uppercase tracking-wider">
+              <th className="px-3 py-2 w-8">
+                <input
+                  type="checkbox"
+                  checked={allChecked}
+                  onChange={() => allChecked ? clearChecked() : setChecked(pageIds)}
+                  className="w-3.5 h-3.5 accent-accent cursor-pointer"
+                />
+              </th>
               <th className="px-3 py-2 font-medium">№ заявки</th>
               <th className="px-3 py-2 font-medium">Дата регистрации</th>
               <th className="px-3 py-2 font-medium">Тема</th>
@@ -93,6 +224,8 @@ export function IssuesList() {
                 key={issue.id}
                 issue={issue}
                 highlighted={issue.id === highlightId}
+                checked={checkedIds.includes(issue.id)}
+                onToggle={() => toggleChecked(issue.id)}
                 onClick={() => selectIssue(issue.id === selectedIssueId ? null : issue.id)}
               />
             ))}

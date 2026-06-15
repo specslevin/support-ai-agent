@@ -57,3 +57,21 @@ class AnalysisResult(BaseModel):
 class PaginatedIssuesResponse(BaseModel):
     data: list[IssueResponse]
     pagination: dict[str, int]
+
+
+class BulkAssignee(BaseModel):
+    issue_ids: list[int] = Field(..., min_length=1)
+    assignee_id: int
+
+
+class BulkType(BaseModel):
+    issue_ids: list[int] = Field(..., min_length=1)
+    type_code: str
+
+
+class BulkStatus(BaseModel):
+    issue_ids: list[int] = Field(..., min_length=1)
+    status_code: str
+    comment: str | None = None
+    comment_public: bool = True
+    delay_to: str | None = None

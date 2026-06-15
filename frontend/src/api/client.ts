@@ -80,4 +80,23 @@ export const api = {
   resolveIssue(id: number, status_code: string, comment: string, delay_to?: string, comment_public = true): Promise<{ ok: boolean; status_changed: boolean }> {
     return http.post(`/issues/${id}/resolve`, null, { params: { status_code, comment, comment_public, ...(delay_to ? { delay_to } : {}) } }).then(r => r.data)
   },
+
+  bulkAssign(issue_ids: number[], assignee_id: number): Promise<BulkResult> {
+    return http.post('/issues/bulk/assignee', { issue_ids, assignee_id }).then(r => r.data)
+  },
+
+  bulkType(issue_ids: number[], type_code: string): Promise<BulkResult> {
+    return http.post('/issues/bulk/type', { issue_ids, type_code }).then(r => r.data)
+  },
+
+  bulkStatus(issue_ids: number[], status_code: string, comment?: string, delay_to?: string, comment_public = true): Promise<BulkResult> {
+    return http.post('/issues/bulk/status', { issue_ids, status_code, comment, delay_to, comment_public }).then(r => r.data)
+  },
+}
+
+export interface BulkResult {
+  ok: boolean
+  succeeded: number
+  failed: number
+  results: { issue_id: number; ok: boolean }[]
 }
