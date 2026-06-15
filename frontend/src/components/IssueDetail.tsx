@@ -164,7 +164,7 @@ function TypeSection({ issueId, typeName, typeCode }: { issueId: number; typeNam
   )
 }
 
-function OkdeskInfo({ d, issueId, assigneeName }: { d: OkdeskDetail; issueId: number; assigneeName: string | null }) {
+function OkdeskInfo({ d, issueId, assigneeName, onOpenExternal }: { d: OkdeskDetail; issueId: number; assigneeName: string | null; onOpenExternal: (extId: number) => void }) {
   const deadline = formatDate(d.deadline_at)
   const overdue = isOverdue(d.deadline_at)
   const description = stripHtml(d.description)
@@ -226,9 +226,19 @@ function OkdeskInfo({ d, issueId, assigneeName }: { d: OkdeskDetail; issueId: nu
       {(d.parent_id || d.child_ids.length > 0) && (
         <Section title="Связанные заявки">
           <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
-            {d.parent_id && <MetaRow label="Родительская">#{d.parent_id}</MetaRow>}
+            {d.parent_id && (
+              <MetaRow label="Родительская">
+                <button onClick={() => onOpenExternal(d.parent_id!)} className="text-accent hover:underline">#{d.parent_id}</button>
+              </MetaRow>
+            )}
             {d.child_ids.length > 0 && (
-              <MetaRow label="Дочерние">{d.child_ids.map(id => `#${id}`).join(', ')}</MetaRow>
+              <MetaRow label="Дочерние">
+                <span className="flex flex-wrap gap-x-2 gap-y-0.5">
+                  {d.child_ids.map(id => (
+                    <button key={id} onClick={() => onOpenExternal(id)} className="text-accent hover:underline">#{id}</button>
+                  ))}
+                </span>
+              </MetaRow>
             )}
           </div>
         </Section>
@@ -896,6 +906,18 @@ export function IssueDetail() {
 
   // On opening a new issue, prefill the comment with the last-used template
   // (until the operator picks another). Empty if none chosen yet.
+  // Open a related (parent/child) issue by its Okdesk external id → resolve to
+  // internal cache id and select it.
+  const openExternal = async (extId: number) => {
+    try {
+      const res = await api.listIssues({ issue_id: extId, limit: 1 })
+      if (res.data[0]) selectIssue(res.data[0].id)
+      else setToast(`Заявка #${extId} не найдена в кэше`)
+    } catch {
+      setToast(`Не удалось открыть #${extId}`)
+    }
+  }
+
   useEffect(() => {
     setComment(lastTemplate)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1025,7 +1047,7 @@ export function IssueDetail() {
         </div>
 
         {/* Live Okdesk info */}
-        {od && <OkdeskInfo d={od} issueId={issue.id} assigneeName={issue.assignee_name ?? null} />}
+        {od && <OkdeskInfo d={od} issueId={issue.id} assigneeName={issue.assignee_name ?? null} onOpenExternal={openExternal} />}
 
         {/* Если okdesk_detail пустой — показываем только assignee picker */}
         {!od && (

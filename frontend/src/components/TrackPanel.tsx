@@ -271,11 +271,18 @@ export function TrackPanel({ issueId }: { issueId: number }) {
   if (isError) {
     return <div className="flex items-center justify-center h-full text-red-400 text-sm">Ошибка загрузки трека</div>
   }
-  if (data.error || !data.points.length) {
+  if (data.error) {
     const msg = data.error === 'object_not_found' ? 'Объект не найден в geo'
       : data.error === 'no_plate_or_date' ? 'В заявке не указан один гос.номер ТС или дата (возможно, это общая/внутренняя заявка на несколько ТС)'
-      : 'Нет данных трека за дату'
-    return <div className="flex items-center justify-center h-full text-muted text-sm">{msg}</div>
+      : 'Нет данных'
+    return (
+      <div className="flex flex-col h-full">
+        <div className="px-4 py-2.5 border-b border-border shrink-0">
+          <button onClick={() => setTrackOpen(false)} className="text-xs px-2 py-0.5 rounded border border-border text-muted hover:text-white hover:border-accent transition-colors">◀ Свернуть</button>
+        </div>
+        <div className="flex items-center justify-center flex-1 text-muted text-sm px-4 text-center">{msg}</div>
+      </div>
+    )
   }
 
   return (
@@ -292,7 +299,7 @@ export function TrackPanel({ issueId }: { issueId: number }) {
           <div className="flex-1 min-w-0">
             <div className="text-xs text-white font-medium truncate">{data.object_name}</div>
             <div className="text-[11px] text-muted">
-              {data.parsed.date} · {data.total_packets} точек
+              {data.parsed.date} · {data.total_packets ?? 0} точек
               {(data.teleports?.length ?? 0) > 0 && (
                 <span className="text-yellow-400"> · {data.teleports!.length} телепортов (глушение)</span>
               )}
@@ -311,17 +318,25 @@ export function TrackPanel({ issueId }: { issueId: number }) {
           <Copyable label="тел" value={data.phone} />
         </div>
       </div>
-      <div className="h-[50%] min-h-[240px] p-3 shrink-0">
-        <TrackMap data={data} apiRef={mapApi} />
-      </div>
-      {stats && <StatsBar s={stats} zoomed={zoomed} />}
-      <div className="border-t border-border p-3">
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-[10px] font-semibold uppercase tracking-widest text-muted/60">Телеметрия за день</span>
-          <span className="text-[10px] text-muted/50">колёсико — зум · наведение — точка на карте</span>
+      {data.points.length ? (
+        <>
+          <div className="h-[50%] min-h-[240px] p-3 shrink-0">
+            <TrackMap data={data} apiRef={mapApi} />
+          </div>
+          {stats && <StatsBar s={stats} zoomed={zoomed} />}
+          <div className="border-t border-border p-3">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[10px] font-semibold uppercase tracking-widest text-muted/60">Телеметрия за день</span>
+              <span className="text-[10px] text-muted/50">колёсико — зум · наведение — точка на карте</span>
+            </div>
+            <TelemetryCharts data={data} apiRef={mapApi} onRange={onRange} />
+          </div>
+        </>
+      ) : (
+        <div className="flex items-center justify-center flex-1 text-muted text-sm px-4 text-center">
+          Нет данных трека за {data.parsed.date} — терминал не передавал данные за эту дату (статус объекта см. выше).
         </div>
-        <TelemetryCharts data={data} apiRef={mapApi} onRange={onRange} />
-      </div>
+      )}
     </div>
   )
 }

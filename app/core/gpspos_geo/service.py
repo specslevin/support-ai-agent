@@ -98,7 +98,9 @@ class GpsposGeoService:
                 continue
         return result
 
-    _PLATE_CORE = re.compile(r"[АВЕКМНОРСТУХABEKMHOPCTYX]\d{3}[АВЕКМНОРСТУХABEKMHOPCTYX]{2}", re.I)
+    _PLATE_CORE = re.compile(r"[АВЕКМНОРСТУХ]\d{3}[АВЕКМНОРСТУХ]{2}", re.I)
+    # Special equipment plate: 4 digits + 2 letters in either order (5297СУ / СУ5297).
+    _SPECIAL_RE = re.compile(r"(\d{4})([АВЕКМНОРСТУХ]{2})|([АВЕКМНОРСТУХ]{2})(\d{4})", re.I)
     # Latin lookalikes → Cyrillic, so "A759PC" (latin) matches "А759РС" (cyrillic).
     _TRANSLIT = str.maketrans("ABEKMHOPCTYX", "АВЕКМНОРСТУХ")
 
@@ -112,6 +114,15 @@ class GpsposGeoService:
         m = cls._PLATE_CORE.search(norm)
         return m.group(0) if m else norm
 
+    @classmethod
+    def _special_sig(cls, norm: str) -> str | None:
+        """Canonical signature for special-equipment plates: «DDDDLL» regardless
+        of order (СУ5297 / 5297СУ → '5297СУ'). None if not a special plate."""
+        m = cls._SPECIAL_RE.search(norm)
+        if not m:
+            return None
+        return (m.group(1) + m.group(2)) if m.group(1) else (m.group(4) + m.group(3))
+
     async def find_object_by_plate(self, plate: str) -> dict[str, Any] | None:
         """Find a tracked object by license plate (gosnumber).
 
@@ -124,10 +135,12 @@ class GpsposGeoService:
         if not needle:
             return None
         core = self._plate_core(needle)
+        special = self._special_sig(needle)  # for спецтехника (5297СУ / СУ5297)
         raw = await self._client.request("GET", "Objects")
         rows = _unwrap_list(raw)
         partial: dict[str, Any] | None = None
         core_match: dict[str, Any] | None = None
+        special_match: dict[str, Any] | None = None
         for r in rows:
             for f in (r.get("stateNumber"), r.get("name"), r.get("number")):
                 nf = self._norm_plate(f)
@@ -139,7 +152,9 @@ class GpsposGeoService:
                     partial = r
                 elif core and core in nf and core_match is None:
                     core_match = r
-        return partial or core_match
+                elif special and special_match is None and self._special_sig(nf) == special:
+                    special_match = r
+        return partial or core_match or special_match
 
     async def get_daily_stats(
         self, object_id: int, from_ms: int, till_ms: int

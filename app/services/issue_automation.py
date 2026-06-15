@@ -45,7 +45,13 @@ def _haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
 
 # Plate: letter + 3 digits + 2 letters, optional 2-3 region digits
 # (some tickets omit the region, e.g. "Х774НВ").
-_PLATE_RE = re.compile(r"[АВЕКМНОРСТУХABEKMHOPCTYX]\d{3}[АВЕКМНОРСТУХABEKMHOPCTYX]{2}\d{0,3}", re.I)
+_L = "АВЕКМНОРСТУХABEKMHOPCTYX"
+_PLATE_RE = re.compile(
+    rf"[{_L}]\d{{3}}[{_L}]{{2}}\d{{0,3}}"   # обычный: А123ВС[64]
+    rf"|\d{{4}}\s?[{_L}]{{2}}"              # спецтехника: 5297СУ
+    rf"|[{_L}]{{2}}\s?\d{{4}}",             # спецтехника (обратный порядок): СУ5297
+    re.I,
+)
 _DATE_RE = re.compile(r"(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{4})")
 
 
