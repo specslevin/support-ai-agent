@@ -37,12 +37,12 @@ function fallbackCopy(text: string) {
   document.body.removeChild(ta)
 }
 
-function Copyable({ label, value }: { label: string; value: string | null | undefined }) {
+function Copyable({ label, value, copyValue }: { label: string; value: string | null | undefined; copyValue?: string }) {
   const [copied, setCopied] = useState(false)
   if (!value) return null
   return (
     <button
-      onClick={() => { copyText(value); setCopied(true); setTimeout(() => setCopied(false), 1200) }}
+      onClick={() => { copyText(copyValue ?? value); setCopied(true); setTimeout(() => setCopied(false), 1200) }}
       title="Копировать"
       className="flex items-center gap-1 text-[11px] text-muted hover:text-white transition-colors"
     >
@@ -259,6 +259,75 @@ function TelemetryCharts({ data, apiRef, onRange }: { data: TrackData; apiRef: R
   return <div ref={ref} className="w-full" />
 }
 
+function pad(n: number) { return String(n).padStart(2, '0') }
+function isoOf(y: number, m: number, d: number) { return `${y}-${pad(m + 1)}-${pad(d)}` }
+function ruShort(iso: string) { const [, m, d] = iso.split('-'); return `${d}.${m}` }
+
+// Range calendar: 1st click = start, 2nd click = end (one day = click same date twice).
+function DateRangePicker({ from, to, onChange }: { from: string; to: string; onChange: (f: string, t: string) => void }) {
+  const [open, setOpen] = useState(false)
+  const [pend, setPend] = useState<string | null>(null)
+  const init = from || to || isoOf(new Date().getFullYear(), new Date().getMonth(), new Date().getDate())
+  const [yy, mm] = init.split('-').map(Number)
+  const [view, setView] = useState<[number, number]>([yy, mm - 1])
+
+  const [vy, vm] = view
+  const daysIn = new Date(vy, vm + 1, 0).getDate()
+  const startWd = (new Date(vy, vm, 1).getDay() + 6) % 7
+  const cells: (string | null)[] = Array(startWd).fill(null)
+  for (let d = 1; d <= daysIn; d++) cells.push(isoOf(vy, vm, d))
+
+  const click = (iso: string) => {
+    if (!pend) { setPend(iso); return }
+    const [lo, hi] = pend <= iso ? [pend, iso] : [iso, pend]
+    onChange(lo, hi); setPend(null); setOpen(false)
+  }
+  const close = () => { setOpen(false); setPend(null) }
+
+  return (
+    <div className="relative inline-block">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="flex items-center gap-1 bg-base border border-border rounded px-2 py-0.5 text-[11px] text-white hover:border-accent transition-colors"
+      >
+        📅 {from === to ? ruShort(from) : `${ruShort(from)} — ${ruShort(to)}`}
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={close} />
+          <div className="absolute right-0 top-full mt-1 z-50 bg-surface border border-border rounded-lg p-2 shadow-2xl w-56">
+            <div className="flex items-center justify-between mb-1 text-xs">
+              <button onClick={() => setView([vm === 0 ? vy - 1 : vy, vm === 0 ? 11 : vm - 1])} className="px-2 text-muted hover:text-white">‹</button>
+              <span className="text-white capitalize">{new Date(vy, vm, 1).toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' })}</span>
+              <button onClick={() => setView([vm === 11 ? vy + 1 : vy, vm === 11 ? 0 : vm + 1])} className="px-2 text-muted hover:text-white">›</button>
+            </div>
+            <div className="grid grid-cols-7 gap-0.5 text-[10px]">
+              {['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map(w => <div key={w} className="text-muted/40 text-center py-0.5">{w}</div>)}
+              {cells.map((iso, i) => {
+                if (!iso) return <div key={i} />
+                const inRange = !pend && iso >= from && iso <= to
+                const isPend = iso === pend
+                return (
+                  <button
+                    key={i}
+                    onClick={() => click(iso)}
+                    className={`text-center py-0.5 rounded transition-colors ${isPend ? 'bg-accent text-black' : inRange ? 'bg-accent/25 text-white' : 'text-white hover:bg-white/10'}`}
+                  >
+                    {Number(iso.slice(8))}
+                  </button>
+                )
+              })}
+            </div>
+            <div className="text-[10px] text-muted/70 mt-1 text-center">
+              {pend ? 'Выберите конечную дату (или ту же — один день)' : 'Выберите начало интервала'}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
 export function TrackPanel({ issueId }: { issueId: number }) {
   const mapApi = useRef<MapApi | null>(null)
   const setTrackOpen = useIssuesStore(s => s.setTrackOpen)
@@ -312,16 +381,9 @@ export function TrackPanel({ issueId }: { issueId: number }) {
 
   return (
     <div className="flex flex-col h-full overflow-y-auto">
-      <div className="px-4 py-2.5 border-b border-border shrink-0 space-y-1.5">
-        <div className="flex items-start gap-2">
-          <button
-            onClick={() => setTrackOpen(false)}
-            title="Свернуть панель"
-            className="shrink-0 text-xs px-2 py-0.5 rounded border border-border text-muted hover:text-white hover:border-accent transition-colors"
-          >
-            ◀ Свернуть
-          </button>
-          <div className="flex-1 min-w-0">
+      <div className="px-4 py-2.5 border-b border-border shrink-0 space-y-1.5 text-right">
+        <div className="flex items-start gap-2 justify-end">
+          <div className="min-w-0">
             <div className="text-xs text-white font-medium truncate">{data.object_name}</div>
             <div className="text-[11px] text-muted">
               {data.total_packets ?? 0} точек
@@ -330,29 +392,16 @@ export function TrackPanel({ issueId }: { issueId: number }) {
               )}
             </div>
           </div>
-        </div>
-        {/* Интервал дат */}
-        <div className="flex items-center gap-1.5 text-[11px]">
-          <span className="text-muted/60">период:</span>
-          <input
-            type="date"
-            value={interval?.from ?? data.range_from ?? ''}
-            onChange={e => setInterval({ from: e.target.value, to: interval?.to ?? data.range_to ?? e.target.value })}
-            className="bg-base border border-border rounded px-1.5 py-0.5 text-white text-[11px] focus:outline-none focus:border-accent"
-          />
-          <span className="text-muted/60">—</span>
-          <input
-            type="date"
-            value={interval?.to ?? data.range_to ?? ''}
-            onChange={e => setInterval({ from: interval?.from ?? data.range_from ?? e.target.value, to: e.target.value })}
-            className="bg-base border border-border rounded px-1.5 py-0.5 text-white text-[11px] focus:outline-none focus:border-accent"
-          />
-          {interval && (
-            <button onClick={() => setInterval(null)} title="Сбросить к дате неисправности" className="text-muted hover:text-accent">↺</button>
-          )}
+          <button
+            onClick={() => setTrackOpen(false)}
+            title="Свернуть панель"
+            className="shrink-0 text-xs px-2 py-0.5 rounded border border-border text-muted hover:text-white hover:border-accent transition-colors"
+          >
+            Свернуть ▶
+          </button>
         </div>
         {/* Текущее состояние объекта */}
-        <div className="flex items-center flex-wrap gap-x-3 gap-y-1">
+        <div className="flex items-center flex-wrap justify-end gap-x-3 gap-y-1">
           <span className={`text-[11px] font-medium ${data.status?.online ? 'text-green-400' : 'text-muted'}`}>
             {data.status?.online ? '● На связи' : '○ Не в сети'}
           </span>
@@ -360,7 +409,19 @@ export function TrackPanel({ issueId }: { issueId: number }) {
             <span className="text-[11px] text-muted">посл. сообщение: {formatTs(data.status.last_time)}</span>
           )}
           <Copyable label="IMEI" value={data.imei} />
-          <Copyable label="тел" value={data.phone} />
+          <Copyable label="тел" value={data.phone} copyValue={data.phone?.replace(/^\+/, '')} />
+        </div>
+        {/* Интервал дат */}
+        <div className="flex items-center justify-end gap-1.5 text-[11px]">
+          <span className="text-muted/60">период:</span>
+          <DateRangePicker
+            from={interval?.from ?? data.range_from ?? ''}
+            to={interval?.to ?? data.range_to ?? ''}
+            onChange={(f, t) => setInterval({ from: f, to: t })}
+          />
+          {interval && (
+            <button onClick={() => setInterval(null)} title="Сбросить к дате неисправности" className="text-muted hover:text-accent">↺</button>
+          )}
         </div>
       </div>
       {data.points.length ? (

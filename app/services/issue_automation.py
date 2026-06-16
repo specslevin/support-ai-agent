@@ -49,13 +49,16 @@ _L = "АВЕКМНОРСТУХABEKMHOPCTYX"
 # Lookbehind: номер не должен начинаться в середине слова — иначе «№ШР175 ОТ 15.06»
 # ложно склеивается в «Р175ОТ15» (где «ОТ»=«от», «15» из даты). См. 64144.
 _PLATE_RE = re.compile(
-    rf"(?<![A-Za-zА-Яа-яЁё0-9-])(?:"
+    rf"(?<![A-Za-zА-Яа-яЁё0-9.-])(?:"
     rf"[{_L}]\s?\d{{3}}\s?[{_L}]{{2}}\s?\d{{0,3}}"   # обычный: А123ВС[64], в т.ч. «М 396 УМ 763»
     rf"|\d{{2}}[-\s]?\d{{2}}\s?[{_L}]{{2}}"          # спецтехника: 5297СУ, 81-40РВ
     rf"|[{_L}]{{2}}\s?\d{{2}}[-\s]?\d{{2}}"          # спецтехника (обратный порядок): СУ5297
     rf")",
     re.I,
 )
+# Fallback: усечённый номер 2 буквы + 3 цифры (ЕК424) — только если обычный/спец
+# не нашлись (иначе ловит «Акт122» и т.п., но lookbehind режет «Акт»→«кт»).
+_PLATE_FALLBACK_RE = re.compile(rf"(?<![A-Za-zА-Яа-яЁё0-9.-])[{_L}]{{2}}\s?\d{{3}}", re.I)
 _DATE_RE = re.compile(r"(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{4})")
 
 
@@ -149,7 +152,11 @@ class IssueAutomationService:
         text = f"{title} {body} {extra_text or ''}"
         parsed = ParsedIssue()
 
-        m = _PLATE_RE.search(title) or _PLATE_RE.search(text)
+        # Приоритет: полный номер в теме/имени файла → усечённый в теме →
+        # полный в тексте → усечённый в тексте. Имя файла важнее текста акта,
+        # где год+«Не» давал ложный «2026НЕ».
+        m = (_PLATE_RE.search(title) or _PLATE_FALLBACK_RE.search(title)
+             or _PLATE_RE.search(text) or _PLATE_FALLBACK_RE.search(text))
         if m:
             parsed.plate = re.sub(r"[\s-]", "", m.group(0)).upper()
 
