@@ -520,12 +520,19 @@ async def create_children(
                     date_ru = _d.date.fromisoformat(obj.date).strftime("%d.%m.%Y")
                 except ValueError:
                     date_ru = obj.date
-            desc = (
-                f"Расхождение пробега. Дата неисправности: {date_ru}. "
-                f"По системе {obj.system_mileage_km if obj.system_mileage_km is not None else '—'} км, "
-                f"путевой лист {obj.sheet_mileage_km if obj.sheet_mileage_km is not None else '—'} км. "
-                f"(создано из общей заявки #{external_id})"
-            )
+            if obj.verdict == "Нет данных":
+                desc = (
+                    f"Расхождение пробега. Дата неисправности: {date_ru}. "
+                    f"Нет данных от терминала за дату — требуется удалённая диагностика. "
+                    f"(создано из общей заявки #{external_id})"
+                )
+            else:
+                desc = (
+                    f"Расхождение пробега. Дата неисправности: {date_ru}. "
+                    f"По системе {obj.system_mileage_km if obj.system_mileage_km is not None else '—'} км, "
+                    f"путевой лист {obj.sheet_mileage_km if obj.sheet_mileage_km is not None else '—'} км. "
+                    f"(создано из общей заявки #{external_id})"
+                )
             try:
                 child = await okdesk.create_child_issue(
                     external_id, title, desc, address=obj.address, contact_id=contact_id,

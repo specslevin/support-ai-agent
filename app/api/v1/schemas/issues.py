@@ -83,6 +83,7 @@ class ChildIssueItem(BaseModel):
     address: str | None = None
     sheet_mileage_km: float | None = None
     system_mileage_km: float | None = None
+    verdict: str | None = None
 
 
 class CreateChildren(BaseModel):

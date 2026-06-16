@@ -772,6 +772,7 @@ function BatchAnalysis({ issueId, onUseDraft }: { issueId: number; onUseDraft: (
         <div className="space-y-2 text-xs">
           <div className="text-[11px] text-muted">
             Всего {res.total} · <span className="text-yellow-400">глушение {res.jamming_count}</span> · <span className="text-green-400">данные верны {res.ok_count}</span>
+            {(() => { const nd = res.objects.filter(o => o.verdict === 'Нет данных').length; return nd ? <> · <span className="text-muted">нет данных {nd}</span></> : null })()}
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-[11px]">
@@ -811,25 +812,33 @@ function BatchAnalysis({ issueId, onUseDraft }: { issueId: number; onUseDraft: (
               ↓ Ответ про глушение (массово) в комментарий
             </button>
           )}
-          {res.ok_count > 0 && (
-            <>
-              <p className="text-[11px] text-muted leading-relaxed">
-                💡 По объектам «данные верны» ({res.ok_count}) пробег сошёлся — для них лучше отдельные заявки.
-              </p>
-              {createMut.isSuccess ? (
-                <p className="text-xs text-green-400">✓ Создано вложенных заявок: {createMut.data.created}{createMut.data.failed ? `, ошибок ${createMut.data.failed}` : ''}</p>
-              ) : (
-                <button
-                  onClick={() => createMut.mutate(res.objects.filter(o => o.verdict === 'Данные верны'))}
-                  disabled={createMut.isPending}
-                  className="w-full bg-surface border border-accent/50 text-accent hover:bg-accent/10 text-xs font-semibold py-1.5 rounded transition-colors disabled:opacity-50"
-                >
-                  {createMut.isPending ? 'Создаю…' : `📋 Создать ${res.ok_count} вложенных заявок по «данные верны»`}
-                </button>
-              )}
-              {createMut.isError && <p className="text-xs text-red-400">Ошибка создания. Попробуйте снова.</p>}
-            </>
-          )}
+          {(() => {
+            // Объекты, требующие отдельной (дочерней) заявки: данные верны
+            // (свой ответ) и нет данных (ответ — диагностика). Глушение = массовый ответ.
+            const children = res.objects.filter(o => o.verdict === 'Данные верны' || o.verdict === 'Нет данных')
+            if (children.length === 0) return null
+            const ok = children.filter(o => o.verdict === 'Данные верны').length
+            const nd = children.filter(o => o.verdict === 'Нет данных').length
+            return (
+              <>
+                <p className="text-[11px] text-muted leading-relaxed">
+                  💡 Отдельные заявки: «данные верны» {ok}{nd ? `, «нет данных» ${nd} (ответ — диагностика)` : ''}.
+                </p>
+                {createMut.isSuccess ? (
+                  <p className="text-xs text-green-400">✓ Создано вложенных заявок: {createMut.data.created}{createMut.data.failed ? `, ошибок ${createMut.data.failed}` : ''}</p>
+                ) : (
+                  <button
+                    onClick={() => createMut.mutate(children)}
+                    disabled={createMut.isPending}
+                    className="w-full bg-surface border border-accent/50 text-accent hover:bg-accent/10 text-xs font-semibold py-1.5 rounded transition-colors disabled:opacity-50"
+                  >
+                    {createMut.isPending ? 'Создаю…' : `📋 Создать ${children.length} вложенных заявок (данные верны + нет данных)`}
+                  </button>
+                )}
+                {createMut.isError && <p className="text-xs text-red-400">Ошибка создания. Попробуйте снова.</p>}
+              </>
+            )
+          })()}
         </div>
       )}
       {run.isError && <p className="text-xs text-red-400">Ошибка разбора. Попробуйте снова.</p>}

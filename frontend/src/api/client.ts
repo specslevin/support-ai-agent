@@ -59,6 +59,7 @@ export const api = {
     const payload = objects.map(o => ({
       plate: o.plate, date: o.date, address: o.address,
       sheet_mileage_km: o.sheet_mileage_km, system_mileage_km: o.system_mileage_km,
+      verdict: o.verdict,
     }))
     return http.post(`/issues/${id}/create_children`, { objects: payload }).then(r => r.data)
   },
