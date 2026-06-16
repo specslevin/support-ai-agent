@@ -772,9 +772,17 @@ function BatchAnalysis({ issueId, onUseDraft, issueTitle }: { issueId: number; o
 
       {res && (
         <div className="space-y-2 text-xs">
-          <div className="text-[11px] text-muted">
-            Всего {res.total} · <span className="text-yellow-400">глушение {res.jamming_count}</span> · <span className="text-green-400">данные верны {res.ok_count}</span>
-            {(() => { const nd = res.objects.filter(o => o.verdict === 'Нет данных').length; return nd ? <> · <span className="text-muted">нет данных {nd}</span></> : null })()}
+          <div className="text-[11px] text-muted flex flex-wrap items-center gap-x-2 gap-y-0.5">
+            <span>Всего {res.total}:</span>
+            {(() => {
+              const counts: Record<string, number> = {}
+              for (const o of res.objects) counts[o.verdict] = (counts[o.verdict] ?? 0) + 1
+              const order = ['Глушение', 'Данные верны', 'Не было питания', 'Терминал подключился', 'Изменили настройки', 'Проверить', 'Нет данных', 'Объект не найден', 'Нет номера/даты', 'Ошибка данных']
+              const keys = Object.keys(counts).sort((a, b) => order.indexOf(a) - order.indexOf(b))
+              return keys.map(v => (
+                <span key={v} className={VERDICT_STYLE[v] ?? 'text-white'}>{v} {counts[v]}</span>
+              ))
+            })()}
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-[11px]">
