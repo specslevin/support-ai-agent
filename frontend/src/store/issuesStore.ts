@@ -93,7 +93,7 @@ export const useIssuesStore = create<FiltersState>()(
     {
       name: 'issues-prefs',
       // Persist pagination size + last-used template across sessions.
-      partialize: state => ({ limit: state.limit, lastTemplate: state.lastTemplate }),
+      partialize: state => ({ limit: state.limit, lastTemplate: state.lastTemplate, batchChildren: state.batchChildren }),
     },
   ),
 )
