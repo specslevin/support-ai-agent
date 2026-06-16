@@ -538,6 +538,8 @@ async def create_children(
                     external_id, title, desc, address=obj.address, contact_id=contact_id,
                 )
                 created.append({"plate": obj.plate, "issue_id": child.id, "ok": True})
+                # Immediately cache the child so openExternal can find it without a full refresh
+                await cache.cache_single_issue(child.id)
             except Exception:
                 log.warning("create_child_failed", plate=obj.plate)
                 created.append({"plate": obj.plate, "ok": False})

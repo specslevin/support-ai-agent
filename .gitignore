@@ -24,3 +24,16 @@ tmp/
 temp/
 *.tmp
 *.tar.gz
+
+# Одноразовые скрипты анализа и дата-файлы в корне
+analyze_issues.py
+check_response.py
+debug_api.py
+fetch_all_issues.py
+fetch_dataset.py
+get_all_issues.py
+all_issues_complete.json
+all_issues_raw.json
+dataset.json
+issues_analysis.json
+START_DEVELOPMENT.md

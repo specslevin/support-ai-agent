@@ -227,6 +227,35 @@ class CacheService:
         except Exception:
             log.warning("refresh_single_issue_failed", issue_id=issue_id)
 
+    async def cache_single_issue(self, external_id: int) -> None:
+        """Fetch a newly created Okdesk issue and upsert it into issue_cache.
+
+        Used right after create_child_issue so openExternal can find it immediately.
+        """
+        try:
+            issue = await self.okdesk.get_issue(external_id)
+            company_map = await self._load_company_map()
+            object_map = await self._load_object_map()
+            row = await self._get_or_create_issue_cache(external_id)
+            row.subject = issue.title
+            row.description = issue.description
+            row.status = issue.status.code if issue.status else None
+            row.priority = issue.priority.code if issue.priority else None
+            row.company_id = company_map.get(issue.company.id) if issue.company else None
+            row.company_name = issue.company.name if issue.company else None
+            row.object_id = object_map.get(issue.service_object.id) if issue.service_object else None
+            row.contact_name = issue.contact.name if issue.contact else None
+            if issue.assignee and issue.assignee.name:
+                row.assignee_name = issue.assignee.name
+            row.created_at = _parse_dt(issue.created_at)
+            row.updated_at = _parse_dt(issue.updated_at)
+            row.synced_at = datetime.utcnow()
+            self.db.add(row)
+            await self.db.commit()
+            log.info("child_issue_cached", external_id=external_id)
+        except Exception:
+            log.warning("cache_single_issue_failed", external_id=external_id)
+
     async def save_analysis(
         self,
         issue_id: int,

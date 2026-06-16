@@ -761,11 +761,11 @@ function BatchAnalysis({ issueId, onUseDraft, issueTitle, onOpenExternal }: { is
 
   const createMut = useMutation({
     mutationFn: (objs: import('../types').BatchObject[]) => api.createChildren(issueId, objs),
-    onSuccess: async (data) => {
+    onSuccess: (data) => {
       for (const r of data.results) {
         if (r.plate) setBatchChild(issueId, r.plate, { issue_id: r.issue_id, ok: r.ok })
       }
-      await api.refreshCache()
+      // Backend caches each child immediately — just invalidate queries
       queryClient.invalidateQueries({ queryKey: ['issues'] })
       queryClient.invalidateQueries({ queryKey: ['issue', issueId] })
     },
@@ -778,7 +778,7 @@ function BatchAnalysis({ issueId, onUseDraft, issueTitle, onOpenExternal }: { is
       const res = await api.createChildren(issueId, [o])
       const r = res.results[0]
       setBatchChild(issueId, o.plate, { issue_id: r?.issue_id, ok: r?.ok ?? false })
-      await api.refreshCache()
+      // Backend caches child immediately — just invalidate queries
       queryClient.invalidateQueries({ queryKey: ['issues'] })
       queryClient.invalidateQueries({ queryKey: ['issue', issueId] })
     } catch {
