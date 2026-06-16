@@ -49,10 +49,10 @@ _L = "АВЕКМНОРСТУХABEKMHOPCTYX"
 # Lookbehind: номер не должен начинаться в середине слова — иначе «№ШР175 ОТ 15.06»
 # ложно склеивается в «Р175ОТ15» (где «ОТ»=«от», «15» из даты). См. 64144.
 _PLATE_RE = re.compile(
-    rf"(?<![A-Za-zА-Яа-яЁё])(?:"
+    rf"(?<![A-Za-zА-Яа-яЁё0-9-])(?:"
     rf"[{_L}]\s?\d{{3}}\s?[{_L}]{{2}}\s?\d{{0,3}}"   # обычный: А123ВС[64], в т.ч. «М 396 УМ 763»
-    rf"|\d{{4}}\s?[{_L}]{{2}}"                       # спецтехника: 5297СУ
-    rf"|[{_L}]{{2}}\s?\d{{4}}"                       # спецтехника (обратный порядок): СУ5297
+    rf"|\d{{2}}[-\s]?\d{{2}}\s?[{_L}]{{2}}"          # спецтехника: 5297СУ, 81-40РВ
+    rf"|[{_L}]{{2}}\s?\d{{2}}[-\s]?\d{{2}}"          # спецтехника (обратный порядок): СУ5297
     rf")",
     re.I,
 )
@@ -151,7 +151,7 @@ class IssueAutomationService:
 
         m = _PLATE_RE.search(title) or _PLATE_RE.search(text)
         if m:
-            parsed.plate = re.sub(r"\s", "", m.group(0)).upper()
+            parsed.plate = re.sub(r"[\s-]", "", m.group(0)).upper()
 
         # Fault-date detection. The fault date is rarely the first date in the
         # text — that's usually the report/send/act date (e.g. Волжское ПО акты:
@@ -503,12 +503,14 @@ class IssueAutomationService:
 
     async def build_track(self, title: str | None, description: str | None,
                           max_points: int = 2500, attachments_text: str | None = None,
-                          plate: str | None = None, fault_date: str | None = None) -> dict[str, Any]:
+                          plate: str | None = None, fault_date: str | None = None,
+                          date_from: str | None = None, date_to: str | None = None) -> dict[str, Any]:
         """Return track points + telemetry series for map/charts rendering.
 
         Points: {t(ms), lat, lng, speed, sat, pwr}. ``teleports`` are indices i
         where the jump from point i-1 to i is physically impossible (GPS spoofing).
         ``plate``/``fault_date`` override parsing (per-object track из разбора).
+        ``date_from``/``date_to`` (YYYY-MM-DD) задают произвольный интервал.
         """
         if plate and fault_date:
             parsed = ParsedIssue(plate=plate, date=fault_date)
@@ -520,10 +522,19 @@ class IssueAutomationService:
         if not obj:
             return {"error": "object_not_found", "parsed": asdict(parsed), "points": []}
         oid = int(obj["id"])
-        day = _dt.date.fromisoformat(parsed.date)
-        start = _dt.datetime.combine(day, _dt.time.min)
+        # Window: explicit interval (capped 31 days) or the single fault day.
+        try:
+            d_from = _dt.date.fromisoformat(date_from) if date_from else _dt.date.fromisoformat(parsed.date)
+            d_to = _dt.date.fromisoformat(date_to) if date_to else d_from
+        except ValueError:
+            d_from = d_to = _dt.date.fromisoformat(parsed.date)
+        if d_to < d_from:
+            d_from, d_to = d_to, d_from
+        if (d_to - d_from).days > 31:
+            d_to = d_from + _dt.timedelta(days=31)
+        start = _dt.datetime.combine(d_from, _dt.time.min)
         from_ms = int(start.timestamp() * 1000)
-        till_ms = int((start + _dt.timedelta(days=1)).timestamp() * 1000)
+        till_ms = int((_dt.datetime.combine(d_to, _dt.time.min) + _dt.timedelta(days=1)).timestamp() * 1000)
         packets = await self._geo.get_packets(oid, from_ms, till_ms)
         packets.sort(key=lambda p: p.get("time") or 0)
 
@@ -577,6 +588,8 @@ class IssueAutomationService:
             "imei": obj.get("imei"),
             "phone": obj.get("phone") or obj.get("phone1"),
             "status": status,
+            "range_from": d_from.isoformat(),
+            "range_to": d_to.isoformat(),
             "total_packets": len(packets),
             "points": points,
             "teleports": [index_map[i] for i in teleports if i in index_map],
@@ -603,7 +616,9 @@ class IssueAutomationService:
                 text = ""
             if not text.strip():
                 continue
-            parsed = self.parse_issue("", "", None, extra_text=text)
+            # Имя файла — надёжный источник гос.номера (в нём «…_с255но_КАМАЗ_…»),
+            # текст акта парсит дату/ПЛ. В тексте год+«Не» давал ложный «2026НЕ».
+            parsed = self.parse_issue(name, "", None, extra_text=text)
             addr_m = re.search(r"по\s+адресу[:\s]+(.{5,120}?)(?:\s+и\s+состав|\s+наход|\.|$)", text, re.I | re.S)
             address = re.sub(r"\s+", " ", addr_m.group(1)).strip() if addr_m else None
             item: dict[str, Any] = {

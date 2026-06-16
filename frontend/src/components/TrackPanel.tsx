@@ -16,12 +16,33 @@ function formatTs(value?: number): string {
   })
 }
 
+function copyText(text: string) {
+  // navigator.clipboard requires a secure context (HTTPS); app runs over HTTP,
+  // so fall back to a temporary textarea + execCommand.
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).catch(() => fallbackCopy(text))
+  } else {
+    fallbackCopy(text)
+  }
+}
+
+function fallbackCopy(text: string) {
+  const ta = document.createElement('textarea')
+  ta.value = text
+  ta.style.position = 'fixed'
+  ta.style.opacity = '0'
+  document.body.appendChild(ta)
+  ta.select()
+  try { document.execCommand('copy') } catch { /* ignore */ }
+  document.body.removeChild(ta)
+}
+
 function Copyable({ label, value }: { label: string; value: string | null | undefined }) {
   const [copied, setCopied] = useState(false)
   if (!value) return null
   return (
     <button
-      onClick={() => { navigator.clipboard?.writeText(value); setCopied(true); setTimeout(() => setCopied(false), 1200) }}
+      onClick={() => { copyText(value); setCopied(true); setTimeout(() => setCopied(false), 1200) }}
       title="Копировать"
       className="flex items-center gap-1 text-[11px] text-muted hover:text-white transition-colors"
     >
@@ -246,10 +267,14 @@ export function TrackPanel({ issueId }: { issueId: number }) {
   const [range, setRange] = useState<[number, number] | null>(null)
   const fullRangeRef = useRef<[number, number] | null>(null)
   const onRange = useCallback((min: number, max: number) => setRange([min, max]), [])
+  // Custom date interval (null → use issue's fault date)
+  const [interval, setInterval] = useState<{ from: string; to: string } | null>(null)
+  // Reset interval when switching to another object/issue.
+  useEffect(() => { setInterval(null) }, [issueId, trackPlate, trackDate])
 
   const { data, isPending, isError } = useQuery({
-    queryKey: ['track', issueId, trackPlate, trackDate],
-    queryFn: () => api.getTrack(issueId, trackPlate, trackDate),
+    queryKey: ['track', issueId, trackPlate, trackDate, interval?.from, interval?.to],
+    queryFn: () => api.getTrack(issueId, trackPlate, trackDate, interval?.from, interval?.to),
     staleTime: 5 * 60_000,
   })
 
@@ -299,12 +324,32 @@ export function TrackPanel({ issueId }: { issueId: number }) {
           <div className="flex-1 min-w-0">
             <div className="text-xs text-white font-medium truncate">{data.object_name}</div>
             <div className="text-[11px] text-muted">
-              {data.parsed.date} · {data.total_packets ?? 0} точек
+              {data.total_packets ?? 0} точек
               {(data.teleports?.length ?? 0) > 0 && (
                 <span className="text-yellow-400"> · {data.teleports!.length} телепортов (глушение)</span>
               )}
             </div>
           </div>
+        </div>
+        {/* Интервал дат */}
+        <div className="flex items-center gap-1.5 text-[11px]">
+          <span className="text-muted/60">период:</span>
+          <input
+            type="date"
+            value={interval?.from ?? data.range_from ?? ''}
+            onChange={e => setInterval({ from: e.target.value, to: interval?.to ?? data.range_to ?? e.target.value })}
+            className="bg-base border border-border rounded px-1.5 py-0.5 text-white text-[11px] focus:outline-none focus:border-accent"
+          />
+          <span className="text-muted/60">—</span>
+          <input
+            type="date"
+            value={interval?.to ?? data.range_to ?? ''}
+            onChange={e => setInterval({ from: interval?.from ?? data.range_from ?? e.target.value, to: e.target.value })}
+            className="bg-base border border-border rounded px-1.5 py-0.5 text-white text-[11px] focus:outline-none focus:border-accent"
+          />
+          {interval && (
+            <button onClick={() => setInterval(null)} title="Сбросить к дате неисправности" className="text-muted hover:text-accent">↺</button>
+          )}
         </div>
         {/* Текущее состояние объекта */}
         <div className="flex items-center flex-wrap gap-x-3 gap-y-1">
@@ -334,7 +379,7 @@ export function TrackPanel({ issueId }: { issueId: number }) {
         </>
       ) : (
         <div className="flex items-center justify-center flex-1 text-muted text-sm px-4 text-center">
-          Нет данных трека за {data.parsed.date} — терминал не передавал данные за эту дату (статус объекта см. выше).
+          Нет данных трека за период {data.range_from}{data.range_to !== data.range_from ? ` — ${data.range_to}` : ''} — терминал не передавал данные (статус объекта см. выше).
         </div>
       )}
     </div>

@@ -548,6 +548,8 @@ async def get_issue_track(
     issue_id: int,
     plate: str | None = Query(None, description="Override plate (per-object track from batch)"),
     date: str | None = Query(None, description="Override fault date YYYY-MM-DD"),
+    date_from: str | None = Query(None, description="Interval start YYYY-MM-DD"),
+    date_to: str | None = Query(None, description="Interval end YYYY-MM-DD"),
     cache: CacheService = Depends(get_cache_service),
     okdesk: OkdeskService = Depends(get_okdesk_service),
     automation: IssueAutomationService = Depends(get_issue_automation_service),
@@ -560,13 +562,15 @@ async def get_issue_track(
         external_id = issue_data["issue"].external_id
         # Per-object track (from batch разбор) — skip attachment OCR, use plate/date directly.
         if plate and date:
-            return await automation.build_track("", "", plate=plate, fault_date=date)
+            return await automation.build_track("", "", plate=plate, fault_date=date,
+                                                date_from=date_from, date_to=date_to)
         live = await okdesk.get_issue(external_id)
         attachments_text = ""
         if live.attachments:
             attachments_text = await automation.read_attachments(external_id, live.attachments)
         return await automation.build_track(
             live.title, live.description, attachments_text=attachments_text or None,
+            date_from=date_from, date_to=date_to,
         )
     except HTTPException:
         raise

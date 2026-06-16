@@ -106,7 +106,7 @@ class GpsposGeoService:
 
     @classmethod
     def _norm_plate(cls, value: Any) -> str:
-        return str(value or "").replace(" ", "").upper().translate(cls._TRANSLIT)
+        return str(value or "").replace(" ", "").replace("-", "").upper().translate(cls._TRANSLIT)
 
     @classmethod
     def _plate_core(cls, norm: str) -> str:

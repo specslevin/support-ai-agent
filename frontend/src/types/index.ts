@@ -130,6 +130,8 @@ export interface TrackData {
   imei?: string | null
   phone?: string | null
   status?: TrackObjectStatus
+  range_from?: string
+  range_to?: string
   total_packets?: number
   points: TrackPoint[]
   teleports?: number[]

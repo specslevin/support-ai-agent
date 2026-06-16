@@ -63,9 +63,11 @@ export const api = {
     return http.post(`/issues/${id}/create_children`, { objects: payload }).then(r => r.data)
   },
 
-  getTrack(id: number, plate?: string | null, date?: string | null): Promise<TrackData> {
-    const params = plate && date ? { plate, date } : undefined
-    return http.get(`/issues/${id}/track`, { params }).then(r => r.data)
+  getTrack(id: number, plate?: string | null, date?: string | null, dateFrom?: string | null, dateTo?: string | null): Promise<TrackData> {
+    const params: Record<string, string> = {}
+    if (plate && date) { params.plate = plate; params.date = date }
+    if (dateFrom && dateTo) { params.date_from = dateFrom; params.date_to = dateTo }
+    return http.get(`/issues/${id}/track`, { params: Object.keys(params).length ? params : undefined }).then(r => r.data)
   },
 
   listAttachments(id: number): Promise<IssueAttachment[]> {
