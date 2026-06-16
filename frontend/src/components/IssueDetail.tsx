@@ -894,7 +894,12 @@ function BatchAnalysis({ issueId, onUseDraft, issueTitle, onOpenExternal }: { is
               )
             })()}
             <div className="shrink-0 flex items-center gap-1">
-              <TemplatePicker onSelect={onUseDraft} />
+              <TemplatePicker onSelect={(text) => {
+                const suffix = allCreatedPlates.length
+                  ? `\n\nПо ТС ${allCreatedPlates.join(', ')} оформлены отдельные заявки для индивидуального рассмотрения.`
+                  : ''
+                onUseDraft(text + suffix)
+              }} />
             </div>
           </div>
           {(() => {
