@@ -257,7 +257,7 @@ const CATEGORY_COLORS: Record<string, string> = {
   dark: 'text-gray-500',
 }
 
-export function TemplatePicker({ onSelect }: { onSelect: (content: string) => void }) {
+export function TemplatePicker({ onSelect, onSelectFull }: { onSelect: (content: string) => void; onSelectFull?: (t: { name: string; content: string }) => void }) {
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
   const setLastTemplate = useIssuesStore(s => s.setLastTemplate)
@@ -268,9 +268,13 @@ export function TemplatePicker({ onSelect }: { onSelect: (content: string) => vo
     staleTime: 5 * 60_000,
   })
 
-  const handleSelect = (content: string) => {
-    setLastTemplate(content)
-    onSelect(content)
+  const handleSelect = (t: Template) => {
+    setLastTemplate(t.content)
+    if (onSelectFull) {
+      onSelectFull({ name: t.name, content: t.content })
+    } else {
+      onSelect(t.content)
+    }
     setOpen(false)
     setSearch('')
   }
@@ -341,7 +345,7 @@ export function TemplatePicker({ onSelect }: { onSelect: (content: string) => vo
                 {items.map(t => (
                   <button
                     key={t.id}
-                    onClick={() => handleSelect(t.content)}
+                    onClick={() => handleSelect(t)}
                     className="w-full text-left px-4 py-2 hover:bg-white/5 transition-colors"
                   >
                     <div className="flex items-center gap-2">
@@ -719,10 +723,6 @@ const VERDICT_STYLE: Record<string, string> = {
   'Проверить': 'text-cyan-400',
 }
 
-const JAMMING_BLANKET =
-  'Добрый день! Расхождение пробега по перечисленным ТС за указанную дату связано с проездом в зоне ' +
-  'глушения GPS/ГЛОНАСС-сигнала (воздействие средств РЭБ). В такие моменты терминал не может корректно ' +
-  'определить местоположение и пробег. Устранить эти сбои невозможно, оборудование исправно.'
 
 function BatchAnalysis({ issueId, onUseDraft, issueTitle, onOpenExternal }: { issueId: number; onUseDraft: (text: string) => void; issueTitle?: string | null; onOpenExternal: (extId: number) => void }) {
   const queryClient = useQueryClient()
@@ -730,6 +730,8 @@ function BatchAnalysis({ issueId, onUseDraft, issueTitle, onOpenExternal }: { is
   const batchChildren = useIssuesStore(s => s.batchChildren)
   const setBatchChild = useIssuesStore(s => s.setBatchChild)
   const clearBatchChildren = useIssuesStore(s => s.clearBatchChildren)
+  const lastBatchTemplate = useIssuesStore(s => s.lastBatchTemplate)
+  const setLastBatchTemplate = useIssuesStore(s => s.setLastBatchTemplate)
   const [loadingPlates, setLoadingPlates] = useState<Set<string>>(new Set())
 
   // Per-issue child creation map — survives panel close/reopen (global store, not local state)
@@ -879,29 +881,28 @@ function BatchAnalysis({ issueId, onUseDraft, issueTitle, onOpenExternal }: { is
               </tbody>
             </table>
           </div>
-          <div className="flex items-center gap-2">
-            {res.jamming_count > 0 && (() => {
-              const text = allCreatedPlates.length
-                ? `${JAMMING_BLANKET}\n\nПо ТС ${allCreatedPlates.join(', ')} оформлены отдельные заявки для индивидуального рассмотрения.`
-                : JAMMING_BLANKET
-              return (
+          {(() => {
+            const suffix = allCreatedPlates.length
+              ? `\n\nПо ТС ${allCreatedPlates.join(', ')} оформлены отдельные заявки для индивидуального рассмотрения.`
+              : ''
+            return (
+              <div className="flex items-center gap-2">
                 <button
-                  onClick={() => onUseDraft(text)}
-                  className="flex-1 bg-accent/90 hover:bg-accent text-black text-xs font-semibold py-1.5 rounded transition-colors"
+                  disabled={!lastBatchTemplate}
+                  onClick={() => lastBatchTemplate && onUseDraft(lastBatchTemplate.content + suffix)}
+                  className="flex-1 bg-accent/90 hover:bg-accent text-black text-xs font-semibold py-1.5 rounded transition-colors disabled:opacity-40 disabled:bg-surface disabled:text-muted disabled:border disabled:border-border"
                 >
-                  ↓ Глушение в комментарий{allCreatedPlates.length ? ' + заявки' : ''}
+                  {lastBatchTemplate
+                    ? `↓ ${lastBatchTemplate.name} в комментарий${allCreatedPlates.length ? ' + заявки' : ''}`
+                    : '← Выберите шаблон'}
                 </button>
-              )
-            })()}
-            <div className="shrink-0 flex items-center gap-1">
-              <TemplatePicker onSelect={(text) => {
-                const suffix = allCreatedPlates.length
-                  ? `\n\nПо ТС ${allCreatedPlates.join(', ')} оформлены отдельные заявки для индивидуального рассмотрения.`
-                  : ''
-                onUseDraft(text + suffix)
-              }} />
-            </div>
-          </div>
+                <TemplatePicker
+                  onSelect={() => {}}
+                  onSelectFull={setLastBatchTemplate}
+                />
+              </div>
+            )
+          })()}
           {(() => {
             const children = res.objects.filter(o => o.plate && !rowCreated[o.plate]?.ok && (o.verdict === 'Данные верны' || o.verdict === 'Нет данных'))
             const totalEligible = res.objects.filter(o => o.verdict === 'Данные верны' || o.verdict === 'Нет данных').length

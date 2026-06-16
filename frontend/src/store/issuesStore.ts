@@ -21,6 +21,7 @@ interface FiltersState {
   // Per-issue created child issues: issueId → plate → { issue_id, ok }
   // Lives in session memory only (not persisted); survives panel close/reopen.
   batchChildren: Record<number, Record<string, ChildInfo>>
+  lastBatchTemplate: { name: string; content: string } | null
   setFilter: (key: 'status' | 'company' | 'search' | 'assignee' | 'issueId', value: string) => void
   setPage: (page: number) => void
   setLimit: (limit: number) => void
@@ -34,6 +35,7 @@ interface FiltersState {
   resetFilters: () => void
   setBatchChild: (issueId: number, plate: string, info: ChildInfo) => void
   clearBatchChildren: (issueId: number) => void
+  setLastBatchTemplate: (t: { name: string; content: string } | null) => void
 }
 
 export const useIssuesStore = create<FiltersState>()(
@@ -54,6 +56,7 @@ export const useIssuesStore = create<FiltersState>()(
       lastTemplate: '',
       checkedIds: [],
       batchChildren: {},
+      lastBatchTemplate: null,
 
       setFilter: (key, value) => set({ [key]: value, page: 1, checkedIds: [] }),
       setPage: page => set({ page, checkedIds: [] }),
@@ -89,11 +92,12 @@ export const useIssuesStore = create<FiltersState>()(
         delete next[issueId]
         return { batchChildren: next }
       }),
+      setLastBatchTemplate: t => set({ lastBatchTemplate: t }),
     }),
     {
       name: 'issues-prefs',
       // Persist pagination size + last-used template across sessions.
-      partialize: state => ({ limit: state.limit, lastTemplate: state.lastTemplate, batchChildren: state.batchChildren }),
+      partialize: state => ({ limit: state.limit, lastTemplate: state.lastTemplate, batchChildren: state.batchChildren, lastBatchTemplate: state.lastBatchTemplate }),
     },
   ),
 )
