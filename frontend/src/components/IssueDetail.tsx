@@ -804,14 +804,21 @@ function BatchAnalysis({ issueId, onUseDraft }: { issueId: number; onUseDraft: (
               </tbody>
             </table>
           </div>
-          {res.jamming_count > 0 && (
-            <button
-              onClick={() => onUseDraft(JAMMING_BLANKET)}
-              className="w-full bg-accent/90 hover:bg-accent text-black text-xs font-semibold py-1.5 rounded transition-colors"
-            >
-              ↓ Ответ про глушение (массово) в комментарий
-            </button>
-          )}
+          {res.jamming_count > 0 && (() => {
+            // Если по части ТС созданы отдельные заявки — упомянуть их в общем ответе.
+            const createdPlates = (createMut.data?.results ?? []).filter(r => r.ok).map(r => r.plate)
+            const text = createdPlates.length
+              ? `${JAMMING_BLANKET}\n\nПо ТС ${createdPlates.join(', ')} оформлены отдельные заявки для индивидуального рассмотрения.`
+              : JAMMING_BLANKET
+            return (
+              <button
+                onClick={() => onUseDraft(text)}
+                className="w-full bg-accent/90 hover:bg-accent text-black text-xs font-semibold py-1.5 rounded transition-colors"
+              >
+                ↓ Ответ про глушение (массово){createdPlates.length ? ' + ссылки на отдельные заявки' : ''} в комментарий
+              </button>
+            )
+          })()}
           {(() => {
             // Объекты, требующие отдельной (дочерней) заявки: данные верны
             // (свой ответ) и нет данных (ответ — диагностика). Глушение = массовый ответ.
