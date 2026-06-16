@@ -1,6 +1,8 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 
+interface ChildInfo { issue_id?: number; ok: boolean }
+
 interface FiltersState {
   status: string
   company: string
@@ -16,6 +18,9 @@ interface FiltersState {
   trackDate: string | null
   lastTemplate: string
   checkedIds: number[]
+  // Per-issue created child issues: issueId → plate → { issue_id, ok }
+  // Lives in session memory only (not persisted); survives panel close/reopen.
+  batchChildren: Record<number, Record<string, ChildInfo>>
   setFilter: (key: 'status' | 'company' | 'search' | 'assignee' | 'issueId', value: string) => void
   setPage: (page: number) => void
   setLimit: (limit: number) => void
@@ -27,6 +32,8 @@ interface FiltersState {
   setChecked: (ids: number[]) => void
   clearChecked: () => void
   resetFilters: () => void
+  setBatchChild: (issueId: number, plate: string, info: ChildInfo) => void
+  clearBatchChildren: (issueId: number) => void
 }
 
 export const useIssuesStore = create<FiltersState>()(
@@ -46,6 +53,7 @@ export const useIssuesStore = create<FiltersState>()(
       trackDate: null,
       lastTemplate: '',
       checkedIds: [],
+      batchChildren: {},
 
       setFilter: (key, value) => set({ [key]: value, page: 1, checkedIds: [] }),
       setPage: page => set({ page, checkedIds: [] }),
@@ -70,6 +78,17 @@ export const useIssuesStore = create<FiltersState>()(
       openTrack: (plate = null, date = null) => set({ trackOpen: true, trackPlate: plate, trackDate: date }),
       setLastTemplate: content => set({ lastTemplate: content }),
       resetFilters: () => set({ status: '', company: '', search: '', assignee: '', issueId: '', page: 1 }),
+      setBatchChild: (issueId, plate, info) => set(state => ({
+        batchChildren: {
+          ...state.batchChildren,
+          [issueId]: { ...state.batchChildren[issueId], [plate]: info },
+        },
+      })),
+      clearBatchChildren: issueId => set(state => {
+        const next = { ...state.batchChildren }
+        delete next[issueId]
+        return { batchChildren: next }
+      }),
     }),
     {
       name: 'issues-prefs',

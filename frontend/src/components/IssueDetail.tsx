@@ -724,12 +724,16 @@ const JAMMING_BLANKET =
   'глушения GPS/ГЛОНАСС-сигнала (воздействие средств РЭБ). В такие моменты терминал не может корректно ' +
   'определить местоположение и пробег. Устранить эти сбои невозможно, оборудование исправно.'
 
-type RowCreated = Record<string, { issue_id?: number; ok: boolean; loading?: boolean }>
-
 function BatchAnalysis({ issueId, onUseDraft, issueTitle, onOpenExternal }: { issueId: number; onUseDraft: (text: string) => void; issueTitle?: string | null; onOpenExternal: (extId: number) => void }) {
   const queryClient = useQueryClient()
   const openTrack = useIssuesStore(s => s.openTrack)
-  const [rowCreated, setRowCreated] = useState<RowCreated>({})
+  const batchChildren = useIssuesStore(s => s.batchChildren)
+  const setBatchChild = useIssuesStore(s => s.setBatchChild)
+  const clearBatchChildren = useIssuesStore(s => s.clearBatchChildren)
+  const [loadingPlates, setLoadingPlates] = useState<Set<string>>(new Set())
+
+  // Per-issue child creation map — survives panel close/reopen (global store, not local state)
+  const rowCreated = batchChildren[issueId] ?? {}
 
   const { data: attachments = [] } = useQuery({
     queryKey: ['attachments', issueId],
@@ -751,7 +755,7 @@ function BatchAnalysis({ issueId, onUseDraft, issueTitle, onOpenExternal }: { is
     mutationFn: () => api.automateBatch(issueId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['batch-cached', issueId] })
-      setRowCreated({})
+      clearBatchChildren(issueId)
     },
   })
 
@@ -759,25 +763,24 @@ function BatchAnalysis({ issueId, onUseDraft, issueTitle, onOpenExternal }: { is
     mutationFn: (objs: import('../types').BatchObject[]) => api.createChildren(issueId, objs),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['issues'] })
-      // Sync per-row state from bulk create
-      const updates: RowCreated = {}
       for (const r of data.results) {
-        if (r.plate) updates[r.plate] = { issue_id: r.issue_id, ok: r.ok }
+        if (r.plate) setBatchChild(issueId, r.plate, { issue_id: r.issue_id, ok: r.ok })
       }
-      setRowCreated(prev => ({ ...prev, ...updates }))
     },
   })
 
   const createRow = async (o: import('../types').BatchObject) => {
     if (!o.plate) return
-    setRowCreated(prev => ({ ...prev, [o.plate!]: { loading: true, ok: false } }))
+    setLoadingPlates(prev => new Set([...prev, o.plate!]))
     try {
       const res = await api.createChildren(issueId, [o])
       const r = res.results[0]
-      setRowCreated(prev => ({ ...prev, [o.plate!]: { issue_id: r?.issue_id, ok: r?.ok ?? false } }))
+      setBatchChild(issueId, o.plate, { issue_id: r?.issue_id, ok: r?.ok ?? false })
       queryClient.invalidateQueries({ queryKey: ['issues'] })
     } catch {
-      setRowCreated(prev => ({ ...prev, [o.plate!]: { ok: false } }))
+      setBatchChild(issueId, o.plate, { ok: false })
+    } finally {
+      setLoadingPlates(prev => { const s = new Set(prev); s.delete(o.plate!); return s })
     }
   }
 
@@ -822,12 +825,13 @@ function BatchAnalysis({ issueId, onUseDraft, issueTitle, onOpenExternal }: { is
               <thead className="text-muted/60">
                 <tr className="text-left">
                   <th className="py-1 pr-2">Гос.номер</th><th className="pr-2">Дата</th>
-                  <th className="pr-2">ПЛ</th><th className="pr-2">Система</th><th className="pr-2">Вердикт</th><th className="pr-1 text-center">🗺</th><th className="text-center">📋</th>
+                  <th className="pr-2">ПЛ</th><th className="pr-2">Система</th><th className="pr-2">Вердикт</th><th className="pr-1"></th><th></th>
                 </tr>
               </thead>
               <tbody>
                 {res.objects.map((o, idx) => {
                   const rc = o.plate ? rowCreated[o.plate] : null
+                  const isLoading = !!o.plate && loadingPlates.has(o.plate)
                   return (
                     <tr key={idx} className="border-t border-border/50">
                       <td className="py-1 pr-2 font-mono">{o.plate ?? '—'}</td>
@@ -846,7 +850,7 @@ function BatchAnalysis({ issueId, onUseDraft, issueTitle, onOpenExternal }: { is
                       </td>
                       <td className="text-center">
                         {o.plate && (
-                          rc?.loading ? (
+                          isLoading ? (
                             <span className="text-muted animate-pulse">…</span>
                           ) : rc?.ok && rc.issue_id ? (
                             <button
@@ -871,19 +875,24 @@ function BatchAnalysis({ issueId, onUseDraft, issueTitle, onOpenExternal }: { is
               </tbody>
             </table>
           </div>
-          {res.jamming_count > 0 && (() => {
-            const text = allCreatedPlates.length
-              ? `${JAMMING_BLANKET}\n\nПо ТС ${allCreatedPlates.join(', ')} оформлены отдельные заявки для индивидуального рассмотрения.`
-              : JAMMING_BLANKET
-            return (
-              <button
-                onClick={() => onUseDraft(text)}
-                className="w-full bg-accent/90 hover:bg-accent text-black text-xs font-semibold py-1.5 rounded transition-colors"
-              >
-                ↓ Ответ про глушение (массово){allCreatedPlates.length ? ' + ссылки на отдельные заявки' : ''} в комментарий
-              </button>
-            )
-          })()}
+          <div className="flex items-center gap-2">
+            {res.jamming_count > 0 && (() => {
+              const text = allCreatedPlates.length
+                ? `${JAMMING_BLANKET}\n\nПо ТС ${allCreatedPlates.join(', ')} оформлены отдельные заявки для индивидуального рассмотрения.`
+                : JAMMING_BLANKET
+              return (
+                <button
+                  onClick={() => onUseDraft(text)}
+                  className="flex-1 bg-accent/90 hover:bg-accent text-black text-xs font-semibold py-1.5 rounded transition-colors"
+                >
+                  ↓ Глушение в комментарий{allCreatedPlates.length ? ' + заявки' : ''}
+                </button>
+              )
+            })()}
+            <div className="shrink-0 flex items-center gap-1">
+              <TemplatePicker onSelect={onUseDraft} />
+            </div>
+          </div>
           {(() => {
             const children = res.objects.filter(o => o.plate && !rowCreated[o.plate]?.ok && (o.verdict === 'Данные верны' || o.verdict === 'Нет данных'))
             const totalEligible = res.objects.filter(o => o.verdict === 'Данные верны' || o.verdict === 'Нет данных').length
