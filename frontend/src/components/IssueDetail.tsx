@@ -724,9 +724,13 @@ const JAMMING_BLANKET =
   'глушения GPS/ГЛОНАСС-сигнала (воздействие средств РЭБ). В такие моменты терминал не может корректно ' +
   'определить местоположение и пробег. Устранить эти сбои невозможно, оборудование исправно.'
 
-function BatchAnalysis({ issueId, onUseDraft, issueTitle }: { issueId: number; onUseDraft: (text: string) => void; issueTitle?: string | null }) {
+type RowCreated = Record<string, { issue_id?: number; ok: boolean; loading?: boolean }>
+
+function BatchAnalysis({ issueId, onUseDraft, issueTitle, onOpenExternal }: { issueId: number; onUseDraft: (text: string) => void; issueTitle?: string | null; onOpenExternal: (extId: number) => void }) {
   const queryClient = useQueryClient()
   const openTrack = useIssuesStore(s => s.openTrack)
+  const [rowCreated, setRowCreated] = useState<RowCreated>({})
+
   const { data: attachments = [] } = useQuery({
     queryKey: ['attachments', issueId],
     queryFn: () => api.listAttachments(issueId),
@@ -745,18 +749,47 @@ function BatchAnalysis({ issueId, onUseDraft, issueTitle }: { issueId: number; o
 
   const run = useMutation({
     mutationFn: () => api.automateBatch(issueId),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['batch-cached', issueId] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['batch-cached', issueId] })
+      setRowCreated({})
+    },
   })
+
   const createMut = useMutation({
     mutationFn: (objs: import('../types').BatchObject[]) => api.createChildren(issueId, objs),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['issues'] }),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['issues'] })
+      // Sync per-row state from bulk create
+      const updates: RowCreated = {}
+      for (const r of data.results) {
+        if (r.plate) updates[r.plate] = { issue_id: r.issue_id, ok: r.ok }
+      }
+      setRowCreated(prev => ({ ...prev, ...updates }))
+    },
   })
+
+  const createRow = async (o: import('../types').BatchObject) => {
+    if (!o.plate) return
+    setRowCreated(prev => ({ ...prev, [o.plate!]: { loading: true, ok: false } }))
+    try {
+      const res = await api.createChildren(issueId, [o])
+      const r = res.results[0]
+      setRowCreated(prev => ({ ...prev, [o.plate!]: { issue_id: r?.issue_id, ok: r?.ok ?? false } }))
+      queryClient.invalidateQueries({ queryKey: ['issues'] })
+    } catch {
+      setRowCreated(prev => ({ ...prev, [o.plate!]: { ok: false } }))
+    }
+  }
 
   // Show only for batch issues (several extractable attachments / vehicles)
   if (!isBatch) return null
 
   const res = run.data ?? (cached as BatchResult | null)
   const isCached = !run.data && !!cached
+
+  // All plates with a successfully created child issue (per-row or bulk)
+  const allCreatedPlates = Object.entries(rowCreated).filter(([, v]) => v.ok).map(([plate]) => plate)
+
   return (
     <div className="space-y-2 border-t border-border pt-3">
       <button
@@ -789,69 +822,89 @@ function BatchAnalysis({ issueId, onUseDraft, issueTitle }: { issueId: number; o
               <thead className="text-muted/60">
                 <tr className="text-left">
                   <th className="py-1 pr-2">Гос.номер</th><th className="pr-2">Дата</th>
-                  <th className="pr-2">ПЛ</th><th className="pr-2">Система</th><th className="pr-2">Вердикт</th><th></th>
+                  <th className="pr-2">ПЛ</th><th className="pr-2">Система</th><th className="pr-2">Вердикт</th><th className="pr-1 text-center">🗺</th><th className="text-center">📋</th>
                 </tr>
               </thead>
               <tbody>
-                {res.objects.map((o, idx) => (
-                  <tr key={idx} className="border-t border-border/50">
-                    <td className="py-1 pr-2 font-mono">{o.plate ?? '—'}</td>
-                    <td className="pr-2">{o.date ?? '—'}</td>
-                    <td className="pr-2">{o.sheet_mileage_km ?? '—'}</td>
-                    <td className="pr-2">{o.system_mileage_km ?? '—'}</td>
-                    <td className={VERDICT_STYLE[o.verdict] ?? 'text-white'}>{o.verdict}</td>
-                    <td className="pl-1">
-                      {o.plate && o.date && (
-                        <button
-                          onClick={() => openTrack(o.plate, o.date)}
-                          title="Карта и графики этого ТС"
-                          className="text-muted hover:text-accent transition-colors"
-                        >🗺</button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                {res.objects.map((o, idx) => {
+                  const rc = o.plate ? rowCreated[o.plate] : null
+                  return (
+                    <tr key={idx} className="border-t border-border/50">
+                      <td className="py-1 pr-2 font-mono">{o.plate ?? '—'}</td>
+                      <td className="pr-2">{o.date ?? '—'}</td>
+                      <td className="pr-2">{o.sheet_mileage_km ?? '—'}</td>
+                      <td className="pr-2">{o.system_mileage_km ?? '—'}</td>
+                      <td className={`pr-2 ${VERDICT_STYLE[o.verdict] ?? 'text-white'}`}>{o.verdict}</td>
+                      <td className="pr-1 text-center">
+                        {o.plate && o.date && (
+                          <button
+                            onClick={() => openTrack(o.plate, o.date)}
+                            title="Карта и графики этого ТС"
+                            className="text-muted hover:text-accent transition-colors"
+                          >🗺</button>
+                        )}
+                      </td>
+                      <td className="text-center">
+                        {o.plate && (
+                          rc?.loading ? (
+                            <span className="text-muted animate-pulse">…</span>
+                          ) : rc?.ok && rc.issue_id ? (
+                            <button
+                              onClick={() => onOpenExternal(rc.issue_id!)}
+                              title={`Открыть заявку #${rc.issue_id}`}
+                              className="text-accent hover:underline font-mono"
+                            >#{rc.issue_id}</button>
+                          ) : rc?.ok ? (
+                            <span className="text-green-400">✓</span>
+                          ) : (
+                            <button
+                              onClick={() => createRow(o)}
+                              title="Создать дочернюю заявку"
+                              className="text-muted hover:text-accent transition-colors"
+                            >📋</button>
+                          )
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>
           {res.jamming_count > 0 && (() => {
-            // Если по части ТС созданы отдельные заявки — упомянуть их в общем ответе.
-            const createdPlates = (createMut.data?.results ?? []).filter(r => r.ok).map(r => r.plate)
-            const text = createdPlates.length
-              ? `${JAMMING_BLANKET}\n\nПо ТС ${createdPlates.join(', ')} оформлены отдельные заявки для индивидуального рассмотрения.`
+            const text = allCreatedPlates.length
+              ? `${JAMMING_BLANKET}\n\nПо ТС ${allCreatedPlates.join(', ')} оформлены отдельные заявки для индивидуального рассмотрения.`
               : JAMMING_BLANKET
             return (
               <button
                 onClick={() => onUseDraft(text)}
                 className="w-full bg-accent/90 hover:bg-accent text-black text-xs font-semibold py-1.5 rounded transition-colors"
               >
-                ↓ Ответ про глушение (массово){createdPlates.length ? ' + ссылки на отдельные заявки' : ''} в комментарий
+                ↓ Ответ про глушение (массово){allCreatedPlates.length ? ' + ссылки на отдельные заявки' : ''} в комментарий
               </button>
             )
           })()}
           {(() => {
-            // Объекты, требующие отдельной (дочерней) заявки: данные верны
-            // (свой ответ) и нет данных (ответ — диагностика). Глушение = массовый ответ.
-            const children = res.objects.filter(o => o.verdict === 'Данные верны' || o.verdict === 'Нет данных')
-            if (children.length === 0) return null
-            const ok = children.filter(o => o.verdict === 'Данные верны').length
-            const nd = children.filter(o => o.verdict === 'Нет данных').length
+            const children = res.objects.filter(o => o.plate && !rowCreated[o.plate]?.ok && (o.verdict === 'Данные верны' || o.verdict === 'Нет данных'))
+            const totalEligible = res.objects.filter(o => o.verdict === 'Данные верны' || o.verdict === 'Нет данных').length
+            if (totalEligible === 0) return null
             return (
               <>
                 <p className="text-[11px] text-muted leading-relaxed">
-                  💡 Отдельные заявки: «данные верны» {ok}{nd ? `, «нет данных» ${nd} (ответ — диагностика)` : ''}.
+                  💡 Отдельные заявки: «данные верны» {res.objects.filter(o => o.verdict === 'Данные верны').length}{res.objects.filter(o => o.verdict === 'Нет данных').length ? `, «нет данных» ${res.objects.filter(o => o.verdict === 'Нет данных').length}` : ''} — используйте 📋 в строке или создайте все сразу:
                 </p>
-                {createMut.isSuccess ? (
-                  <p className="text-xs text-green-400">✓ Создано вложенных заявок: {createMut.data.created}{createMut.data.failed ? `, ошибок ${createMut.data.failed}` : ''}</p>
-                ) : (
-                  <button
-                    onClick={() => createMut.mutate(children)}
-                    disabled={createMut.isPending}
-                    className="w-full bg-surface border border-accent/50 text-accent hover:bg-accent/10 text-xs font-semibold py-1.5 rounded transition-colors disabled:opacity-50"
-                  >
-                    {createMut.isPending ? 'Создаю…' : `📋 Создать ${children.length} вложенных заявок (данные верны + нет данных)`}
-                  </button>
+                {children.length > 0 && (
+                  createMut.isSuccess && children.length === 0 ? null : (
+                    <button
+                      onClick={() => createMut.mutate(children)}
+                      disabled={createMut.isPending || children.length === 0}
+                      className="w-full bg-surface border border-accent/50 text-accent hover:bg-accent/10 text-xs font-semibold py-1.5 rounded transition-colors disabled:opacity-50"
+                    >
+                      {createMut.isPending ? 'Создаю…' : `📋 Создать все ${children.length} (ещё не созданные)`}
+                    </button>
+                  )
                 )}
+                {children.length === 0 && <p className="text-xs text-green-400">✓ Все дочерние заявки созданы</p>}
                 {createMut.isError && <p className="text-xs text-red-400">Ошибка создания. Попробуйте снова.</p>}
               </>
             )
@@ -1095,6 +1148,7 @@ export function IssueDetail() {
             issueId={issue.id}
             onUseDraft={(text) => { setComment(text); setCommentPublic(true) }}
             issueTitle={issue.subject}
+            onOpenExternal={openExternal}
           />
         </div>
 
