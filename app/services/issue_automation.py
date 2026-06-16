@@ -647,11 +647,12 @@ class IssueAutomationService:
             parsed = self.parse_issue(name, "", None, extra_text=text)
             addr_m = re.search(r"по\s+адресу[:\s]+(.{5,120}?)(?:\s+и\s+состав|\s+наход|\.|$)", text, re.I | re.S)
             address = re.sub(r"\s+", " ", addr_m.group(1)).strip() if addr_m else None
-            # Один файл = одно ТС (номер в имени) ИЛИ «общая» заявка со СПИСКОМ ТС
-            # внутри одного файла (1. УАЗ В152ТУ 2. ПАЗ Р657РТ …) — тогда разбираем
-            # каждый номер с общей датой/ПЛ.
-            if parsed.plate:
-                plates = [parsed.plate]
+            # Решаем по номеру ИЗ ИМЕНИ ФАЙЛА: есть → один ТС (акт на одно авто);
+            # нет → «общая» заявка со СПИСКОМ ТС в одном файле (1. УАЗ В152ТУ …) —
+            # разбираем каждый номер с общей датой/ПЛ.
+            filename_plate = self.parse_issue(name, "", None).plate
+            if filename_plate:
+                plates = [filename_plate]
             else:
                 plates = extract_all_plates(text)
             if not plates:
