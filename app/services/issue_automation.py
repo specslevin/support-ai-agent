@@ -59,6 +59,25 @@ _PLATE_RE = re.compile(
 # Fallback: усечённый номер 2 буквы + 3 цифры (ЕК424) — только если обычный/спец
 # не нашлись (иначе ловит «Акт122» и т.п., но lookbehind режет «Акт»→«кт»).
 _PLATE_FALLBACK_RE = re.compile(rf"(?<![A-Za-zА-Яа-яЁё0-9.-])[{_L}]{{2}}\s?\d{{3}}", re.I)
+# Standard-only (буква+3цифры+2буквы[+регион]) для извлечения СПИСКА номеров из
+# «общей» заявки (один файл — много ТС). Без спецформата, чтобы «23-00 нет»→«2300НЕ» не лез.
+# Регион только слитно (без \s? перед \d{0,3}) — иначе в списке «В152ТУ\n2.»
+# хвост «2» от номера следующего пункта прилипает к номеру.
+_PLATE_STD_RE = re.compile(rf"(?<![A-Za-zА-Яа-яЁё0-9.-])[{_L}]\s?\d{{3}}\s?[{_L}]{{2}}\d{{0,3}}", re.I)
+
+
+def extract_all_plates(text: str, limit: int = 40) -> list[str]:
+    """All distinct standard plates in order of appearance (для списков ТС)."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for m in _PLATE_STD_RE.finditer(text or ""):
+        p = re.sub(r"[\s-]", "", m.group(0)).upper()
+        if p not in seen:
+            seen.add(p)
+            out.append(p)
+            if len(out) >= limit:
+                break
+    return out
 _DATE_RE = re.compile(r"(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{4})")
 
 
@@ -628,45 +647,59 @@ class IssueAutomationService:
             parsed = self.parse_issue(name, "", None, extra_text=text)
             addr_m = re.search(r"по\s+адресу[:\s]+(.{5,120}?)(?:\s+и\s+состав|\s+наход|\.|$)", text, re.I | re.S)
             address = re.sub(r"\s+", " ", addr_m.group(1)).strip() if addr_m else None
-            item: dict[str, Any] = {
-                "file": name,
-                "plate": parsed.plate,
-                "date": parsed.date,
-                "sheet_mileage_km": parsed.sheet_mileage_km,
-                "system_mileage_km": None,
-                "address": address,
-                "flags": [],
-                "teleport_jumps": 0,
-                "verdict": "Нет номера/даты",
-            }
-            if parsed.plate and parsed.date:
-                try:
-                    t = await self.gather_telemetry(parsed.plate, parsed.date)
-                    item["system_mileage_km"] = t.system_mileage_km
-                    item["flags"] = t.flags
-                    item["teleport_jumps"] = t.teleport_jumps
-                    sheet, system = parsed.sheet_mileage_km, t.system_mileage_km
-                    # Order matters: jamming/power-off take precedence over a
-                    # mileage match. Spoofing (e.g. a perfect circle on the map,
-                    # many teleports) makes the track unreliable even if the
-                    # total mileage coincidentally equals the waybill — so it must
-                    # NOT be classified «Данные верны» (see С400ХТ in 64142).
-                    if "object_not_found" in t.flags:
-                        item["verdict"] = "Объект не найден"
-                    elif "no_data" in t.flags:
-                        item["verdict"] = "Нет данных"
-                    elif "jamming" in t.flags:
-                        item["verdict"] = "Глушение"
-                    elif "power_off" in t.flags:
-                        item["verdict"] = "Не было питания"
-                    elif sheet and system is not None and abs(sheet - system) <= max(5.0, sheet * 0.1):
-                        item["verdict"] = "Данные верны"
-                    else:
-                        item["verdict"] = "Проверить"
-                except Exception:
-                    item["verdict"] = "Ошибка данных"
-            results.append(item)
+            # Один файл = одно ТС (номер в имени) ИЛИ «общая» заявка со СПИСКОМ ТС
+            # внутри одного файла (1. УАЗ В152ТУ 2. ПАЗ Р657РТ …) — тогда разбираем
+            # каждый номер с общей датой/ПЛ.
+            if parsed.plate:
+                plates = [parsed.plate]
+            else:
+                plates = extract_all_plates(text)
+            if not plates:
+                results.append({
+                    "file": name, "plate": None, "date": parsed.date,
+                    "sheet_mileage_km": parsed.sheet_mileage_km, "system_mileage_km": None,
+                    "address": address, "flags": [], "teleport_jumps": 0,
+                    "verdict": "Нет номера/даты",
+                })
+                continue
+            for plate in plates:
+                results.append(await self._analyze_object(
+                    plate, parsed.date, parsed.sheet_mileage_km, address, name,
+                ))
         return results
+
+    async def _analyze_object(self, plate: str, date: str | None, sheet: float | None,
+                              address: str | None, file: str) -> dict[str, Any]:
+        item: dict[str, Any] = {
+            "file": file, "plate": plate, "date": date,
+            "sheet_mileage_km": sheet, "system_mileage_km": None,
+            "address": address, "flags": [], "teleport_jumps": 0,
+            "verdict": "Нет номера/даты",
+        }
+        if plate and date:
+            try:
+                t = await self.gather_telemetry(plate, date)
+                item["system_mileage_km"] = t.system_mileage_km
+                item["flags"] = t.flags
+                item["teleport_jumps"] = t.teleport_jumps
+                system = t.system_mileage_km
+                # Order matters: jamming/power-off take precedence over a mileage
+                # match (spoofing makes the track unreliable even if mileage coincides).
+                if "object_not_found" in t.flags:
+                    item["verdict"] = "Объект не найден"
+                elif "no_data" in t.flags:
+                    item["verdict"] = "Нет данных"
+                elif "jamming" in t.flags:
+                    item["verdict"] = "Глушение"
+                elif "power_off" in t.flags:
+                    item["verdict"] = "Не было питания"
+                elif sheet and system is not None and abs(sheet - system) <= max(5.0, sheet * 0.1):
+                    item["verdict"] = "Данные верны"
+                else:
+                    item["verdict"] = "Проверить"
+            except Exception:
+                item["verdict"] = "Ошибка данных"
+        return item
 
     async def build_training_sample(
         self, title: str | None, description: str | None,
