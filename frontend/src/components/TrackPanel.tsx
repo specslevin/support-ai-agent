@@ -295,7 +295,7 @@ function DateRangePicker({ from, to, onChange }: { from: string; to: string; onC
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={close} />
-          <div className="absolute right-0 top-full mt-1 z-50 bg-surface border border-border rounded-lg p-2 shadow-2xl w-56">
+          <div className="absolute right-0 top-full mt-1 z-[1100] bg-surface border border-border rounded-lg p-2 shadow-2xl w-56">
             <div className="flex items-center justify-between mb-1 text-xs">
               <button onClick={() => setView([vm === 0 ? vy - 1 : vy, vm === 0 ? 11 : vm - 1])} className="px-2 text-muted hover:text-white">‹</button>
               <span className="text-white capitalize">{new Date(vy, vm, 1).toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' })}</span>
@@ -426,7 +426,7 @@ export function TrackPanel({ issueId }: { issueId: number }) {
       </div>
       {data.points.length ? (
         <>
-          <div className="h-[50%] min-h-[240px] p-3 shrink-0">
+          <div className="h-[50%] min-h-[240px] p-3 shrink-0 isolate">
             <TrackMap data={data} apiRef={mapApi} />
           </div>
           {stats && <StatsBar s={stats} zoomed={zoomed} />}
