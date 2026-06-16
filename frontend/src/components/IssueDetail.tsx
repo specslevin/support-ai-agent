@@ -514,7 +514,7 @@ function Fact({ label, value, warn }: { label: string; value: React.ReactNode; w
   )
 }
 
-function AutoAnalysis({ issueId, onUseDraft, latestAnalysis }: { issueId: number; onUseDraft: (text: string) => void; latestAnalysis: Analysis | null }) {
+function AutoAnalysis({ issueId, onUseDraft, latestAnalysis, issueTitle }: { issueId: number; onUseDraft: (text: string) => void; latestAnalysis: Analysis | null; issueTitle?: string | null }) {
   const queryClient = useQueryClient()
   const [result, setResult] = useState<AutomationResult | null>(null)
   const [confirmResolve, setConfirmResolve] = useState(false)
@@ -526,7 +526,9 @@ function AutoAnalysis({ issueId, onUseDraft, latestAnalysis }: { issueId: number
     queryFn: () => api.listAttachments(issueId),
     staleTime: 5 * 60_000,
   })
-  const isBatch = attachments.filter(a => a.extractable).length >= 2
+  const extractCount = attachments.filter(a => a.extractable).length
+  // Batch = несколько вложений ИЛИ одно вложение «общей» заявки со списком ТС.
+  const isBatch = extractCount >= 2 || (extractCount >= 1 && /общ/i.test(issueTitle ?? ''))
 
   // Cached result — show last analysis without re-running the AI (saves tokens).
   const cachedQ = useQuery({
@@ -722,7 +724,7 @@ const JAMMING_BLANKET =
   'глушения GPS/ГЛОНАСС-сигнала (воздействие средств РЭБ). В такие моменты терминал не может корректно ' +
   'определить местоположение и пробег. Устранить эти сбои невозможно, оборудование исправно.'
 
-function BatchAnalysis({ issueId, onUseDraft }: { issueId: number; onUseDraft: (text: string) => void }) {
+function BatchAnalysis({ issueId, onUseDraft, issueTitle }: { issueId: number; onUseDraft: (text: string) => void; issueTitle?: string | null }) {
   const queryClient = useQueryClient()
   const openTrack = useIssuesStore(s => s.openTrack)
   const { data: attachments = [] } = useQuery({
@@ -731,7 +733,7 @@ function BatchAnalysis({ issueId, onUseDraft }: { issueId: number; onUseDraft: (
     staleTime: 5 * 60_000,
   })
   const extractable = attachments.filter(a => a.extractable)
-  const isBatch = extractable.length >= 2
+  const isBatch = extractable.length >= 2 || (extractable.length >= 1 && /общ/i.test(issueTitle ?? ''))
 
   const cachedQ = useQuery({
     queryKey: ['batch-cached', issueId],
@@ -762,7 +764,7 @@ function BatchAnalysis({ issueId, onUseDraft }: { issueId: number; onUseDraft: (
         disabled={run.isPending}
         className="w-full bg-gradient-to-r from-sky-600/90 to-indigo-600/90 hover:from-sky-600 hover:to-indigo-600 text-white text-xs font-semibold py-2 rounded transition-colors disabled:opacity-50"
       >
-        {run.isPending ? `🗂 Разбираю ${extractable.length} объектов…` : res ? '🔄 Обновить разбор' : `🗂 Разбор по объектам (${extractable.length})`}
+        {run.isPending ? '🗂 Разбираю объекты…' : res ? '🔄 Обновить разбор' : '🗂 Разбор по объектам'}
       </button>
       {isCached && (
         <p className="text-[10px] text-muted/70">💾 показан сохранённый разбор{cachedQ.data?.created_at ? ` от ${new Date(cachedQ.data.created_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}` : ''}</p>
@@ -1078,11 +1080,13 @@ export function IssueDetail() {
             issueId={issue.id}
             onUseDraft={(text) => { setComment(text); setCommentPublic(true) }}
             latestAnalysis={latest_analysis}
+            issueTitle={issue.subject}
           />
 
           <BatchAnalysis
             issueId={issue.id}
             onUseDraft={(text) => { setComment(text); setCommentPublic(true) }}
+            issueTitle={issue.subject}
           />
         </div>
 
