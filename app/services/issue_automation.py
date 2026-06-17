@@ -227,6 +227,15 @@ class IssueAutomationService:
         sm = re.search(r"(?:путев\w*\s+лист\w*|одометр\w*|по\s*ПЛ|ПЛ)[^\d\n]{0,18}(\d+(?:[.,]\d+)?)\s*(км|м)\b", text, re.I)
         if sm:
             parsed.sheet_mileage_km = _to_km(_parse_number(sm.group(1)), sm.group(2))
+        else:
+            # Fallback: табличный акт Самары — единица в скобках ПЕРЕД числом,
+            # без единицы после: «Пробег по путевому листу (км) 367» (см. 64253).
+            # Единица «(км)» — обязательный якорь сразу перед числом, поэтому даты
+            # (16.06.2026) и прочие числа не цепляются. Без bare «ПЛ», чтобы не ловить
+            # лишнее: таблица всегда пишет полное «путевому листу»/«по ПЛ».
+            sm = re.search(r"(?:путев\w*\s+лист\w*|одометр\w*|по\s*ПЛ)[^\d\n]{0,12}\((км|м)\)[^\d\n]{0,4}(\d+(?:[.,]\d+)?)", text, re.I)
+            if sm:
+                parsed.sheet_mileage_km = _to_km(_parse_number(sm.group(2)), sm.group(1))
 
         # «в ПК <num> <unit>» / «в системе <num> <unit>» — то, что клиент видит
         # в системе (Волжское/Самара пишут «в системе», Оренбург — «в ПК»).
@@ -237,6 +246,13 @@ class IssueAutomationService:
               or re.search(r"в\s*систем\w*[^\d\n]{0,6}(\d+(?:[.,]\d+)?)\s*(км|м)\b", text, re.I))
         if cm:
             parsed.declared_system_km = _to_km(_parse_number(cm.group(1)), cm.group(2))
+        else:
+            # Тот же табличный фолбэк для значения «в системе»: «Пробег в системе
+            # ГЛОНАСС (км) 318». Якорь «(км)» защищает от даты-маркера «в системе 03.06».
+            cm = (re.search(r"в\s*ПК[^\d\n]{0,18}\((км|м)\)[^\d\n]{0,4}(\d+(?:[.,]\d+)?)", text, re.I)
+                  or re.search(r"в\s*систем\w*[^\d\n]{0,18}\((км|м)\)[^\d\n]{0,4}(\d+(?:[.,]\d+)?)", text, re.I))
+            if cm:
+                parsed.declared_system_km = _to_km(_parse_number(cm.group(2)), cm.group(1))
         return parsed
 
     # ----- telemetry -----------------------------------------------------

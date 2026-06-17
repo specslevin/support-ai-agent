@@ -517,7 +517,7 @@ function Fact({ label, value, warn }: { label: string; value: React.ReactNode; w
   )
 }
 
-function AutoAnalysis({ issueId, onUseDraft, latestAnalysis, issueTitle }: { issueId: number; onUseDraft: (text: string) => void; latestAnalysis: Analysis | null; issueTitle?: string | null }) {
+function AutoAnalysis({ issueId, onUseDraft, latestAnalysis, issueTitle, companyName }: { issueId: number; onUseDraft: (text: string) => void; latestAnalysis: Analysis | null; issueTitle?: string | null; companyName?: string | null }) {
   const queryClient = useQueryClient()
   const [result, setResult] = useState<AutomationResult | null>(null)
   const [confirmResolve, setConfirmResolve] = useState(false)
@@ -530,8 +530,20 @@ function AutoAnalysis({ issueId, onUseDraft, latestAnalysis, issueTitle }: { iss
     staleTime: 5 * 60_000,
   })
   const extractCount = attachments.filter(a => a.extractable).length
-  // Batch = несколько вложений ИЛИ одно вложение «общей» заявки со списком ТС.
-  const isBatch = extractCount >= 2 || (extractCount >= 1 && /общ/i.test(issueTitle ?? ''))
+  // Сохранённый разбор по объектам: если заявка уже помечена агрегатной (ОДКР),
+  // одиночный автоанализ ввёл бы в заблуждение — отдаём её «Разбору по объектам».
+  const cachedBatchQ = useQuery({
+    queryKey: ['batch-cached', issueId],
+    queryFn: () => api.getCachedBatch(issueId),
+    enabled: extractCount >= 1,
+    staleTime: 5 * 60_000,
+  })
+  const looksAggregate = /одкр/i.test(companyName ?? '') || /общ|одкр/i.test(issueTitle ?? '')
+  // Batch = несколько вложений; ИЛИ одно вложение агрегатной/«общей» заявки;
+  // ИЛИ сохранённый разбор пометил заявку как агрегатную.
+  const isBatch = extractCount >= 2
+    || (extractCount >= 1 && looksAggregate)
+    || !!(cachedBatchQ.data?.cached && cachedBatchQ.data.is_aggregate)
 
   // Cached result — show last analysis without re-running the AI (saves tokens).
   const cachedQ = useQuery({
@@ -756,7 +768,7 @@ const VERDICT_STYLE: Record<string, string> = {
 }
 
 
-function BatchAnalysis({ issueId, onUseDraft, issueTitle, onOpenExternal }: { issueId: number; onUseDraft: (text: string) => void; issueTitle?: string | null; onOpenExternal: (extId: number) => void }) {
+function BatchAnalysis({ issueId, onUseDraft, issueTitle, companyName, onOpenExternal }: { issueId: number; onUseDraft: (text: string) => void; issueTitle?: string | null; companyName?: string | null; onOpenExternal: (extId: number) => void }) {
   const queryClient = useQueryClient()
   const openTrack = useIssuesStore(s => s.openTrack)
   const batchChildren = useIssuesStore(s => s.batchChildren)
@@ -775,15 +787,25 @@ function BatchAnalysis({ issueId, onUseDraft, issueTitle, onOpenExternal }: { is
     staleTime: 5 * 60_000,
   })
   const extractable = attachments.filter(a => a.extractable)
-  const isBatch = extractable.length >= 2 || (extractable.length >= 1 && /общ/i.test(issueTitle ?? ''))
-
+  // Агрегатная (ОДКР) заявка: компания «ОДКР» ИЛИ в теме «общ»/«одкр».
+  // Такие заявки разбираем по объектам всегда, даже если ТС в файле всего один —
+  // оператор должен видеть, что именно распарсил ИИ.
+  const looksAggregate = /одкр/i.test(companyName ?? '') || /общ|одкр/i.test(issueTitle ?? '')
+  // Подтягиваем сохранённый разбор при наличии хотя бы одного извлекаемого вложения
+  // (дешёвый GET — вернёт данные только если разбор уже делали). Нужно, чтобы
+  // распознать агрегатность по кешу даже без подсказки в теме/компании.
   const cachedQ = useQuery({
     queryKey: ['batch-cached', issueId],
     queryFn: () => api.getCachedBatch(issueId),
-    enabled: isBatch,
+    enabled: extractable.length >= 1,
     staleTime: 5 * 60_000,
   })
   const cached = cachedQ.data?.cached ? cachedQ.data : null
+  // Batch = несколько вложений; ИЛИ одно вложение агрегатной/«общей» заявки;
+  // ИЛИ сохранённый разбор уже пометил заявку как агрегатную.
+  const isBatch = extractable.length >= 2
+    || (extractable.length >= 1 && looksAggregate)
+    || !!cached?.is_aggregate
 
   const run = useMutation({
     mutationFn: () => api.automateBatch(issueId),
@@ -1229,12 +1251,14 @@ export function IssueDetail() {
               onUseDraft={(text) => { setComment(text); setCommentPublic(true) }}
               latestAnalysis={latest_analysis}
               issueTitle={issue.subject}
+              companyName={issue.company_name}
             />
 
             <BatchAnalysis
               issueId={issue.id}
               onUseDraft={(text) => { setComment(text); setCommentPublic(true) }}
               issueTitle={issue.subject}
+              companyName={issue.company_name}
               onOpenExternal={openExternal}
             />
           </div>
