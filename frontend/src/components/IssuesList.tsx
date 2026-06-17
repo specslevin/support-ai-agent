@@ -1,10 +1,11 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
+import { ChevronDown, ChevronLeft, ChevronRight, Check, X } from 'lucide-react'
 import { api } from '../api/client'
 import { useIssuesStore } from '../store/issuesStore'
-import { EMPLOYEES } from '../store/userStore'
 import { StatusBadge } from './StatusBadge'
 import { TemplatePicker } from './IssueDetail'
+import { EmployeeMenu, TypeMenu } from './pickers'
 import type { Issue } from '../types'
 
 function formatDate(iso: string | null) {
@@ -28,14 +29,14 @@ function Dropdown({ label, children }: { label: string; children: (close: () => 
     <div className="relative">
       <button
         onClick={() => setOpen(o => !o)}
-        className="text-xs px-2.5 py-1 rounded border border-border hover:border-accent text-white transition-colors"
+        className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border border-border hover:border-accent text-white transition-colors"
       >
-        {label} ▾
+        {label} <ChevronDown size={13} className="text-muted" />
       </button>
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute left-0 top-full mt-1 z-50 bg-surface border border-border rounded-lg py-1 min-w-[180px] max-h-72 overflow-y-auto shadow-xl">
+          <div className="absolute left-0 top-full mt-1 z-50 bg-card border border-border rounded-lg py-1 min-w-[180px] max-h-72 overflow-y-auto shadow-lg">
             {children(() => setOpen(false))}
           </div>
         </>
@@ -49,12 +50,6 @@ function BulkActionBar() {
   const queryClient = useQueryClient()
   const [comment, setComment] = useState('')
   const [notice, setNotice] = useState<string | null>(null)
-
-  const { data: types = [] } = useQuery({
-    queryKey: ['issue-types'],
-    queryFn: () => api.listIssueTypes(),
-    staleTime: 5 * 60 * 1000,
-  })
 
   const done = (label: string) => (res: { succeeded: number; failed: number }) => {
     queryClient.invalidateQueries({ queryKey: ['issues'] })
@@ -76,13 +71,12 @@ function BulkActionBar() {
   })
 
   const busy = assign.isPending || setType.isPending || setStatus.isPending
-  const groups = EMPLOYEES.reduce<Record<string, typeof EMPLOYEES>>((acc, e) => { (acc[e.group] ??= []).push(e); return acc }, {})
 
   if (checkedIds.length === 0) {
     return notice ? (
-      <div className="flex items-center gap-2 px-4 py-2 bg-green-500/10 border-b border-green-500/30 text-xs text-green-300">
-        <span>✓ {notice}</span>
-        <button onClick={() => setNotice(null)} className="ml-auto text-green-400/60 hover:text-green-300">✕</button>
+      <div className="flex items-center gap-2 px-4 py-2 bg-success/10 border-b border-success/30 text-xs text-success">
+        <Check size={14} /><span>{notice}</span>
+        <button onClick={() => setNotice(null)} className="ml-auto text-success/60 hover:text-success"><X size={14} /></button>
       </div>
     ) : null
   }
@@ -93,22 +87,11 @@ function BulkActionBar() {
       {busy && <span className="text-[10px] text-muted animate-pulse">применяю...</span>}
 
       <Dropdown label="Ответственный">
-        {(close) => Object.entries(groups).map(([group, members]) => (
-          <div key={group}>
-            <div className="px-3 py-1 text-[10px] uppercase tracking-widest text-muted/60">{group}</div>
-            {members.map(emp => (
-              <button key={emp.id} onClick={() => { assign.mutate(emp.id); close() }}
-                className="w-full text-left px-4 py-1.5 text-xs text-white hover:bg-white/5">{emp.name}</button>
-            ))}
-          </div>
-        ))}
+        {(close) => <EmployeeMenu onPick={emp => { assign.mutate(emp.id); close() }} />}
       </Dropdown>
 
       <Dropdown label="Тип">
-        {(close) => types.map(t => (
-          <button key={t.code} onClick={() => { setType.mutate(t.code); close() }}
-            className="w-full text-left px-4 py-1.5 text-xs text-white hover:bg-white/5">{t.name}</button>
-        ))}
+        {(close) => <TypeMenu onPick={t => { setType.mutate(t.code); close() }} />}
       </Dropdown>
 
       <Dropdown label="Статус">
@@ -128,7 +111,7 @@ function BulkActionBar() {
         <TemplatePicker onSelect={text => setComment(text)} />
       </div>
 
-      <button onClick={clearChecked} className="text-xs text-muted hover:text-white px-2">✕ снять</button>
+      <button onClick={clearChecked} className="flex items-center gap-1 text-xs text-muted hover:text-white px-2"><X size={13} /> снять</button>
     </div>
   )
 }
@@ -145,7 +128,7 @@ function IssueRow({ issue, highlighted, checked, onToggle, onClick }: { issue: I
         <input type="checkbox" checked={checked} onChange={onToggle} className="ck cursor-pointer" />
       </td>
       <td className="px-3 py-2.5 text-xs font-mono text-muted w-24 whitespace-nowrap">
-        {highlighted && <span className="text-accent mr-1">▶</span>}
+        {highlighted && <ChevronRight size={12} className="inline text-accent mr-0.5 -mt-0.5" />}
         #{issue.external_id}
       </td>
       <td className="px-3 py-2.5 text-xs text-muted whitespace-nowrap w-44">
@@ -270,14 +253,14 @@ export function IssuesList() {
             <button
               disabled={page <= 1}
               onClick={() => setPage(page - 1)}
-              className="px-2.5 py-1 rounded border border-border hover:border-accent disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-            >←</button>
+              className="flex items-center px-2 py-1 rounded-lg border border-border hover:border-accent disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            ><ChevronLeft size={14} /></button>
             <span className="px-3">{page} / {pagination.total_pages}</span>
             <button
               disabled={page >= pagination.total_pages}
               onClick={() => setPage(page + 1)}
-              className="px-2.5 py-1 rounded border border-border hover:border-accent disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-            >→</button>
+              className="flex items-center px-2 py-1 rounded-lg border border-border hover:border-accent disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            ><ChevronRight size={14} /></button>
           </div>
         </div>
       )}

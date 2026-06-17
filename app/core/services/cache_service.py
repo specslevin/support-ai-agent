@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from typing import Any
 
@@ -15,7 +16,8 @@ from app.core.okdesk.service import OkdeskService
 log = structlog.get_logger(__name__)
 
 _OKDESK_PAGE_SIZE = 50
-_OKDESK_MAX_PAGES = 20  # sync most recent 1000 issues
+_OKDESK_MAX_PAGES = 60  # sync most recent 3000 issues
+_OKDESK_PAGE_RETRIES = 3  # повторы при сбое страницы, чтобы не терять хвост синка
 
 
 def _parse_dt(value: str | None) -> datetime | None:
@@ -47,19 +49,32 @@ class CacheService:
         collected: list[Any] = []
         page_num = 1
         while page_num <= _OKDESK_MAX_PAGES:
-            try:
-                # Okdesk uses page[number] / page[size] style pagination
-                batch = await self.okdesk.list_issues(
-                    **{"page[number]": page_num, "page[size]": _OKDESK_PAGE_SIZE}
-                )
-            except Exception:
-                log.warning("okdesk_list_issues_failed", page=page_num)
+            # Повторяем страницу при транзиентной ошибке — иначе один сбой
+            # обрывал весь синк и хвост заявок «терялся».
+            batch: list[Any] | None = None
+            for attempt in range(_OKDESK_PAGE_RETRIES):
+                try:
+                    # Okdesk uses page[number] / page[size] style pagination
+                    batch = await self.okdesk.list_issues(
+                        **{"page[number]": page_num, "page[size]": _OKDESK_PAGE_SIZE}
+                    )
+                    break
+                except Exception:
+                    log.warning("okdesk_list_issues_failed", page=page_num, attempt=attempt + 1)
+                    # backoff перед повтором (429/сетевой сбой не лечится мгновенным ретраем)
+                    if attempt + 1 < _OKDESK_PAGE_RETRIES:
+                        await asyncio.sleep(1.5 * (attempt + 1))
+            if batch is None:
+                log.error("okdesk_sync_aborted", page=page_num, collected=len(collected))
                 break
             collected.extend(batch)
             log.debug("okdesk_page_fetched", page=page_num, count=len(batch))
             if len(batch) < _OKDESK_PAGE_SIZE:
                 break
             page_num += 1
+        else:
+            # Цикл дошёл до лимита страниц без break — возможно, часть заявок не влезла.
+            log.warning("okdesk_sync_hit_page_cap", max_pages=_OKDESK_MAX_PAGES)
 
         # Deduplicate by external ID (last write wins)
         by_id: dict[int, Any] = {}

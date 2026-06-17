@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useMemo, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { Calendar, ChevronLeft, ChevronRight, Check, Copy, RotateCcw, PanelLeftClose } from 'lucide-react'
 import L from 'leaflet'
 import uPlot from 'uplot'
 import 'leaflet/dist/leaflet.css'
@@ -48,7 +49,7 @@ function Copyable({ label, value, copyValue }: { label: string; value: string | 
     >
       <span className="text-muted/60">{label}:</span>
       <span className="font-mono text-white/90">{value}</span>
-      <span className="text-accent">{copied ? '✓' : '⧉'}</span>
+      <span className="text-accent">{copied ? <Check size={12} /> : <Copy size={12} />}</span>
     </button>
   )
 }
@@ -216,7 +217,24 @@ function TelemetryCharts({ data, apiRef, onRange }: { data: TrackData; apiRef: R
       legend: { show: true },
       scales: { x: { time: true }, spd: {}, pwr: {}, sat: {} },
       axes: [
-        {},
+        {
+          // Подписи времени под графиком: цвет вторичного текста (UI Kit),
+          // 24-часовой формат и русские даты (ДД.ММ) на смене суток.
+          stroke: '#ACC3A7',
+          font: '11px Inter, system-ui, sans-serif',
+          grid: { show: true, stroke: '#ffffff0d' },
+          ticks: { show: true, stroke: '#ffffff1a' },
+          values: (_u, splits) => {
+            let lastDay = ''
+            return splits.map(s => {
+              const d = new Date(s * 1000)
+              const time = `${pad(d.getHours())}:${pad(d.getMinutes())}`
+              const day = `${pad(d.getDate())}.${pad(d.getMonth() + 1)}`
+              if (day !== lastDay) { lastDay = day; return `${day} ${time}` }
+              return time
+            })
+          },
+        },
         { scale: 'spd', stroke: '#22c55e', grid: { show: true, stroke: '#ffffff10' } },
         { scale: 'pwr', stroke: '#ef4444', side: 1 },
       ],
@@ -288,18 +306,18 @@ function DateRangePicker({ from, to, onChange }: { from: string; to: string; onC
     <div className="relative inline-block">
       <button
         onClick={() => setOpen(o => !o)}
-        className="flex items-center gap-1 bg-base border border-border rounded px-2 py-0.5 text-[11px] text-white hover:border-accent transition-colors"
+        className="flex items-center gap-1.5 bg-base border border-border rounded-lg px-2 py-0.5 text-[11px] text-white hover:border-accent transition-colors"
       >
-        📅 {from === to ? ruShort(from) : `${ruShort(from)} — ${ruShort(to)}`}
+        <Calendar size={12} className="text-muted" /> {from === to ? ruShort(from) : `${ruShort(from)} — ${ruShort(to)}`}
       </button>
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={close} />
           <div className="absolute right-0 top-full mt-1 z-[1100] bg-surface border border-border rounded-lg p-2 shadow-2xl w-56">
             <div className="flex items-center justify-between mb-1 text-xs">
-              <button onClick={() => setView([vm === 0 ? vy - 1 : vy, vm === 0 ? 11 : vm - 1])} className="px-2 text-muted hover:text-white">‹</button>
+              <button onClick={() => setView([vm === 0 ? vy - 1 : vy, vm === 0 ? 11 : vm - 1])} className="flex items-center px-2 text-muted hover:text-white"><ChevronLeft size={14} /></button>
               <span className="text-white capitalize">{new Date(vy, vm, 1).toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' })}</span>
-              <button onClick={() => setView([vm === 11 ? vy + 1 : vy, vm === 11 ? 0 : vm + 1])} className="px-2 text-muted hover:text-white">›</button>
+              <button onClick={() => setView([vm === 11 ? vy + 1 : vy, vm === 11 ? 0 : vm + 1])} className="flex items-center px-2 text-muted hover:text-white"><ChevronRight size={14} /></button>
             </div>
             <div className="grid grid-cols-7 gap-0.5 text-[10px]">
               {['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map(w => <div key={w} className="text-muted/40 text-center py-0.5">{w}</div>)}
@@ -372,7 +390,7 @@ export function TrackPanel({ issueId }: { issueId: number }) {
     return (
       <div className="flex flex-col h-full">
         <div className="px-4 py-2.5 border-b border-border shrink-0">
-          <button onClick={() => setTrackOpen(false)} className="text-xs px-2 py-0.5 rounded border border-border text-muted hover:text-white hover:border-accent transition-colors">◀ Свернуть</button>
+          <button onClick={() => setTrackOpen(false)} className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-lg border border-border text-muted hover:text-white hover:border-accent transition-colors"><PanelLeftClose size={13} /> Свернуть</button>
         </div>
         <div className="flex items-center justify-center flex-1 text-muted text-sm px-4 text-center">{msg}</div>
       </div>
@@ -395,15 +413,16 @@ export function TrackPanel({ issueId }: { issueId: number }) {
           <button
             onClick={() => setTrackOpen(false)}
             title="Свернуть панель"
-            className="shrink-0 text-xs px-2 py-0.5 rounded border border-border text-muted hover:text-white hover:border-accent transition-colors"
+            className="flex items-center gap-1 shrink-0 text-xs px-2 py-0.5 rounded-lg border border-border text-muted hover:text-white hover:border-accent transition-colors"
           >
-            Свернуть ▶
+            Свернуть <PanelLeftClose size={13} />
           </button>
         </div>
         {/* Текущее состояние объекта */}
         <div className="flex items-center flex-wrap justify-end gap-x-3 gap-y-1">
-          <span className={`text-[11px] font-medium ${data.status?.online ? 'text-green-400' : 'text-muted'}`}>
-            {data.status?.online ? '● На связи' : '○ Не в сети'}
+          <span className={`flex items-center gap-1.5 text-[11px] font-medium ${data.status?.online ? 'text-green-400' : 'text-muted'}`}>
+            <span className={`w-2 h-2 rounded-full ${data.status?.online ? 'bg-green-400' : 'border border-muted'}`} />
+            {data.status?.online ? 'На связи' : 'Не в сети'}
           </span>
           {data.status?.last_time != null && (
             <span className="text-[11px] text-muted">посл. сообщение: {formatTs(data.status.last_time)}</span>
@@ -420,7 +439,7 @@ export function TrackPanel({ issueId }: { issueId: number }) {
             onChange={(f, t) => setInterval({ from: f, to: t })}
           />
           {interval && (
-            <button onClick={() => setInterval(null)} title="Сбросить к дате неисправности" className="text-muted hover:text-accent">↺</button>
+            <button onClick={() => setInterval(null)} title="Сбросить к дате неисправности" className="flex items-center text-muted hover:text-accent"><RotateCcw size={12} /></button>
           )}
         </div>
       </div>

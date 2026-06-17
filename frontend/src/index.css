@@ -1,6 +1,33 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&family=Instrument+Sans:wght@400;500&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* ── UI Kit design tokens (для inline-стилей и графиков) ───────── */
+:root {
+  --color-primary: #99D52A;
+  --color-primary-hover: #536716;
+
+  --bg-dark: #0A0A0A;
+  --bg-darker: #171717;
+  --bg-frame: #1E1E1E;
+  --bg-card: #252D25;
+  --bg-card-hover: #1C231C;
+
+  --text-primary: #FFFFFF;
+  --text-secondary: #ACC3A7;
+  --text-description: #7A8A7A;
+
+  --stroke-default: #404040;
+
+  --accent-orange: #FB923C;
+  --accent-blue: #146EF5;
+  --accent-yellow: #F3BA2F;
+  --green-deep: #059345;
+  --green-bright: #96FF1F;
+  --green-medium: #80EE64;
+}
 
 @layer base {
   * { box-sizing: border-box; }
@@ -11,7 +38,7 @@
     -webkit-font-smoothing: antialiased;
   }
 
-  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
   ::-webkit-scrollbar-track { @apply bg-base; }
   ::-webkit-scrollbar-thumb { @apply bg-border rounded; }
 }
@@ -24,7 +51,7 @@
     width: 0.9rem;
     height: 0.9rem;
     border-radius: 0.25rem;
-    @apply border border-border bg-surface;
+    @apply border border-border bg-frame;
     display: inline-block;
     vertical-align: middle;
     position: relative;

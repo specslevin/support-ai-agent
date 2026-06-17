@@ -103,6 +103,7 @@ class ParsedIssue:
     date: str | None = None  # ISO date YYYY-MM-DD
     sheet_mileage_km: float | None = None  # по путевому листу
     declared_system_km: float | None = None  # «в ПК», то что увидел клиент
+    llm_extracted: bool = False  # часть полей восстановлена ИИ (regex не справился)
 
 
 @dataclass
@@ -206,9 +207,12 @@ class IssueAutomationService:
 
         d = r"(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{4})"
         iso = r"(\d{4})-(\d{2})-(\d{2})"
+        # Маркер даты неисправности: разные дочерние Россети называют поле
+        # по-разному — «неисправность», «сбой», «ошибка», «отказ».
+        _fault = r"дат\w*\s+(?:неисправност\w*|сбо\w*|ошибк\w*|отказ\w*)[^\d]{0,30}"
         parsed.date = (
-            _from_match(re.search(r"дат\w*\s+неисправност\w*[^\d]{0,30}" + d, text, re.I | re.S))
-            or _from_iso(re.search(r"дат\w*\s+неисправност\w*[^\d]{0,30}" + iso, text, re.I | re.S))
+            _from_match(re.search(_fault + d, text, re.I | re.S))
+            or _from_iso(re.search(_fault + iso, text, re.I | re.S))
             or _from_match(re.search(r"в\s+системе(?:\s+с)?[^\d]{0,20}" + d, text, re.I))
             or _from_match(re.search(r"за\s*" + d, text, re.I))
             or _from_iso(re.search(r"за\s*" + iso, text, re.I))
@@ -224,8 +228,13 @@ class IssueAutomationService:
         if sm:
             parsed.sheet_mileage_km = _to_km(_parse_number(sm.group(1)), sm.group(2))
 
-        # «в ПК <num> <unit>» — то, что клиент видит в системе
-        cm = re.search(r"в\s*ПК[^\d\n]{0,6}(\d+(?:[.,]\d+)?)\s*(км|м)\b", text, re.I)
+        # «в ПК <num> <unit>» / «в системе <num> <unit>» — то, что клиент видит
+        # в системе (Волжское/Самара пишут «в системе», Оренбург — «в ПК»).
+        # Единица (км/м) обязательна — иначе зацепит дату-маркер «в системе 03.06».
+        # Приоритет «в ПК» (явный маркер) над «в системе», т.к. re.search берёт
+        # первое совпадение — иначе ранняя «в системе N км» перебила бы «в ПК».
+        cm = (re.search(r"в\s*ПК[^\d\n]{0,6}(\d+(?:[.,]\d+)?)\s*(км|м)\b", text, re.I)
+              or re.search(r"в\s*систем\w*[^\d\n]{0,6}(\d+(?:[.,]\d+)?)\s*(км|м)\b", text, re.I))
         if cm:
             parsed.declared_system_km = _to_km(_parse_number(cm.group(1)), cm.group(2))
         return parsed
@@ -367,11 +376,13 @@ class IssueAutomationService:
 
     # ----- LLM refinement ------------------------------------------------
     async def _draft_with_llm(self, parsed: ParsedIssue, f: TelemetryFacts, hint: str,
-                              attachments_text: str | None = None) -> dict[str, Any]:
+                              attachments_text: str | None = None,
+                              sender: dict[str, Any] | None = None) -> dict[str, Any]:
         catalog = "\n".join(
             f"- {c['key']}: {c['when']}\n  Шаблон: {c['template']}" for c in _CATEGORY_CATALOG
         )
         facts = {
+            "отправитель": sender or None,
             "гос_номер": parsed.plate,
             "дата": parsed.date,
             "пробег_по_путевому_листу_км": parsed.sheet_mileage_km,
@@ -401,6 +412,11 @@ class IssueAutomationService:
             "уверенность (≤0.7) и рекомендуй перепроверить пробег после выгрузки. "
             "Если в фактах есть большой обрыв трека (макс_разрыв_трека_мин велик) или признак track_gap — "
             "терминал терял связь, данные за этот период догрузятся из чёрного ящика; выбирай «Терминал подключился». "
+            "Учитывай отправителя (поле «отправитель»): дочерние компании Россетей оформляют заявки "
+            "по-разному — Оренбургэнерго (Восточное/Центральное ПО) обычно указывают гос.номер и дату в теме; "
+            "Волжское ПО присылает табличный «Акт» с полем «Дата неисправности»; Самарские РС (Чапаевское ПО) — "
+            "общие заявки с вложением-актом по каждому ТС. Текст вложений — первоисточник, верь ему больше темы. "
+            "Обращайся к клиенту вежливо, по контактному лицу если оно указано. "
             "Не выдумывай данные, которых нет. Верни СТРОГО JSON без пояснений: "
             '{"category": "...", "answer": "...", "confidence": 0.0-1.0, "reasoning": "..."}'
         )
@@ -416,6 +432,54 @@ class IssueAutomationService:
         )
         raw = await self._llm.chat(system, user)
         return self._parse_llm_json(raw)
+
+    async def _extract_with_llm(self, title: str | None, body: str | None,
+                                attachments_text: str | None = None) -> dict[str, Any]:
+        """Fallback-извлечение полей заявки силами LLM, когда regex не справился
+        (табличные акты, нестандартные формулировки разных дочерних Россетей).
+
+        Возвращает {plate, date(ISO), sheet_mileage_km, declared_system_km};
+        отсутствующие поля — null. Вызывается ТОЛЬКО когда regex не нашёл
+        гос.номер или дату, чтобы не тратить токены на штатных заявках.
+        """
+        system = (
+            "Ты извлекаешь структурированные данные из заявки о расхождении пробега транспорта. "
+            "Найди в тексте (тема, описание, текст вложений): гос.номер ТС РФ, дату неисправности, "
+            "пробег по путевому листу (км), пробег в системе у клиента (км, «в ПК»). "
+            "Гос.номер верни кириллицей в формате А123ВС64 (без пробелов). "
+            "Дата неисправности — день, когда зафиксирован сбой/расхождение, а НЕ дата письма, акта или осмотра; "
+            "верни в формате YYYY-MM-DD. Пробег — число в км (если в метрах — переведи в км). "
+            "Если какого-то поля нет — поставь null. Не выдумывай. "
+            'Верни СТРОГО JSON без пояснений: {"plate":"...","date":"YYYY-MM-DD",'
+            '"sheet_mileage_km":0,"declared_system_km":0}'
+        )
+        parts = [f"Тема: {title or ''}", f"Описание: {body or ''}"]
+        if attachments_text and attachments_text.strip():
+            parts.append(f"Текст вложений:\n{attachments_text[:4000]}")
+        user = "\n\n".join(parts) + "\n\nОтвет строго в JSON."
+        raw = await self._llm.chat(system, user)
+        return self._parse_llm_json(raw)
+
+    def _apply_llm_extraction(self, parsed: ParsedIssue, ext: dict[str, Any]) -> None:
+        """Аккуратно заполнить ТОЛЬКО недостающие поля parsed данными от LLM,
+        с валидацией. Никогда не перетирает то, что нашёл regex."""
+        if not parsed.plate and ext.get("plate"):
+            cand = re.sub(r"[\s-]", "", str(ext["plate"])).upper()
+            if _PLATE_RE.search(cand) or _PLATE_FALLBACK_RE.search(cand):
+                parsed.plate = cand
+                parsed.llm_extracted = True
+        if not parsed.date and ext.get("date"):
+            try:
+                parsed.date = _dt.date.fromisoformat(str(ext["date"])[:10]).isoformat()
+                parsed.llm_extracted = True
+            except (ValueError, TypeError):
+                pass
+        if parsed.sheet_mileage_km is None and isinstance(ext.get("sheet_mileage_km"), (int, float)):
+            parsed.sheet_mileage_km = float(ext["sheet_mileage_km"])
+            parsed.llm_extracted = True
+        if parsed.declared_system_km is None and isinstance(ext.get("declared_system_km"), (int, float)):
+            parsed.declared_system_km = float(ext["declared_system_km"])
+            parsed.llm_extracted = True
 
     @staticmethod
     def _parse_llm_json(raw: str) -> dict[str, Any]:
@@ -453,8 +517,18 @@ class IssueAutomationService:
     async def automate(self, title: str | None, description: str | None,
                        params: list[dict[str, Any]] | None = None,
                        issue_type: str | None = None,
-                       attachments_text: str | None = None) -> AutomationResult:
+                       attachments_text: str | None = None,
+                       sender: dict[str, Any] | None = None) -> AutomationResult:
         parsed = self.parse_issue(title, description, params, extra_text=attachments_text)
+        # Fallback: если regex не нашёл гос.номер ИЛИ дату — просим LLM извлечь
+        # поля из текста/вложений (нестандартные форматы дочерних Россетей).
+        # Не тратим токены, когда regex справился.
+        if (not parsed.plate or not parsed.date) and (title or description or attachments_text):
+            try:
+                ext = await self._extract_with_llm(title, _strip_html(description), attachments_text)
+                self._apply_llm_extraction(parsed, ext)
+            except Exception:  # pragma: no cover - best effort
+                log.warning("llm_extract_failed", title=(title or "")[:60])
         telemetry = TelemetryFacts()
         if not parsed.plate:
             is_mileage = bool(issue_type and "пробег" in issue_type.lower())
@@ -497,7 +571,7 @@ class IssueAutomationService:
             )
 
         hint = self._heuristic_category(parsed, telemetry)
-        llm = await self._draft_with_llm(parsed, telemetry, hint, attachments_text=attachments_text)
+        llm = await self._draft_with_llm(parsed, telemetry, hint, attachments_text=attachments_text, sender=sender)
         category = llm.get("category") or hint
         draft = (llm.get("answer") or "").strip()
         confidence = float(llm.get("confidence") or 0.0)

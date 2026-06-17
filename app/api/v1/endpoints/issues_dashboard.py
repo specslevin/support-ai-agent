@@ -315,12 +315,23 @@ async def automate_issue(
         attachments_text = ""
         if live.attachments:
             attachments_text = await automation.read_attachments(external_id, live.attachments)
+        # Отправитель: даёт LLM контекст формата письма (разные дочерние Россети
+        # оформляют акты по-разному).
+        cached_issue = issue_data["issue"]
+        sender = {
+            k: v for k, v in {
+                "компания": getattr(cached_issue, "company_name", None),
+                "контакт": getattr(cached_issue, "contact_name", None),
+                "источник": getattr(live, "source", None),
+            }.items() if v
+        } or None
         result = await automation.automate(
             live.title,
             live.description,
             params,
             issue_type=live.type.name if live.type else None,
             attachments_text=attachments_text or None,
+            sender=sender,
         )
 
         # Persist the analysis so the dashboard can show it later.

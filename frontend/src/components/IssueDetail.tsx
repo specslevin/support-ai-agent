@@ -1,9 +1,17 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState, useMemo, useEffect } from 'react'
+import {
+  ChevronDown, AlertTriangle, X, Check, Star, Bot, RefreshCw, Database,
+  Lightbulb, ArrowDown, ArrowLeft, Map, FilePlus, ExternalLink, Pause, Send,
+  Layers, Power, RadioTower, Scissors, HelpCircle, FileText, Sheet,
+  Image as ImageIcon, Paperclip, PanelRightClose, Info, MessageSquare, Sparkles,
+  type LucideIcon,
+} from 'lucide-react'
 import { api } from '../api/client'
 import { useIssuesStore } from '../store/issuesStore'
-import { useUserStore, EMPLOYEES } from '../store/userStore'
+import { useUserStore } from '../store/userStore'
 import { StatusBadge } from './StatusBadge'
+import { EmployeeMenu, TypeMenu } from './pickers'
 import type { OkdeskDetail, Template, AutomationResult, Analysis, BatchResult } from '../types'
 
 function formatDate(iso: string | null | undefined) {
@@ -42,6 +50,27 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   )
 }
 
+/** Верхнеуровневый блок карточки: иконка + заголовок + контент (логическое разделение) */
+function Block({ icon: Icon, title, count, right, children }: {
+  icon: LucideIcon
+  title: string
+  count?: number | null
+  right?: React.ReactNode
+  children: React.ReactNode
+}) {
+  return (
+    <section className="space-y-3">
+      <div className="flex items-center gap-2">
+        <Icon size={14} className="text-accent shrink-0" />
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-secondary">{title}</h3>
+        {count != null && <span className="text-[10px] text-muted">({count})</span>}
+        {right && <div className="ml-auto">{right}</div>}
+      </div>
+      {children}
+    </section>
+  )
+}
+
 function AssigneeSection({ issueId, assigneeName }: { issueId: number; assigneeName: string | null }) {
   const queryClient = useQueryClient()
   const { currentUser } = useUserStore()
@@ -56,11 +85,6 @@ function AssigneeSection({ issueId, assigneeName }: { issueId: number; assigneeN
     },
   })
 
-  const groups = EMPLOYEES.reduce<Record<string, typeof EMPLOYEES>>((acc, e) => {
-    ;(acc[e.group] ??= []).push(e)
-    return acc
-  }, {})
-
   return (
     <div className="flex items-center gap-2 text-xs relative">
       <span className="text-muted shrink-0">Ответственный</span>
@@ -72,7 +96,7 @@ function AssigneeSection({ issueId, assigneeName }: { issueId: number; assigneeN
         <button
           onClick={() => assignMutation.mutate(currentUser.id)}
           disabled={assignMutation.isPending}
-          className="text-[10px] px-2 py-0.5 rounded border border-accent/50 text-accent hover:bg-accent/10 transition-colors disabled:opacity-40 shrink-0"
+          className="text-[10px] px-2 py-0.5 rounded-lg border border-accent/50 text-accent hover:bg-accent/10 transition-colors disabled:opacity-40 shrink-0"
         >
           Взять себе
         </button>
@@ -82,27 +106,14 @@ function AssigneeSection({ issueId, assigneeName }: { issueId: number; assigneeN
         <button
           onClick={() => setPickerOpen(o => !o)}
           disabled={assignMutation.isPending}
-          className="text-[10px] px-2 py-0.5 rounded border border-border hover:border-accent text-muted hover:text-white transition-colors disabled:opacity-40"
+          className="flex items-center px-1.5 py-0.5 rounded-lg border border-border hover:border-accent text-muted hover:text-white transition-colors disabled:opacity-40"
         >
-          ▾
+          <ChevronDown size={13} />
         </button>
 
         {pickerOpen && (
-          <div className="absolute right-0 top-full mt-1 bg-surface border border-border rounded-lg py-1 z-50 w-40 shadow-xl">
-            {Object.entries(groups).map(([group, members]) => (
-              <div key={group}>
-                <div className="px-3 py-1 text-[10px] uppercase tracking-widest text-muted/60">{group}</div>
-                {members.map(emp => (
-                  <button
-                    key={emp.id}
-                    onClick={() => assignMutation.mutate(emp.id)}
-                    className={`w-full text-left px-4 py-1.5 text-xs hover:bg-white/5 transition-colors ${emp.name === assigneeName ? 'text-accent' : 'text-white'}`}
-                  >
-                    {emp.name}
-                  </button>
-                ))}
-              </div>
-            ))}
+          <div className="absolute right-0 top-full mt-1 bg-card border border-border rounded-lg py-1 z-50 w-40 shadow-lg">
+            <EmployeeMenu selectedName={assigneeName} onPick={emp => assignMutation.mutate(emp.id)} />
           </div>
         )}
         {pickerOpen && <div className="fixed inset-0 z-40" onClick={() => setPickerOpen(false)} />}
@@ -119,12 +130,6 @@ function TypeSection({ issueId, typeName, typeCode }: { issueId: number; typeNam
   const queryClient = useQueryClient()
   const [open, setOpen] = useState(false)
 
-  const { data: types = [] } = useQuery({
-    queryKey: ['issue-types'],
-    queryFn: () => api.listIssueTypes(),
-    staleTime: 5 * 60 * 1000,
-  })
-
   const mutation = useMutation({
     mutationFn: (code: string) => api.changeIssueType(issueId, code),
     onSuccess: () => {
@@ -140,23 +145,17 @@ function TypeSection({ issueId, typeName, typeCode }: { issueId: number; typeNam
       <span className="text-muted shrink-0">Тип</span>
       <button
         onClick={() => setOpen(o => !o)}
-        className={`text-left hover:text-white transition-colors ${isDefault ? 'text-yellow-400' : 'text-white'}`}
+        className={`flex items-center gap-1 text-left hover:text-white transition-colors ${isDefault ? 'text-warning' : 'text-white'}`}
       >
-        {mutation.isPending ? 'Меняю…' : isDefault ? '⚠ Не указан — нажмите чтобы выбрать' : typeName} ▾
+        {isDefault && !mutation.isPending && <AlertTriangle size={12} />}
+        {mutation.isPending ? 'Меняю…' : isDefault ? 'Не указан — нажмите чтобы выбрать' : typeName}
+        <ChevronDown size={12} className="text-muted" />
       </button>
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute left-10 top-full mt-1 z-50 bg-surface border border-border rounded-lg py-1 min-w-[200px] max-h-72 overflow-y-auto shadow-xl">
-            {types.map(t => (
-              <button
-                key={t.code}
-                onClick={() => { mutation.mutate(t.code); setOpen(false) }}
-                className={`w-full text-left px-4 py-1.5 text-xs hover:bg-white/5 transition-colors ${t.code === typeCode ? 'text-accent' : 'text-white'}`}
-              >
-                {t.name}
-              </button>
-            ))}
+          <div className="absolute left-10 top-full mt-1 z-50 bg-card border border-border rounded-lg py-1 min-w-[200px] max-h-72 overflow-y-auto shadow-lg">
+            <TypeMenu selectedCode={typeCode} onPick={t => { mutation.mutate(t.code); setOpen(false) }} />
           </div>
         </>
       )}
@@ -187,8 +186,8 @@ function OkdeskInfo({ d, issueId, assigneeName, onOpenExternal }: { d: OkdeskDet
         <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
           {deadline && (
             <MetaRow label="Срок выполнения">
-              <span className={overdue ? 'text-red-400' : ''}>
-                {deadline} {overdue && '⚠'}
+              <span className={`inline-flex items-center gap-1 ${overdue ? 'text-orange-400' : ''}`}>
+                {deadline} {overdue && <AlertTriangle size={11} />}
               </span>
             </MetaRow>
           )}
@@ -217,7 +216,7 @@ function OkdeskInfo({ d, issueId, assigneeName, onOpenExternal }: { d: OkdeskDet
 
       {/* Описание (вопрос клиента) */}
       <Section title="Вопрос клиента">
-        <p className="text-white/80 leading-relaxed whitespace-pre-wrap bg-surface rounded-lg px-3 py-2.5">
+        <p className="text-white/80 leading-relaxed whitespace-pre-wrap bg-frame rounded-lg px-3 py-2.5">
           {description || <span className="text-muted/60">Текст отсутствует — см. тему и параметры заявки</span>}
         </p>
       </Section>
@@ -308,9 +307,9 @@ export function TemplatePicker({ onSelect, onSelectFull }: { onSelect: (content:
       <button
         onClick={() => setOpen(true)}
         title="Шаблоны ответов"
-        className="shrink-0 px-2.5 py-1.5 text-xs bg-surface border border-border hover:border-accent rounded transition-colors"
+        className="flex items-center justify-center shrink-0 px-2.5 py-1.5 bg-frame border border-border hover:border-accent rounded-lg transition-colors text-muted hover:text-accent"
       >
-        📋
+        <FileText size={15} />
       </button>
     )
   }
@@ -318,10 +317,10 @@ export function TemplatePicker({ onSelect, onSelectFull }: { onSelect: (content:
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center p-4">
       <div className="fixed inset-0 bg-black/60" onClick={() => setOpen(false)} />
-      <div className="relative bg-surface border border-border rounded-xl w-full max-w-md max-h-[70vh] flex flex-col shadow-2xl z-10">
+      <div className="relative bg-card border border-border rounded-xl w-full max-w-md max-h-[70vh] flex flex-col shadow-lg z-10">
         <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
           <span className="text-sm font-semibold">Шаблоны ответов</span>
-          <button onClick={() => setOpen(false)} className="text-muted hover:text-white text-lg leading-none">✕</button>
+          <button onClick={() => setOpen(false)} className="text-muted hover:text-white"><X size={18} /></button>
         </div>
         <div className="px-4 py-2 border-b border-border shrink-0">
           <input
@@ -330,7 +329,7 @@ export function TemplatePicker({ onSelect, onSelectFull }: { onSelect: (content:
             placeholder="Поиск..."
             value={search}
             onChange={e => setSearch(e.target.value)}
-            className="w-full bg-base border border-border rounded px-3 py-1.5 text-xs focus:outline-none focus:border-accent"
+            className="w-full bg-frame border border-border rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:border-accent"
           />
         </div>
         <div className="overflow-y-auto flex-1 py-2">
@@ -350,7 +349,7 @@ export function TemplatePicker({ onSelect, onSelectFull }: { onSelect: (content:
                   >
                     <div className="flex items-center gap-2">
                       <span className="text-xs text-white flex-1">{t.name}</span>
-                      {t.is_favorite && <span className="text-yellow-400 text-[10px]">★</span>}
+                      {t.is_favorite && <Star size={11} className="text-warning fill-warning" />}
                       {t.usage_count > 0 && (
                         <span className="text-[10px] text-muted">{t.usage_count}</span>
                       )}
@@ -429,33 +428,33 @@ function StatusActionModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="fixed inset-0 bg-black/70" onClick={onClose} />
-      <div className="relative bg-surface border border-border rounded-xl w-full max-w-md shadow-2xl z-10">
+      <div className="relative bg-card border border-border rounded-xl w-full max-w-md shadow-lg z-10">
         <div className="flex items-center justify-between px-5 py-4 border-b border-border">
           <div className="flex items-center gap-2">
             <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: targetStatus.bg }} />
             <h2 className="text-sm font-semibold">{targetStatus.label} — #{externalId}</h2>
           </div>
-          <button onClick={onClose} className="text-muted hover:text-white text-lg leading-none">✕</button>
+          <button onClick={onClose} className="text-muted hover:text-white"><X size={18} /></button>
         </div>
 
         <div className="px-5 py-4 space-y-4">
           {targetStatus.needsDelay && (
             <div className="space-y-1.5">
               <p className="text-[10px] font-semibold uppercase tracking-widest text-muted/60">
-                Отложить до <span className="text-red-400">*</span>
+                Отложить до <span className="text-orange-400">*</span>
               </p>
               <input
                 type="datetime-local"
                 value={delayTo}
                 onChange={e => setDelayTo(e.target.value)}
-                className="w-full bg-base border border-border rounded px-3 py-2 text-xs focus:outline-none focus:border-accent"
+                className="w-full bg-frame border border-border rounded-lg px-3 py-2 text-xs focus:outline-none focus:border-accent"
               />
             </div>
           )}
 
           <div className="space-y-1.5">
             <p className="text-[10px] font-semibold uppercase tracking-widest text-muted/60">
-              Комментарий{targetStatus.commentRequired && <span className="text-red-400 ml-1">*</span>}
+              Комментарий{targetStatus.commentRequired && <span className="text-orange-400 ml-1">*</span>}
             </p>
             <div className="flex items-start gap-2">
               <textarea
@@ -464,7 +463,7 @@ function StatusActionModal({
                 value={comment}
                 onChange={e => setComment(e.target.value)}
                 rows={4}
-                className="flex-1 bg-base border border-border rounded px-3 py-2 text-xs resize-none focus:outline-none focus:border-accent leading-relaxed"
+                className="flex-1 bg-frame border border-border rounded-lg px-3 py-2 text-xs resize-none focus:outline-none focus:border-accent leading-relaxed"
               />
               <TemplatePicker onSelect={text => setComment(text)} />
             </div>
@@ -486,26 +485,26 @@ function StatusActionModal({
             disabled={!canSubmit || mutation.isPending}
             onClick={() => mutation.mutate()}
             style={{ background: canSubmit && !mutation.isPending ? targetStatus.bg : undefined }}
-            className="px-4 py-2 rounded-lg text-white text-xs font-semibold transition-opacity disabled:opacity-40 disabled:cursor-not-allowed disabled:bg-surface disabled:border disabled:border-border"
+            className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-white text-xs font-semibold transition-opacity disabled:opacity-40 disabled:cursor-not-allowed disabled:bg-frame disabled:border disabled:border-border"
           >
-            {mutation.isPending ? <span className="animate-pulse">Отправка...</span> : `✓ ${targetStatus.label}`}
+            {mutation.isPending ? <span className="animate-pulse">Отправка...</span> : <><Check size={14} /> {targetStatus.label}</>}
           </button>
         </div>
 
         {mutation.isError && (
-          <p className="px-5 pb-4 text-xs text-red-400">Ошибка при отправке. Попробуйте снова.</p>
+          <p className="px-5 pb-4 text-xs text-orange-400">Ошибка при отправке. Попробуйте снова.</p>
         )}
       </div>
     </div>
   )
 }
 
-const FLAG_LABELS: Record<string, string> = {
-  power_off: '🔌 Нет питания',
-  jamming: '📡 Глушение GPS',
-  track_gap: '✂ Обрыв трека',
-  no_data: '⚠ Нет данных',
-  object_not_found: '❓ Объект не найден',
+const FLAG_META: Record<string, { icon: LucideIcon; label: string }> = {
+  power_off: { icon: Power, label: 'Нет питания' },
+  jamming: { icon: RadioTower, label: 'Глушение GPS' },
+  track_gap: { icon: Scissors, label: 'Обрыв трека' },
+  no_data: { icon: AlertTriangle, label: 'Нет данных' },
+  object_not_found: { icon: HelpCircle, label: 'Объект не найден' },
 }
 
 function Fact({ label, value, warn }: { label: string; value: React.ReactNode; warn?: boolean }) {
@@ -513,7 +512,7 @@ function Fact({ label, value, warn }: { label: string; value: React.ReactNode; w
   return (
     <>
       <span className="text-muted">{label}</span>
-      <span className={warn ? 'text-yellow-400' : ''}>{value}</span>
+      <span className={warn ? 'text-warning' : ''}>{value}</span>
     </>
   )
 }
@@ -571,8 +570,9 @@ function AutoAnalysis({ issueId, onUseDraft, latestAnalysis, issueTitle }: { iss
 
   if (isBatch) {
     return (
-      <p className="text-[11px] text-muted leading-relaxed">
-        🗂 Заявка содержит несколько объектов — используйте «Разбор по объектам» ниже
+      <p className="flex items-start gap-1.5 text-[11px] text-muted leading-relaxed">
+        <Layers size={13} className="shrink-0 mt-0.5" />
+        Заявка содержит несколько объектов — используйте «Разбор по объектам» ниже
         (одиночный автоанализ показал бы только один ТС).
       </p>
     )
@@ -583,34 +583,44 @@ function AutoAnalysis({ issueId, onUseDraft, latestAnalysis, issueTitle }: { iss
       <button
         onClick={() => run.mutate()}
         disabled={run.isPending}
-        className="w-full bg-gradient-to-r from-violet-600/90 to-fuchsia-600/90 hover:from-violet-600 hover:to-fuchsia-600 text-white text-xs font-semibold py-2 rounded transition-colors disabled:opacity-50"
+        className="flex items-center justify-center gap-2 w-full bg-card border border-accent/40 text-accent hover:bg-accent/10 text-xs font-semibold py-2 rounded-lg transition-colors disabled:opacity-50"
       >
-        {run.isPending ? '🤖 Анализирую заявку и данные geo...' : shown ? '🔄 Обновить анализ' : '🤖 Автоанализ заявки'}
+        {run.isPending ? (
+          <><Bot size={14} className="animate-pulse" /> Анализирую заявку и данные geo...</>
+        ) : shown ? (
+          <><RefreshCw size={14} /> Обновить анализ</>
+        ) : (
+          <><Bot size={14} /> Автоанализ заявки</>
+        )}
       </button>
 
       {isCached && (
-        <p className="text-[10px] text-muted/70">💾 показан сохранённый анализ{cachedQ.data?.created_at ? ` от ${new Date(cachedQ.data.created_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}` : ''}</p>
+        <p className="flex items-center gap-1 text-[10px] text-muted/70"><Database size={11} /> показан сохранённый анализ{cachedQ.data?.created_at ? ` от ${new Date(cachedQ.data.created_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}` : ''}</p>
       )}
 
       {run.isError && (
-        <p className="text-xs text-red-400">Ошибка анализа. Попробуйте снова.</p>
+        <p className="text-xs text-orange-400">Ошибка анализа. Попробуйте снова.</p>
       )}
 
       {shown && (
         <div className="space-y-2.5 text-xs">
           {shown.error && (
-            <p className="text-yellow-400">⚠ {shown.reasoning}</p>
+            <p className="flex items-start gap-1.5 text-warning"><AlertTriangle size={13} className="shrink-0 mt-0.5" /> {shown.reasoning}</p>
           )}
 
           {t && (t.object_name || t.system_mileage_km != null) && (
-            <div className="bg-base rounded-lg px-3 py-2.5 space-y-2">
+            <div className="bg-frame rounded-lg px-3 py-2.5 space-y-2">
               {t.flags.length > 0 && (
                 <div className="flex flex-wrap gap-1.5">
-                  {t.flags.map(f => (
-                    <span key={f} className="px-2 py-0.5 rounded-full bg-yellow-500/15 text-yellow-300 text-[10px]">
-                      {FLAG_LABELS[f] ?? f}
-                    </span>
-                  ))}
+                  {t.flags.map(f => {
+                    const m = FLAG_META[f]
+                    const FI = m?.icon
+                    return (
+                      <span key={f} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-warning/15 text-warning text-[10px]">
+                        {FI && <FI size={11} />}{m?.label ?? f}
+                      </span>
+                    )
+                  })}
                 </div>
               )}
               <div className="grid grid-cols-2 gap-x-4 gap-y-1">
@@ -636,15 +646,15 @@ function AutoAnalysis({ issueId, onUseDraft, latestAnalysis, issueTitle }: { iss
             <div className="space-y-1.5">
               <div className="flex items-center gap-2">
                 <span className="px-2 py-0.5 rounded bg-accent/15 text-accent text-[10px] font-semibold">{shown.category}</span>
-                <span className={`text-[10px] ${shown.needs_review ? 'text-yellow-400' : 'text-green-400'}`}>
+                <span className={`text-[10px] ${shown.needs_review ? 'text-warning' : 'text-green-400'}`}>
                   уверенность {conf}%{shown.needs_review ? ' · нужна проверка' : ''}
                 </span>
               </div>
-              <p className="text-white/90 leading-relaxed bg-surface rounded-lg px-3 py-2.5 whitespace-pre-wrap">
+              <p className="text-white/90 leading-relaxed bg-frame rounded-lg px-3 py-2.5 whitespace-pre-wrap">
                 {shown.draft_answer}
               </p>
               {shown.reasoning && !shown.error && (
-                <p className="text-muted leading-relaxed text-[11px]">💡 {shown.reasoning}</p>
+                <p className="flex items-start gap-1.5 text-muted leading-relaxed text-[11px]"><Lightbulb size={13} className="shrink-0 mt-0.5" /> {shown.reasoning}</p>
               )}
             </div>
           )}
@@ -663,7 +673,7 @@ function AutoAnalysis({ issueId, onUseDraft, latestAnalysis, issueTitle }: { iss
             {latestAnalysis.discrepancy_percent != null && (
               <>
                 <span className="text-muted">Расхождение</span>
-                <span className={Math.abs(latestAnalysis.discrepancy_percent) > 5 ? 'text-yellow-400' : 'text-green-400'}>
+                <span className={Math.abs(latestAnalysis.discrepancy_percent) > 5 ? 'text-warning' : 'text-green-400'}>
                   {latestAnalysis.discrepancy_percent.toFixed(1)}%
                 </span>
               </>
@@ -675,36 +685,36 @@ function AutoAnalysis({ issueId, onUseDraft, latestAnalysis, issueTitle }: { iss
       {/* Действия — в самом низу блока, после всех данных */}
       {shown?.draft_answer && (
         resolve.isSuccess ? (
-          <p className="text-xs text-green-400 text-center py-1.5 border-t border-border">✓ Заявка решена, ответ отправлен клиенту</p>
+          <p className="flex items-center justify-center gap-1.5 text-xs text-green-400 py-1.5 border-t border-border"><Check size={14} /> Заявка решена, ответ отправлен клиенту</p>
         ) : (
           <div className="space-y-1.5 pt-2 border-t border-border">
             <div className="flex gap-2">
               <button
                 onClick={() => onUseDraft(shown.draft_answer)}
-                className="flex-1 bg-surface border border-border hover:border-accent text-white text-xs font-semibold py-1.5 rounded transition-colors"
+                className="flex items-center justify-center gap-1.5 flex-1 bg-frame border border-border hover:border-accent text-white text-xs font-semibold py-1.5 rounded-lg transition-colors"
               >
-                ↓ В комментарий
+                <ArrowDown size={14} /> В комментарий
               </button>
               {confirmResolve ? (
                 <button
                   onClick={() => resolve.mutate(shown.draft_answer)}
                   disabled={resolve.isPending}
-                  className="flex-1 bg-green-600 hover:bg-green-500 text-white text-xs font-semibold py-1.5 rounded transition-colors disabled:opacity-50"
+                  className="flex items-center justify-center gap-1.5 flex-1 bg-green-600 hover:bg-green-500 text-white text-xs font-semibold py-1.5 rounded-lg transition-colors disabled:opacity-50"
                 >
-                  {resolve.isPending ? 'Отправка...' : 'Точно решить? ✓'}
+                  {resolve.isPending ? 'Отправка...' : <>Точно решить? <Check size={14} /></>}
                 </button>
               ) : (
                 <button
                   onClick={() => setConfirmResolve(true)}
                   title="Отправить ответ клиенту и перевести заявку в «Решена»"
-                  className="flex-1 bg-green-600/90 hover:bg-green-500 text-white text-xs font-semibold py-1.5 rounded transition-colors"
+                  className="flex items-center justify-center gap-1.5 flex-1 bg-green-600/90 hover:bg-green-500 text-white text-xs font-semibold py-1.5 rounded-lg transition-colors"
                 >
-                  ✓ Ответить и решить
+                  <Check size={14} /> Ответить и решить
                 </button>
               )}
             </div>
             {resolve.isError && (
-              <p className="text-xs text-red-400">Ошибка при отправке. Попробуйте снова.</p>
+              <p className="text-xs text-orange-400">Ошибка при отправке. Попробуйте снова.</p>
             )}
           </div>
         )
@@ -714,7 +724,7 @@ function AutoAnalysis({ issueId, onUseDraft, latestAnalysis, issueTitle }: { iss
 }
 
 const VERDICT_STYLE: Record<string, string> = {
-  'Глушение': 'text-yellow-400',
+  'Глушение': 'text-warning',
   'Данные верны': 'text-green-400',
   'Не было питания': 'text-orange-400',
   'Объект не найден': 'text-red-400',
@@ -804,12 +814,18 @@ function BatchAnalysis({ issueId, onUseDraft, issueTitle, onOpenExternal }: { is
       <button
         onClick={() => run.mutate()}
         disabled={run.isPending}
-        className="w-full bg-gradient-to-r from-sky-600/90 to-indigo-600/90 hover:from-sky-600 hover:to-indigo-600 text-white text-xs font-semibold py-2 rounded transition-colors disabled:opacity-50"
+        className="flex items-center justify-center gap-2 w-full bg-card border border-info/40 text-info hover:bg-info/10 text-xs font-semibold py-2 rounded-lg transition-colors disabled:opacity-50"
       >
-        {run.isPending ? '🗂 Разбираю объекты…' : res ? '🔄 Обновить разбор' : '🗂 Разбор по объектам'}
+        {run.isPending ? (
+          <><Layers size={14} className="animate-pulse" /> Разбираю объекты…</>
+        ) : res ? (
+          <><RefreshCw size={14} /> Обновить разбор</>
+        ) : (
+          <><Layers size={14} /> Разбор по объектам</>
+        )}
       </button>
       {isCached && (
-        <p className="text-[10px] text-muted/70">💾 показан сохранённый разбор{cachedQ.data?.created_at ? ` от ${new Date(cachedQ.data.created_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}` : ''}</p>
+        <p className="flex items-center gap-1 text-[10px] text-muted/70"><Database size={11} /> показан сохранённый разбор{cachedQ.data?.created_at ? ` от ${new Date(cachedQ.data.created_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}` : ''}</p>
       )}
 
       {res && (
@@ -850,8 +866,8 @@ function BatchAnalysis({ issueId, onUseDraft, issueTitle, onOpenExternal }: { is
                           <button
                             onClick={() => openTrack(o.plate, o.date)}
                             title="Карта и графики этого ТС"
-                            className="text-muted hover:text-accent transition-colors"
-                          >🗺</button>
+                            className="inline-flex text-muted hover:text-accent transition-colors"
+                          ><Map size={14} /></button>
                         )}
                       </td>
                       <td className="text-center">
@@ -865,13 +881,13 @@ function BatchAnalysis({ issueId, onUseDraft, issueTitle, onOpenExternal }: { is
                               className="text-accent hover:underline font-mono"
                             >#{rc.issue_id}</button>
                           ) : rc?.ok ? (
-                            <span className="text-green-400">✓</span>
+                            <Check size={14} className="inline text-green-400" />
                           ) : (
                             <button
                               onClick={() => createRow(o)}
                               title="Создать дочернюю заявку"
-                              className="text-muted hover:text-accent transition-colors"
-                            >📋</button>
+                              className="inline-flex text-muted hover:text-accent transition-colors"
+                            ><FilePlus size={14} /></button>
                           )
                         )}
                       </td>
@@ -890,11 +906,11 @@ function BatchAnalysis({ issueId, onUseDraft, issueTitle, onOpenExternal }: { is
                 <button
                   disabled={!lastBatchTemplate}
                   onClick={() => lastBatchTemplate && onUseDraft(lastBatchTemplate.content + suffix)}
-                  className="flex-1 bg-accent/90 hover:bg-accent text-black text-xs font-semibold py-1.5 rounded transition-colors disabled:opacity-40 disabled:bg-surface disabled:text-muted disabled:border disabled:border-border"
+                  className="flex items-center justify-center gap-1.5 flex-1 bg-accent/90 hover:bg-accent text-black text-xs font-semibold py-1.5 rounded-lg transition-colors disabled:opacity-40 disabled:bg-frame disabled:text-muted disabled:border disabled:border-border"
                 >
                   {lastBatchTemplate
-                    ? `↓ ${lastBatchTemplate.name} в комментарий${allCreatedPlates.length ? ' + заявки' : ''}`
-                    : '← Выберите шаблон'}
+                    ? <><ArrowDown size={14} /> {lastBatchTemplate.name} в комментарий{allCreatedPlates.length ? ' + заявки' : ''}</>
+                    : <><ArrowLeft size={14} /> Выберите шаблон</>}
                 </button>
                 <TemplatePicker
                   onSelect={() => {}}
@@ -909,34 +925,35 @@ function BatchAnalysis({ issueId, onUseDraft, issueTitle, onOpenExternal }: { is
             if (totalEligible === 0) return null
             return (
               <>
-                <p className="text-[11px] text-muted leading-relaxed">
-                  💡 Отдельные заявки: «данные верны» {res.objects.filter(o => o.verdict === 'Данные верны').length}{res.objects.filter(o => o.verdict === 'Нет данных').length ? `, «нет данных» ${res.objects.filter(o => o.verdict === 'Нет данных').length}` : ''} — используйте 📋 в строке или создайте все сразу:
+                <p className="flex items-start gap-1.5 text-[11px] text-muted leading-relaxed">
+                  <Lightbulb size={13} className="shrink-0 mt-0.5" />
+                  <span>Отдельные заявки: «данные верны» {res.objects.filter(o => o.verdict === 'Данные верны').length}{res.objects.filter(o => o.verdict === 'Нет данных').length ? `, «нет данных» ${res.objects.filter(o => o.verdict === 'Нет данных').length}` : ''} — используйте кнопку создания в строке или создайте все сразу:</span>
                 </p>
                 {children.length > 0 && (
                   createMut.isSuccess && children.length === 0 ? null : (
                     <button
                       onClick={() => createMut.mutate(children)}
                       disabled={createMut.isPending || children.length === 0}
-                      className="w-full bg-surface border border-accent/50 text-accent hover:bg-accent/10 text-xs font-semibold py-1.5 rounded transition-colors disabled:opacity-50"
+                      className="flex items-center justify-center gap-1.5 w-full bg-frame border border-accent/50 text-accent hover:bg-accent/10 text-xs font-semibold py-1.5 rounded-lg transition-colors disabled:opacity-50"
                     >
-                      {createMut.isPending ? 'Создаю…' : `📋 Создать все ${children.length} (ещё не созданные)`}
+                      {createMut.isPending ? 'Создаю…' : <><FilePlus size={14} /> Создать все {children.length} (ещё не созданные)</>}
                     </button>
                   )
                 )}
-                {children.length === 0 && <p className="text-xs text-green-400">✓ Все дочерние заявки созданы</p>}
-                {createMut.isError && <p className="text-xs text-red-400">Ошибка создания. Попробуйте снова.</p>}
+                {children.length === 0 && <p className="flex items-center gap-1.5 text-xs text-green-400"><Check size={14} /> Все дочерние заявки созданы</p>}
+                {createMut.isError && <p className="text-xs text-orange-400">Ошибка создания. Попробуйте снова.</p>}
               </>
             )
           })()}
         </div>
       )}
-      {run.isError && <p className="text-xs text-red-400">Ошибка разбора. Попробуйте снова.</p>}
+      {run.isError && <p className="text-xs text-orange-400">Ошибка разбора. Попробуйте снова.</p>}
     </div>
   )
 }
 
-const KIND_ICON: Record<string, string> = {
-  pdf: '📕', word: '📘', excel: '📗', image: '🖼', text: '📄', other: '📎',
+const KIND_ICON: Record<string, LucideIcon> = {
+  pdf: FileText, word: FileText, excel: Sheet, image: ImageIcon, text: FileText, other: Paperclip,
 }
 
 function formatSize(bytes: number | null): string {
@@ -956,33 +973,33 @@ function AttachmentsSection({ issueId }: { issueId: number }) {
   if (items.length === 0) return null
 
   return (
-    <div className="space-y-2">
-      <h3 className="text-[10px] font-semibold uppercase tracking-widest text-muted/60">
-        Вложения ({items.length})
-      </h3>
+    <Block icon={Paperclip} title="Вложения" count={items.length}>
       <div className="space-y-1.5">
-        {items.map(a => (
-          <a
-            key={a.id}
-            href={api.attachmentUrl(issueId, a.id)}
-            target="_blank"
-            rel="noreferrer"
-            className="flex items-center gap-2.5 bg-surface hover:bg-white/5 border border-border rounded-lg px-3 py-2 transition-colors group"
-          >
-            <span className="text-base shrink-0">{KIND_ICON[a.kind] ?? '📎'}</span>
-            <div className="flex-1 min-w-0">
-              <div className="text-xs text-white group-hover:text-accent truncate">{a.name ?? `#${a.id}`}</div>
-              <div className="text-[10px] text-muted flex items-center gap-1.5">
-                {formatSize(a.size)}
-                {a.extractable && <span className="text-green-400/80">· 🤖 ИИ читает</span>}
-                {!a.extractable && a.kind === 'image' && <span className="text-yellow-400/70">· скан (OCR недоступен)</span>}
+        {items.map(a => {
+          const KI = KIND_ICON[a.kind] ?? Paperclip
+          return (
+            <a
+              key={a.id}
+              href={api.attachmentUrl(issueId, a.id)}
+              target="_blank"
+              rel="noreferrer"
+              className="flex items-center gap-2.5 bg-frame hover:bg-white/5 border border-border rounded-lg px-3 py-2 transition-colors group"
+            >
+              <KI size={18} className="shrink-0 text-muted" />
+              <div className="flex-1 min-w-0">
+                <div className="text-xs text-white group-hover:text-accent truncate">{a.name ?? `#${a.id}`}</div>
+                <div className="text-[10px] text-muted flex items-center gap-1.5">
+                  {formatSize(a.size)}
+                  {a.extractable && <span className="inline-flex items-center gap-1 text-green-400/80">· <Sparkles size={10} /> ИИ читает</span>}
+                  {!a.extractable && a.kind === 'image' && <span className="text-warning/70">· скан (OCR недоступен)</span>}
+                </div>
               </div>
-            </div>
-            <span className="text-muted/50 text-xs shrink-0">↗</span>
-          </a>
-        ))}
+              <ExternalLink size={14} className="text-muted/50 shrink-0" />
+            </a>
+          )
+        })}
       </div>
-    </div>
+    </Block>
   )
 }
 
@@ -1090,7 +1107,7 @@ export function IssueDetail() {
                 {statusDropdownOpen && (
                   <>
                     <div className="fixed inset-0 z-40" onClick={() => setStatusDropdownOpen(false)} />
-                    <div className="absolute left-0 top-full mt-1 z-50 rounded-lg overflow-hidden shadow-2xl border border-border min-w-[160px]">
+                    <div className="absolute left-0 top-full mt-1 z-50 rounded-lg overflow-hidden shadow-lg border border-border min-w-[160px]">
                       {getAvailableStatuses(issue.status, od.type_code).map(s => (
                         <button
                           key={s.code}
@@ -1116,73 +1133,72 @@ export function IssueDetail() {
           <button
             onClick={() => trackOpen ? setTrackOpen(false) : openTrack()}
             title="Карта трека и графики телеметрии"
-            className={`text-xs px-2.5 py-1 rounded border transition-colors ${trackOpen ? 'border-accent text-accent bg-accent/10' : 'border-border text-muted hover:text-white hover:border-accent'}`}
+            className={`flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border transition-colors ${trackOpen ? 'border-accent text-accent bg-accent/10' : 'border-border text-muted hover:text-white hover:border-accent'}`}
           >
-            {trackOpen ? '◀ Скрыть' : '🗺 Карта и графики'}
+            {trackOpen ? <><PanelRightClose size={14} /> Скрыть</> : <><Map size={14} /> Карта и графики</>}
           </button>
-          <button onClick={() => selectIssue(null)} className="text-muted hover:text-white text-lg leading-none">✕</button>
+          <button onClick={() => selectIssue(null)} className="text-muted hover:text-white"><X size={18} /></button>
         </div>
       </div>
 
-      <div className="flex-1 px-5 py-4 space-y-5">
+      <div className="flex-1 px-5 py-4 space-y-6">
         {resolveNotice && (
-          <div className="flex items-start gap-2 bg-yellow-500/10 border border-yellow-500/30 rounded-lg px-3 py-2 text-xs text-yellow-300">
-            <span className="shrink-0 mt-0.5">⚠</span>
+          <div className="flex items-start gap-2 bg-warning/10 border border-warning/30 rounded-lg px-3 py-2 text-xs text-warning">
+            <AlertTriangle size={14} className="shrink-0 mt-0.5" />
             <span className="flex-1">{resolveNotice}</span>
-            <button onClick={() => setResolveNotice(null)} className="shrink-0 text-yellow-400/60 hover:text-yellow-300 leading-none">✕</button>
+            <button onClick={() => setResolveNotice(null)} className="shrink-0 text-warning/60 hover:text-warning"><X size={14} /></button>
           </div>
         )}
-        {/* Клиент + даты кэша */}
-        <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
-          <span className="text-muted">Компания</span>
-          <span>{issue.company_name ?? '—'}</span>
-          <span className="text-muted">Контакт</span>
-          <span>{issue.contact_name ?? '—'}</span>
-          <span className="text-muted">Создана</span>
-          <span>{formatDate(issue.created_at) ?? '—'}</span>
-          <span className="text-muted">Изменена</span>
-          <span>{formatDate(issue.updated_at) ?? '—'}</span>
-        </div>
 
-        {/* Live Okdesk info */}
-        {od && <OkdeskInfo d={od} issueId={issue.id} assigneeName={issue.assignee_name ?? null} onOpenExternal={openExternal} />}
+        {/* ── 1. Детали заявки ─────────────────────────────────── */}
+        <Block icon={Info} title="Детали заявки">
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
+            <span className="text-muted">Компания</span>
+            <span>{issue.company_name ?? '—'}</span>
+            <span className="text-muted">Контакт</span>
+            <span>{issue.contact_name ?? '—'}</span>
+            <span className="text-muted">Создана</span>
+            <span>{formatDate(issue.created_at) ?? '—'}</span>
+            <span className="text-muted">Изменена</span>
+            <span>{formatDate(issue.updated_at) ?? '—'}</span>
+          </div>
 
-        {/* Если okdesk_detail пустой — показываем только assignee picker */}
-        {!od && (
-          <AssigneeSection issueId={issue.id} assigneeName={issue.assignee_name ?? null} />
-        )}
+          {/* Live Okdesk info */}
+          {od && <div className="mt-4"><OkdeskInfo d={od} issueId={issue.id} assigneeName={issue.assignee_name ?? null} onOpenExternal={openExternal} /></div>}
 
-        {/* Analysis */}
-        <div className="border border-border rounded-lg p-4 space-y-3">
-          <h3 className="text-[10px] font-semibold uppercase tracking-widest text-muted/60">Анализ пробега</h3>
+          {/* Если okdesk_detail пустой — показываем только assignee picker */}
+          {!od && (
+            <div className="mt-4"><AssigneeSection issueId={issue.id} assigneeName={issue.assignee_name ?? null} /></div>
+          )}
+        </Block>
 
-          <AutoAnalysis
-            issueId={issue.id}
-            onUseDraft={(text) => { setComment(text); setCommentPublic(true) }}
-            latestAnalysis={latest_analysis}
-            issueTitle={issue.subject}
-          />
-
-          <BatchAnalysis
-            issueId={issue.id}
-            onUseDraft={(text) => { setComment(text); setCommentPublic(true) }}
-            issueTitle={issue.subject}
-            onOpenExternal={openExternal}
-          />
-        </div>
-
-        {/* Attachments */}
+        {/* ── 2. Вложения (перед анализом — ИИ читает их) ───────── */}
         <AttachmentsSection issueId={issue.id} />
 
-        {/* Comments */}
-        <div className="space-y-3">
-          <h3 className="text-[10px] font-semibold uppercase tracking-widest text-muted/60">
-            Комментарии {comments.length > 0 && `(${comments.length})`}
-          </h3>
+        {/* ── 3. Анализ ────────────────────────────────────────── */}
+        <Block icon={Sparkles} title="Анализ пробега">
+          <div className="border border-border rounded-xl p-4 space-y-3">
+            <AutoAnalysis
+              issueId={issue.id}
+              onUseDraft={(text) => { setComment(text); setCommentPublic(true) }}
+              latestAnalysis={latest_analysis}
+              issueTitle={issue.subject}
+            />
 
+            <BatchAnalysis
+              issueId={issue.id}
+              onUseDraft={(text) => { setComment(text); setCommentPublic(true) }}
+              issueTitle={issue.subject}
+              onOpenExternal={openExternal}
+            />
+          </div>
+        </Block>
+
+        {/* ── 4. Комментарии ───────────────────────────────────── */}
+        <Block icon={MessageSquare} title="Комментарии" count={comments.length > 0 ? comments.length : null}>
           <div className="space-y-2">
             {comments.map(c => (
-              <div key={c.id} className="bg-surface rounded-lg px-3 py-2.5 text-xs space-y-0.5">
+              <div key={c.id} className="bg-frame rounded-lg px-3 py-2.5 text-xs space-y-0.5">
                 <div className="flex items-center justify-between text-muted">
                   <span className="font-medium text-white/70">{c.author}</span>
                   <span>{formatDate(c.created_at)}</span>
@@ -1193,7 +1209,7 @@ export function IssueDetail() {
             {comments.length === 0 && <p className="text-xs text-muted">Комментариев нет</p>}
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-2 mt-3">
             <div className="flex items-start gap-2">
               <textarea
                 placeholder="Написать комментарий..."
@@ -1205,7 +1221,7 @@ export function IssueDetail() {
                   }
                 }}
                 rows={3}
-                className="flex-1 bg-base border border-border rounded px-3 py-1.5 text-xs resize-none focus:outline-none focus:border-accent"
+                className="flex-1 bg-frame border border-border rounded-lg px-3 py-1.5 text-xs resize-none focus:outline-none focus:border-accent"
               />
               <div className="flex flex-col gap-1.5 shrink-0">
                 <TemplatePicker onSelect={text => setComment(text)} />
@@ -1213,9 +1229,9 @@ export function IssueDetail() {
                   disabled={!comment || addComment.isPending}
                   onClick={() => addComment.mutate(comment)}
                   title="Отправить (Ctrl+Enter)"
-                  className="bg-surface border border-border hover:border-accent rounded px-2.5 py-1.5 text-xs transition-colors disabled:opacity-40"
+                  className="flex items-center justify-center bg-frame border border-border hover:border-accent rounded-lg px-2.5 py-1.5 text-xs transition-colors disabled:opacity-40 text-muted hover:text-accent"
                 >
-                  {addComment.isPending ? '...' : '↵'}
+                  {addComment.isPending ? '...' : <Send size={15} />}
                 </button>
               </div>
             </div>
@@ -1240,27 +1256,27 @@ export function IssueDetail() {
                 disabled={!comment || quickResolve.isPending}
                 onClick={() => quickResolve.mutate('delayed')}
                 title="Отправить ответ и перевести в «Ожидание ответа» (+3 дня)"
-                className="flex-1 bg-surface border border-border hover:border-accent text-white text-xs font-semibold py-1.5 rounded transition-colors disabled:opacity-40"
+                className="flex items-center justify-center gap-1.5 flex-1 bg-frame border border-border hover:border-accent text-white text-xs font-semibold py-1.5 rounded-lg transition-colors disabled:opacity-40"
               >
-                {quickResolve.isPending && quickResolve.variables === 'delayed' ? '...' : '⏸ Ожидание'}
+                {quickResolve.isPending && quickResolve.variables === 'delayed' ? '...' : <><Pause size={14} /> Ожидание</>}
               </button>
               <button
                 disabled={!comment || quickResolve.isPending}
                 onClick={() => {
                   if (!od?.type_code || od.type_code === 'inner') {
-                    setToast('⚠ Сначала укажите тип заявки')
+                    setToast('Сначала укажите тип заявки')
                     return
                   }
                   quickResolve.mutate('completed')
                 }}
                 title="Отправить ответ клиенту и перевести в «Решена»"
-                className="flex-1 bg-green-600/90 hover:bg-green-500 text-white text-xs font-semibold py-1.5 rounded transition-colors disabled:opacity-40"
+                className="flex items-center justify-center gap-1.5 flex-1 bg-green-600/90 hover:bg-green-500 text-white text-xs font-semibold py-1.5 rounded-lg transition-colors disabled:opacity-40"
               >
-                {quickResolve.isPending && quickResolve.variables === 'completed' ? 'Отправка...' : '✓ Решить'}
+                {quickResolve.isPending && quickResolve.variables === 'completed' ? 'Отправка...' : <><Check size={14} /> Решить</>}
               </button>
             </div>
           </div>
-        </div>
+        </Block>
       </div>
     </div>
 
@@ -1275,8 +1291,8 @@ export function IssueDetail() {
     )}
 
     {toast && (
-      <div className="fixed bottom-5 right-5 z-[60] bg-yellow-500/95 text-black text-xs font-semibold px-4 py-2.5 rounded-lg shadow-2xl animate-pulse">
-        {toast}
+      <div className="fixed bottom-5 right-5 z-[60] flex items-center gap-2 bg-warning text-black text-xs font-semibold px-4 py-2.5 rounded-lg shadow-lg">
+        <AlertTriangle size={14} /> {toast}
       </div>
     )}
     </>
