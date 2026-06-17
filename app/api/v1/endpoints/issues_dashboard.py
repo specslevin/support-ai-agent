@@ -348,9 +348,37 @@ async def automate_issue(
         async def _example_provider(
             category: str, plate: str | None, flags: list[str]
         ) -> list[dict[str, object]]:
-            return await cache.find_similar_resolved(
+            resolved = await cache.find_similar_resolved(
                 category=category, plate=plate, flags=flags, sender=sender, limit=3,
             )
+            # Append operator-approved answer TEMPLATES for the same category as
+            # extra few-shot phrasing references. The downstream formatter renders
+            # only the first 3 examples, so cap resolved cases at 2 to guarantee
+            # at least one template survives. Additive & best-effort — any failure
+            # leaves the resolved-case behaviour untouched.
+            try:
+                from app.api.v1.endpoints.templates import (
+                    fetch_templates_for_category,
+                )
+
+                templates = fetch_templates_for_category(category, limit=2)
+                if templates:
+                    examples: list[dict[str, object]] = list(resolved[:2])
+                    for tpl in templates:
+                        examples.append({
+                            # SAME keys the resolved-case examples / _format_examples use:
+                            "plate": "шаблон",
+                            "fault_date": None,
+                            "category": tpl.get("category") or category,
+                            "answer": tpl.get("content"),
+                            "flags": [],
+                            "source": "template",
+                            "is_dynamic": tpl.get("is_dynamic"),
+                        })
+                    return examples
+            except Exception:
+                log.warning("example_provider_templates_failed", category=category)
+            return resolved
 
         result = await automation.automate(
             live.title,
