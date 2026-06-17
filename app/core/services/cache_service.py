@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import datetime
 from typing import Any
 
@@ -363,6 +364,92 @@ class CacheService:
         except (ValueError, TypeError):
             return None
         return {"data": data, "created_at": row.created_at.isoformat()}
+
+    async def find_similar_resolved(
+        self,
+        *,
+        category: str | None,
+        plate: str | None,
+        flags: list[str],
+        sender: dict[str, Any] | None = None,
+        limit: int = 3,
+    ) -> list[dict[str, Any]]:
+        """Retrieve similar past RESOLVED cases for few-shot prompting.
+
+        Reads :class:`TrainingSample` rows with a non-empty operator answer and a
+        final status in (completed, closed), scores each by structural similarity
+        to the current issue, and returns the top ``limit`` as compact dicts:
+        ``{plate, fault_date, category, answer, flags}``.
+
+        Scoring (deterministic):
+          +3 same ai_category
+          +2 same region (last 2-3 digits of plate match)
+          +1 per shared telemetry flag (parsed safely from telemetry_json)
+          +1 same sender company (if available)
+        Ties broken by most recent created_at. Never raises on garbage data.
+        """
+        import json as _json
+
+        try:
+            result = await self.db.execute(
+                select(TrainingSample)
+                .where(TrainingSample.operator_answer.isnot(None))
+                .where(TrainingSample.operator_answer != "")
+                .where(TrainingSample.final_status.in_(("completed", "closed")))
+                .order_by(TrainingSample.created_at.desc())
+                .limit(400)
+            )
+            rows = list(result.scalars().all())
+        except Exception:
+            log.warning("find_similar_resolved_query_failed")
+            return []
+
+        def _region(p: str | None) -> str | None:
+            if not p:
+                return None
+            m = re.search(r"(\d{2,3})$", p.strip())
+            return m.group(1) if m else None
+
+        cur_region = _region(plate)
+        cur_company = (sender or {}).get("компания") or (sender or {}).get("company")
+        cur_flags = set(flags or [])
+
+        scored: list[tuple[int, datetime, dict[str, Any]]] = []
+        for row in rows:
+            score = 0
+            if category and row.ai_category and row.ai_category == category:
+                score += 3
+            r_region = _region(row.plate)
+            if cur_region and r_region and cur_region == r_region:
+                score += 2
+            row_flags: list[str] = []
+            if row.telemetry_json:
+                try:
+                    data = _json.loads(row.telemetry_json)
+                    raw_flags = data.get("flags") if isinstance(data, dict) else None
+                    if isinstance(raw_flags, list):
+                        row_flags = [str(x) for x in raw_flags]
+                except (ValueError, TypeError):
+                    row_flags = []
+            score += len(cur_flags.intersection(row_flags))
+            if cur_company and row.issue_title and cur_company.lower() in (row.issue_title or "").lower():
+                score += 1
+            if score <= 0:
+                continue
+            scored.append((
+                score,
+                row.created_at or datetime.min,
+                {
+                    "plate": row.plate,
+                    "fault_date": row.fault_date,
+                    "category": row.ai_category,
+                    "answer": row.operator_answer,
+                    "flags": row_flags,
+                },
+            ))
+
+        scored.sort(key=lambda t: (t[0], t[1]), reverse=True)
+        return [item for _, _, item in scored[:limit]]
 
     async def save_training_sample(
         self, issue_external_id: int, payload: dict[str, Any],

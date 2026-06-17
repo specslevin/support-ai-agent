@@ -342,6 +342,16 @@ async def automate_issue(
                 "источник": getattr(live, "source", None),
             }.items() if v
         } or None
+        # RAG: provide similar past resolved cases as few-shot examples. The
+        # callback runs inside automate() once the heuristic category is known,
+        # so retrieval is category-aware. Failures are swallowed inside automate.
+        async def _example_provider(
+            category: str, plate: str | None, flags: list[str]
+        ) -> list[dict[str, object]]:
+            return await cache.find_similar_resolved(
+                category=category, plate=plate, flags=flags, sender=sender, limit=3,
+            )
+
         result = await automation.automate(
             live.title,
             live.description,
@@ -349,6 +359,7 @@ async def automate_issue(
             issue_type=live.type.name if live.type else None,
             attachments_text=attachments_text or None,
             sender=sender,
+            example_provider=_example_provider,
         )
 
         # Persist the analysis so the dashboard can show it later.

@@ -13,7 +13,7 @@ import json
 import math
 import re
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import structlog
 
@@ -375,9 +375,38 @@ class IssueAutomationService:
         return "Данные верны"
 
     # ----- LLM refinement ------------------------------------------------
+    @staticmethod
+    def _format_examples(examples: list[dict[str, Any]] | None) -> str:
+        """Render up to 3 retrieved past cases as a bounded few-shot block.
+
+        Each answer is truncated to ~300 chars; empty/None examples yield "".
+        """
+        if not examples:
+            return ""
+        lines: list[str] = []
+        for ex in examples[:3]:
+            answer = (ex.get("answer") or "").strip()
+            if not answer:
+                continue
+            if len(answer) > 300:
+                answer = answer[:300].rstrip() + "…"
+            cat = ex.get("category") or "?"
+            plate = ex.get("plate") or "?"
+            date = ex.get("fault_date") or "?"
+            lines.append(f"- [{cat}] {plate} {date} → ответ: {answer}")
+        if not lines:
+            return ""
+        return (
+            "\nПримеры ранее решённых похожих заявок "
+            "(ориентир по решению и формулировкам, НЕ копировать дословно):\n"
+            + "\n".join(lines)
+            + "\n"
+        )
+
     async def _draft_with_llm(self, parsed: ParsedIssue, f: TelemetryFacts, hint: str,
                               attachments_text: str | None = None,
-                              sender: dict[str, Any] | None = None) -> dict[str, Any]:
+                              sender: dict[str, Any] | None = None,
+                              examples: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         catalog = "\n".join(
             f"- {c['key']}: {c['when']}\n  Шаблон: {c['template']}" for c in _CATEGORY_CATALOG
         )
@@ -422,10 +451,12 @@ class IssueAutomationService:
         att_block = ""
         if attachments_text and attachments_text.strip():
             att_block = f"\nТекст из вложений заявки (путевые листы и т.п.):\n{attachments_text[:4000]}\n"
+        examples_block = self._format_examples(examples)
         user = (
             f"Каталог категорий ответов:\n{catalog}\n\n"
             f"Факты по заявке (JSON):\n{json.dumps(facts, ensure_ascii=False)}\n"
             f"{att_block}\n"
+            f"{examples_block}"
             f"Подсказка эвристики (вероятная категория): {hint}\n\n"
             "Ответ строго в JSON."
         )
@@ -517,7 +548,12 @@ class IssueAutomationService:
                        params: list[dict[str, Any]] | None = None,
                        issue_type: str | None = None,
                        attachments_text: str | None = None,
-                       sender: dict[str, Any] | None = None) -> AutomationResult:
+                       sender: dict[str, Any] | None = None,
+                       examples: list[dict[str, Any]] | None = None,
+                       example_provider: Callable[
+                           [str, str | None, list[str]],
+                           Awaitable[list[dict[str, Any]]],
+                       ] | None = None) -> AutomationResult:
         parsed = self.parse_issue(title, description, params, extra_text=attachments_text)
         # Fallback: если regex не нашёл гос.номер ИЛИ дату — просим LLM извлечь
         # поля из текста/вложений (нестандартные форматы дочерних Россетей).
@@ -570,7 +606,19 @@ class IssueAutomationService:
             )
 
         hint = self._heuristic_category(parsed, telemetry)
-        llm = await self._draft_with_llm(parsed, telemetry, hint, attachments_text=attachments_text, sender=sender)
+        # RAG: fetch similar past resolved cases as few-shot examples. The
+        # provider is category-aware (hint computed above), so retrieval is
+        # targeted. Best-effort: any failure proceeds without examples.
+        if examples is None and example_provider is not None:
+            try:
+                examples = await example_provider(hint, parsed.plate, telemetry.flags)
+            except Exception:  # pragma: no cover - best effort, never break automate
+                log.warning("example_provider_failed", plate=parsed.plate)
+                examples = None
+        llm = await self._draft_with_llm(
+            parsed, telemetry, hint,
+            attachments_text=attachments_text, sender=sender, examples=examples,
+        )
         category = llm.get("category") or hint
         draft = (llm.get("answer") or "").strip()
         confidence = float(llm.get("confidence") or 0.0)
