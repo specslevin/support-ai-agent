@@ -61,7 +61,7 @@ export function Sidebar({
       }`}
     >
       {/* Логотип + toggle */}
-      <div className="flex items-center h-12 px-3 border-b border-border">
+      <div className="flex items-center h-14 px-3 border-b border-border">
         {expanded && (
           <span className="text-accent font-bold text-sm tracking-tight flex-1 truncate">
             GPSPOS
