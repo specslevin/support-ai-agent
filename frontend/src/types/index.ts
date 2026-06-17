@@ -159,6 +159,11 @@ export interface BatchResult {
   objects: BatchObject[]
 }
 
+// Этап 2: suggested placeholder->value map for dynamic templates.
+export interface TemplateValues {
+  values: Record<string, string>
+}
+
 export interface IssueAttachment {
   id: number
   name: string | null

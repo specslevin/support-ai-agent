@@ -257,7 +257,7 @@ const CATEGORY_COLORS: Record<string, string> = {
   dark: 'text-gray-500',
 }
 
-export function TemplatePicker({ onSelect, onSelectFull }: { onSelect: (content: string) => void; onSelectFull?: (t: { name: string; content: string }) => void }) {
+export function TemplatePicker({ onSelect, onSelectFull, issueId }: { onSelect: (content: string) => void; onSelectFull?: (t: { name: string; content: string }) => void; issueId?: number }) {
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
   // Fill step for dynamic templates: holds the chosen template + per-placeholder values.
@@ -268,6 +268,16 @@ export function TemplatePicker({ onSelect, onSelectFull }: { onSelect: (content:
     queryKey: ['templates'],
     queryFn: () => api.listTemplates(),
     staleTime: 5 * 60_000,
+  })
+
+  // Этап 2: suggested placeholder values from the cached analysis (telemetry/track).
+  // Only fetched when the picker is bound to a concrete issue and is open — bulk
+  // usages (no issueId) skip this entirely and keep the empty/today behavior.
+  const { data: suggested } = useQuery({
+    queryKey: ['template-values', issueId],
+    queryFn: () => api.templateValues(issueId as number),
+    enabled: open && typeof issueId === 'number',
+    staleTime: 60_000,
   })
 
   // Emit the final content (already substituted) through the existing callbacks.
@@ -285,9 +295,18 @@ export function TemplatePicker({ onSelect, onSelectFull }: { onSelect: (content:
 
   const handleSelect = (t: Template) => {
     if (hasPlaceholders(t.content)) {
+      // Case-insensitive lookup over suggested values from the cached analysis.
+      const sugg = suggested?.values ?? {}
+      const suggLower: Record<string, string> = {}
+      for (const [k, v] of Object.entries(sugg)) suggLower[k.toLowerCase()] = v
       const init: Record<string, string> = {}
       for (const name of extractPlaceholders(t.content)) {
-        init[name] = isTodayPlaceholder(name) ? todayRu() : ''
+        if (isTodayPlaceholder(name)) {
+          init[name] = todayRu()
+        } else {
+          const hit = suggLower[name.trim().toLowerCase()]
+          init[name] = hit ?? ''
+        }
       }
       setFill({ tpl: t, values: init })
       return
@@ -544,7 +563,7 @@ function StatusActionModal({
                 rows={4}
                 className="flex-1 bg-frame border border-border rounded-lg px-3 py-2 text-xs resize-none focus:outline-none focus:border-accent leading-relaxed"
               />
-              <TemplatePicker onSelect={text => setComment(text)} />
+              <TemplatePicker onSelect={text => setComment(text)} issueId={issueId} />
             </div>
             <label className="flex items-center gap-2 cursor-pointer select-none w-fit">
               <input
@@ -1373,7 +1392,7 @@ export function IssueDetail() {
                 className="flex-1 bg-frame border border-border rounded-lg px-3 py-1.5 text-xs resize-none focus:outline-none focus:border-accent"
               />
               <div className="flex flex-col gap-1.5 shrink-0">
-                <TemplatePicker onSelect={text => setComment(text)} />
+                <TemplatePicker onSelect={text => setComment(text)} issueId={selectedIssueId ?? undefined} />
                 <button
                   disabled={!comment || addComment.isPending}
                   onClick={() => addComment.mutate(comment)}

@@ -410,6 +410,56 @@ async def get_cached_automate(
         raise HTTPException(status_code=500, detail="Failed to read cached analysis")
 
 
+@router.get("/{issue_id}/template_values")
+async def get_template_values(
+    issue_id: int,
+    cache: CacheService = Depends(get_cache_service),
+) -> dict[str, object]:
+    """Suggested placeholder->value map for dynamic templates.
+
+    Best-effort: computed from the CACHED automate result only (no AI re-run,
+    no token spend). Returns only keys we can confidently fill. Time-window
+    placeholders (время_с/время_по/время/дата_восстановления) are intentionally
+    omitted — the operator fills those.
+    """
+    values: dict[str, str] = {}
+    try:
+        import datetime as _dt
+
+        # [сегодня] is cheap and always available.
+        today = _dt.date.today().strftime("%d.%m.%Y")
+        values["сегодня"] = today
+
+        issue_data = await cache.get_issue_with_analysis(issue_id)
+        if issue_data:
+            external_id = issue_data["issue"].external_id
+            cached = await cache.get_result_cache(external_id, "automate")
+            if cached and isinstance(cached.get("data"), dict):
+                data = cached["data"]
+                parsed = data.get("parsed") or {}
+                telemetry = data.get("telemetry") or {}
+
+                # [дата] -> fault date ISO -> DD.MM.YYYY
+                iso = parsed.get("date")
+                if isinstance(iso, str) and iso:
+                    try:
+                        d = _dt.date.fromisoformat(iso[:10])
+                        values["дата"] = d.strftime("%d.%m.%Y")
+                    except ValueError:
+                        pass
+
+                # [пробег]/[количество] -> real system mileage (km)
+                sys_km = telemetry.get("system_mileage_km")
+                if isinstance(sys_km, (int, float)):
+                    num = str(int(round(sys_km)))
+                    values["пробег"] = num
+                    values["количество"] = num
+    except Exception:
+        log.exception("get_template_values_failed", issue_id=issue_id)
+        return {"values": {}}
+    return {"values": values}
+
+
 @router.get("/{issue_id}/attachments")
 async def list_issue_attachments(
     issue_id: int,

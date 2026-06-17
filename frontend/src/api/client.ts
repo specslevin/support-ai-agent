@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { IssuesListResponse, IssueDetail, Comment, Analysis, Template, AutomationResult, TrackData, IssueAttachment, BatchResult } from '../types'
+import type { IssuesListResponse, IssueDetail, Comment, Analysis, Template, AutomationResult, TrackData, IssueAttachment, BatchResult, TemplateValues } from '../types'
 
 const http = axios.create({
   baseURL: '/api/v1',
@@ -53,6 +53,11 @@ export const api = {
 
   getCachedBatch(id: number): Promise<(BatchResult & { cached: boolean; created_at?: string })> {
     return http.get(`/issues/${id}/automate_batch`).then(r => r.data)
+  },
+
+  // Этап 2: suggested dynamic-template placeholder values from the cached analysis.
+  templateValues(id: number): Promise<TemplateValues> {
+    return http.get(`/issues/${id}/template_values`).then(r => r.data)
   },
 
   createChildren(id: number, objects: import('../types').BatchObject[]): Promise<{ ok: boolean; created: number; failed: number; results: { plate: string; issue_id?: number; ok: boolean }[] }> {

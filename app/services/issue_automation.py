@@ -157,6 +157,28 @@ _CATEGORY_CATALOG: list[dict[str, str]] = [
 ]
 
 
+# General-assistant system prompt: used when the mileage path can't proceed
+# (no plate parsed, non-mileage issue type, object/telemetry lookup failed).
+# The AI reads the issue, understands the problem, names the data it still
+# needs, and drafts an answer OR a clear note for the operator. Strict JSON out.
+_GENERAL_SYSTEM_PROMPT = (
+    "Ты — ассистент техподдержки GPSPOS (мониторинг транспорта: Okdesk, "
+    "GPSPOS Nav nav.gpspos.ru, GPSPOS Geo geo.gpspos.ru). Эта заявка НЕ "
+    "подходит под автоматический разбор расхождения пробега (нет гос.номера, "
+    "другой тип заявки или не нашлись данные по объекту). Твоя задача: "
+    "(а) понять суть обращения и сформулировать проблему клиента; "
+    "(б) определить, каких данных не хватает для решения (объект/ТС и гос.номер, "
+    "период/дата, тип системы мониторинга, телеметрия, доступ к объекту в Geo/Nav); "
+    "(в) если данных достаточно — дай вежливый черновик ответа клиенту на русском; "
+    "если нет — кратко сформулируй, что понял и что оператору нужно уточнить или "
+    "проверить, прежде чем отвечать. Не выдумывай данные, которых нет. "
+    "Учитывай отправителя (поле «отправитель»): главный клиент — дочерние "
+    "компании Россетей. Верни СТРОГО JSON без пояснений: "
+    '{"problem": "...", "needed_data": ["..."], "answer": "...", '
+    '"confidence": 0.0-1.0, "reasoning": "..."}'
+)
+
+
 class IssueAutomationService:
     def __init__(self, okdesk: OkdeskService, geo: GpsposGeoService, llm: Any) -> None:
         self._okdesk = okdesk
@@ -479,6 +501,73 @@ class IssueAutomationService:
         raw = await self._llm.chat(system, user)
         return self._parse_llm_json(raw)
 
+    async def _draft_general(self, title: str | None, description: str | None,
+                             attachments_text: str | None = None,
+                             sender: dict[str, Any] | None = None) -> AutomationResult:
+        """General-assistant fallback for issues the mileage path can't handle.
+
+        Reads the issue question (title + cleaned description + bounded
+        attachments) and asks the LLM to understand the problem, name the
+        missing data, and draft an answer (or an operator note). Always returns
+        a valid AutomationResult with needs_review=True; never raises.
+        """
+        body = _strip_html(description)
+        att = (attachments_text or "").strip()
+        att_block = f"\n\nТекст вложений:\n{att[:3000]}" if att else ""
+        user = (
+            (f"Отправитель: {json.dumps(sender, ensure_ascii=False)}\n\n" if sender else "")
+            + f"Тема заявки: {title or ''}\n\n"
+            + f"Описание: {body or ''}"
+            + att_block
+            + "\n\nОтвет строго в JSON."
+        )
+        try:
+            raw = await self._llm.chat(_GENERAL_SYSTEM_PROMPT, user)
+            data = self._parse_llm_json(raw)
+        except Exception:  # pragma: no cover - never break automate
+            log.warning("draft_general_failed", title=(title or "")[:60])
+            data = {}
+
+        problem = str(data.get("problem") or "").strip()
+        answer = str(data.get("answer") or "").strip()
+        reasoning_raw = str(data.get("reasoning") or "").strip()
+        needed = data.get("needed_data")
+        if isinstance(needed, list):
+            needed_list = [str(x).strip() for x in needed if str(x).strip()]
+        elif needed:
+            needed_list = [str(needed).strip()]
+        else:
+            needed_list = []
+        try:
+            confidence = float(data.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        confidence = max(0.0, min(confidence, 1.0))
+
+        # Summarize problem + needed data + model reasoning into one reasoning string.
+        parts: list[str] = []
+        if problem:
+            parts.append(f"Суть обращения: {problem}")
+        if needed_list:
+            parts.append("Не хватает данных: " + "; ".join(needed_list))
+        if reasoning_raw:
+            parts.append(reasoning_raw)
+        reasoning = " | ".join(parts) or (
+            "Общий разбор: не удалось распознать заявку как расхождение пробега. "
+            "Оператору нужно уточнить детали обращения."
+        )
+
+        return AutomationResult(
+            parsed=ParsedIssue(),
+            telemetry=TelemetryFacts(),
+            category="Общий разбор",
+            confidence=confidence,
+            draft_answer=answer,
+            reasoning=reasoning,
+            needs_review=True,  # general path always wants operator confirmation
+            error=None,
+        )
+
     async def _extract_with_llm(self, title: str | None, body: str | None,
                                 attachments_text: str | None = None) -> dict[str, Any]:
         """Fallback-извлечение полей заявки силами LLM, когда regex не справился
@@ -581,45 +670,29 @@ class IssueAutomationService:
             except Exception:  # pragma: no cover - best effort
                 log.warning("llm_extract_failed", title=(title or "")[:60])
         telemetry = TelemetryFacts()
-        if not parsed.plate:
-            is_mileage = bool(issue_type and "пробег" in issue_type.lower())
-            if issue_type and not is_mileage:
-                reason = (
-                    f"Заявка типа «{issue_type}» — автоанализ расхождения пробега неприменим. "
-                    "Инструмент работает с заявками о расхождении пробега."
-                )
-            else:
-                reason = (
-                    "Не удалось определить гос.номер ТС из заявки. "
-                    "Проверьте, что номер указан в теме или описании."
-                )
-            return AutomationResult(
-                parsed=parsed, telemetry=telemetry, category="Диагностика",
-                confidence=0.0, draft_answer="", reasoning=reason,
-                error="plate_not_parsed",
-            )
-        if not parsed.date:
-            return AutomationResult(
-                parsed=parsed, telemetry=telemetry, category="Диагностика",
-                confidence=0.0, draft_answer="", reasoning="Не удалось определить дату из заявки.",
-                error="date_not_parsed",
-            )
+        # No plate, or no fault date → the mileage path can't proceed. Instead of
+        # a dead-end error, hand off to the GENERAL ASSISTANT path: the AI reads
+        # the issue, names the missing data and drafts an answer / operator note.
+        is_mileage = bool(issue_type and "пробег" in issue_type.lower())
+        if not parsed.plate or not parsed.date:
+            # If the type is explicitly non-mileage, the general path is the right
+            # home regardless; if it's mileage but unparseable, still go general.
+            return await self._draft_general(title, description, attachments_text, sender)
+        # A non-mileage issue type that happens to carry a plate still belongs to
+        # the general path — the mileage analysis below would be meaningless.
+        if issue_type and not is_mileage:
+            return await self._draft_general(title, description, attachments_text, sender)
         try:
             telemetry = await self.gather_telemetry(parsed.plate, parsed.date)
-        except Exception as e:  # pragma: no cover - network errors
+        except Exception:  # pragma: no cover - network errors
+            # Telemetry/object lookup failed — fall through to the general path
+            # rather than a hard error, so the operator still gets a draft.
             log.exception("gather_telemetry_failed", plate=parsed.plate)
-            return AutomationResult(
-                parsed=parsed, telemetry=telemetry, category="Диагностика",
-                confidence=0.0, draft_answer="", reasoning="Ошибка получения данных из geo.gpspos.ru.",
-                error=str(e),
-            )
+            return await self._draft_general(title, description, attachments_text, sender)
         if "object_not_found" in telemetry.flags:
-            return AutomationResult(
-                parsed=parsed, telemetry=telemetry, category="Диагностика",
-                confidence=0.0, draft_answer="",
-                reasoning=f"Объект с гос.номером {parsed.plate} не найден в geo.gpspos.ru.",
-                error="object_not_found",
-            )
+            # Plate parsed but no matching object in Geo: general path can still
+            # understand the request and tell the operator what to verify.
+            return await self._draft_general(title, description, attachments_text, sender)
 
         hint = self._heuristic_category(parsed, telemetry)
         # RAG: fetch similar past resolved cases as few-shot examples. The
