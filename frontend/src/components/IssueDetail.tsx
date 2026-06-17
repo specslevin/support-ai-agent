@@ -4,7 +4,7 @@ import {
   ChevronDown, AlertTriangle, X, Check, Star, Bot, RefreshCw, Database,
   Lightbulb, ArrowDown, ArrowLeft, Map, FilePlus, ExternalLink, Pause, Send,
   Layers, Power, RadioTower, Scissors, HelpCircle, FileText, Sheet,
-  Image as ImageIcon, Paperclip, PanelRightClose, Info, MessageSquare, Sparkles,
+  Image as ImageIcon, Paperclip, PanelRightClose, Info, MessageSquare, Sparkles, Wand2,
   type LucideIcon,
 } from 'lucide-react'
 import { api } from '../api/client'
@@ -13,6 +13,7 @@ import { useUserStore } from '../store/userStore'
 import { StatusBadge } from './StatusBadge'
 import { EmployeeMenu, TypeMenu } from './pickers'
 import type { OkdeskDetail, Template, AutomationResult, Analysis, BatchResult } from '../types'
+import { extractPlaceholders, hasPlaceholders, renderTemplate, todayRu, isTodayPlaceholder } from '../lib/templates'
 
 function formatDate(iso: string | null | undefined) {
   if (!iso) return null
@@ -259,6 +260,8 @@ const CATEGORY_COLORS: Record<string, string> = {
 export function TemplatePicker({ onSelect, onSelectFull }: { onSelect: (content: string) => void; onSelectFull?: (t: { name: string; content: string }) => void }) {
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
+  // Fill step for dynamic templates: holds the chosen template + per-placeholder values.
+  const [fill, setFill] = useState<{ tpl: Template; values: Record<string, string> } | null>(null)
   const setLastTemplate = useIssuesStore(s => s.setLastTemplate)
 
   const { data: templates = [] } = useQuery({
@@ -267,15 +270,29 @@ export function TemplatePicker({ onSelect, onSelectFull }: { onSelect: (content:
     staleTime: 5 * 60_000,
   })
 
-  const handleSelect = (t: Template) => {
-    setLastTemplate(t.content)
+  // Emit the final content (already substituted) through the existing callbacks.
+  const emit = (name: string, content: string) => {
+    setLastTemplate(content)
     if (onSelectFull) {
-      onSelectFull({ name: t.name, content: t.content })
+      onSelectFull({ name, content })
     } else {
-      onSelect(t.content)
+      onSelect(content)
     }
     setOpen(false)
     setSearch('')
+    setFill(null)
+  }
+
+  const handleSelect = (t: Template) => {
+    if (hasPlaceholders(t.content)) {
+      const init: Record<string, string> = {}
+      for (const name of extractPlaceholders(t.content)) {
+        init[name] = isTodayPlaceholder(name) ? todayRu() : ''
+      }
+      setFill({ tpl: t, values: init })
+      return
+    }
+    emit(t.name, t.content)
   }
 
   // Categories ordered by their most-used template; items within by usage desc.
@@ -314,6 +331,60 @@ export function TemplatePicker({ onSelect, onSelectFull }: { onSelect: (content:
     )
   }
 
+  // Fill step: prompt for one value per unique placeholder, live preview.
+  if (fill) {
+    const names = extractPlaceholders(fill.tpl.content)
+    const preview = renderTemplate(fill.tpl.content, fill.values)
+    return (
+      <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center p-4">
+        <div className="fixed inset-0 bg-black/60" onClick={() => setFill(null)} />
+        <div className="relative bg-card border border-border rounded-xl w-full max-w-md max-h-[80vh] flex flex-col shadow-lg z-10">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
+            <span className="text-sm font-semibold flex items-center gap-1.5">
+              <Wand2 size={14} className="text-accent" /> {fill.tpl.name}
+            </span>
+            <button onClick={() => setFill(null)} className="text-muted hover:text-white"><X size={18} /></button>
+          </div>
+          <div className="overflow-y-auto flex-1 px-4 py-3 space-y-3">
+            {names.map(name => (
+              <div key={name}>
+                <label className="block text-[11px] text-muted mb-1">{name}</label>
+                <input
+                  autoFocus={name === names[0]}
+                  type="text"
+                  value={fill.values[name] ?? ''}
+                  onChange={e =>
+                    setFill(f => f && { ...f, values: { ...f.values, [name]: e.target.value } })
+                  }
+                  placeholder={`[${name}]`}
+                  className="w-full bg-frame border border-border rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:border-accent"
+                />
+              </div>
+            ))}
+            <div>
+              <span className="block text-[10px] uppercase tracking-widest text-muted mb-1">Предпросмотр</span>
+              <p className="text-[11px] text-white whitespace-pre-wrap bg-frame border border-border rounded-lg px-3 py-2 leading-relaxed">{preview}</p>
+            </div>
+          </div>
+          <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-border shrink-0">
+            <button
+              onClick={() => setFill(null)}
+              className="px-3 py-1.5 text-xs text-muted hover:text-white rounded-lg"
+            >
+              Назад
+            </button>
+            <button
+              onClick={() => emit(fill.tpl.name, renderTemplate(fill.tpl.content, fill.values))}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-accent text-black rounded-lg hover:opacity-90 transition-opacity"
+            >
+              <Check size={14} /> Вставить
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center p-4">
       <div className="fixed inset-0 bg-black/60" onClick={() => setOpen(false)} />
@@ -349,6 +420,14 @@ export function TemplatePicker({ onSelect, onSelectFull }: { onSelect: (content:
                   >
                     <div className="flex items-center gap-2">
                       <span className="text-xs text-white flex-1">{t.name}</span>
+                      {(t.is_dynamic || hasPlaceholders(t.content)) && (
+                        <span
+                          title="Динамический шаблон — запросит значения"
+                          className="inline-flex items-center gap-0.5 text-[9px] uppercase tracking-wide text-accent bg-accent/10 border border-accent/30 rounded px-1 py-px"
+                        >
+                          <Sparkles size={9} /> дин.
+                        </span>
+                      )}
                       {t.is_favorite && <Star size={11} className="text-warning fill-warning" />}
                       {t.usage_count > 0 && (
                         <span className="text-[10px] text-muted">{t.usage_count}</span>

@@ -38,6 +38,19 @@ def _read_templates() -> list[dict]:
         conn.close()
 
 
+def _read_categories() -> list[dict]:
+    if not OKDESK_CONSOLE_DB.exists():
+        return []
+    conn = sqlite3.connect(str(OKDESK_CONSOLE_DB))
+    conn.row_factory = sqlite3.Row
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id, name, color FROM categories ORDER BY id")
+        return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
 @router.get("")
 async def list_templates() -> list[dict]:
     """Return all active templates from okdesk-console, grouped info included."""
@@ -46,3 +59,13 @@ async def list_templates() -> list[dict]:
     except Exception:
         log.exception("list_templates_failed")
         raise HTTPException(status_code=500, detail="Failed to read templates")
+
+
+@router.get("/categories")
+async def list_categories() -> list[dict]:
+    """Return template categories [{id, name, color}] from okdesk-console (read-only)."""
+    try:
+        return _read_categories()
+    except Exception:
+        log.exception("list_categories_failed")
+        raise HTTPException(status_code=500, detail="Failed to read categories")
