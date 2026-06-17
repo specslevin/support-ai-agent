@@ -176,6 +176,30 @@ class TrainingSample(Base):
     )
 
 
+class ObjectResolveCache(Base):
+    """Cached plate→GPSPOS-object resolution so we don't re-scan the Objects list
+    on every lookup. Keyed by normalized plate. Foundation for reliable
+    issue↔object linking and per-object answer aggregation (ОДКР)."""
+
+    __tablename__ = "object_resolve_cache"
+    __table_args__ = (
+        Index("ix_object_resolve_cache_plate", "plate_norm"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    plate_norm: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
+    object_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    imei: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
 class ChatHistory(Base):
     __tablename__ = "chat_history"
 

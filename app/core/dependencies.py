@@ -23,6 +23,7 @@ from app.core.okdesk.client import OkdeskClient
 from app.core.okdesk.config import OkdeskSettings
 from app.core.okdesk.service import OkdeskService
 from app.core.services.cache_service import CacheService
+from app.core.services.object_resolver import ObjectResolverService
 from app.services.intelligence_service import IntelligenceService, LLMRouter
 from app.services.issue_automation import IssueAutomationService
 
@@ -129,6 +130,13 @@ async def get_cache_service(
 ) -> CacheService:
     """Return a CacheService bound to the request-scoped DB session."""
     return CacheService(db=db, okdesk=_okdesk_service())
+
+
+async def get_object_resolver_service(
+    db: AsyncSession = Depends(get_db_session),
+) -> ObjectResolverService:
+    """Return an ObjectResolverService bound to the request-scoped DB session."""
+    return ObjectResolverService(db=db, geo=_gpspos_geo_service())
 
 
 @functools.lru_cache

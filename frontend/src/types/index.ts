@@ -73,6 +73,7 @@ export interface AutomationParsed {
   date: string | null
   sheet_mileage_km: number | null
   declared_system_km: number | null
+  llm_extracted?: boolean
 }
 
 export interface AutomationTelemetry {

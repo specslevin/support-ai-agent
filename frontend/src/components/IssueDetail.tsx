@@ -608,6 +608,28 @@ function AutoAnalysis({ issueId, onUseDraft, latestAnalysis, issueTitle }: { iss
             <p className="flex items-start gap-1.5 text-warning"><AlertTriangle size={13} className="shrink-0 mt-0.5" /> {shown.reasoning}</p>
           )}
 
+          {p && (p.plate || p.date || p.sheet_mileage_km != null || p.declared_system_km != null) && (
+            <div className="bg-card border border-frame rounded-lg px-3 py-2 space-y-1.5">
+              <div className="flex items-center gap-1.5 text-[11px] font-semibold text-muted">
+                <Bot size={12} /> Что прочитал ИИ
+                {p.llm_extracted && (
+                  <span
+                    title="Поля восстановлены ИИ — regex не справился, проверьте"
+                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-info/15 text-info text-[10px] font-medium"
+                  >
+                    <Sparkles size={10} /> ИИ-извлечено
+                  </span>
+                )}
+              </div>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-[11px]">
+                <Fact label="Гос.номер" value={p.plate} />
+                <Fact label="Дата" value={p.date} />
+                <Fact label="Путевой лист" value={p.sheet_mileage_km != null ? `${p.sheet_mileage_km} км` : null} />
+                <Fact label="В системе" value={p.declared_system_km != null ? `${p.declared_system_km} км` : null} />
+              </div>
+            </div>
+          )}
+
           {t && (t.object_name || t.system_mileage_km != null) && (
             <div className="bg-frame rounded-lg px-3 py-2.5 space-y-2">
               {t.flags.length > 0 && (
