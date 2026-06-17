@@ -64,6 +64,10 @@ export const api = {
     return http.post(`/issues/${id}/create_children`, { objects: payload }).then(r => r.data)
   },
 
+  composeAnswer(id: number): Promise<{ answer: string }> {
+    return http.post(`/issues/${id}/compose_answer`).then(r => r.data)
+  },
+
   getTrack(id: number, plate?: string | null, date?: string | null, dateFrom?: string | null, dateTo?: string | null): Promise<TrackData> {
     const params: Record<string, string> = {}
     if (plate && date) { params.plate = plate; params.date = date }

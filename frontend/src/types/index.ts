@@ -154,6 +154,7 @@ export interface BatchResult {
   total: number
   jamming_count: number
   ok_count: number
+  is_aggregate?: boolean
   objects: BatchObject[]
 }
 

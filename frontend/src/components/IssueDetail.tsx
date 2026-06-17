@@ -783,6 +783,11 @@ function BatchAnalysis({ issueId, onUseDraft, issueTitle, onOpenExternal }: { is
     },
   })
 
+  const composeMut = useMutation({
+    mutationFn: () => api.composeAnswer(issueId),
+    onSuccess: (data) => { if (data.answer) onUseDraft(data.answer) },
+  })
+
   const createRow = async (o: import('../types').BatchObject) => {
     if (!o.plate) return
     setLoadingPlates(prev => new Set([...prev, o.plate!]))
@@ -805,6 +810,7 @@ function BatchAnalysis({ issueId, onUseDraft, issueTitle, onOpenExternal }: { is
 
   const res = run.data ?? (cached as BatchResult | null)
   const isCached = !run.data && !!cached
+  const isAggregate = !!res?.is_aggregate
 
   // All plates with a successfully created child issue (per-row or bulk)
   const allCreatedPlates = Object.entries(rowCreated).filter(([, v]) => v.ok).map(([plate]) => plate)
@@ -871,7 +877,7 @@ function BatchAnalysis({ issueId, onUseDraft, issueTitle, onOpenExternal }: { is
                         )}
                       </td>
                       <td className="text-center">
-                        {o.plate && (
+                        {!isAggregate && o.plate && (
                           isLoading ? (
                             <span className="text-muted animate-pulse">…</span>
                           ) : rc?.ok && rc.issue_id ? (
@@ -897,7 +903,25 @@ function BatchAnalysis({ issueId, onUseDraft, issueTitle, onOpenExternal }: { is
               </tbody>
             </table>
           </div>
-          {(() => {
+          {isAggregate && (
+            <>
+              <p className="flex items-start gap-1.5 text-[11px] text-muted leading-relaxed">
+                <Info size={13} className="shrink-0 mt-0.5 text-info" />
+                <span>Агрегатная заявка (ОДКР) — отвечаем одним ответом по всем объектам, без разбивки на дочерние.</span>
+              </p>
+              <button
+                onClick={() => composeMut.mutate()}
+                disabled={composeMut.isPending}
+                className="flex items-center justify-center gap-1.5 w-full bg-accent/90 hover:bg-accent text-black text-xs font-semibold py-1.5 rounded-lg transition-colors disabled:opacity-50"
+              >
+                {composeMut.isPending
+                  ? <><Sparkles size={14} className="animate-pulse" /> Составляю ответ…</>
+                  : <><Sparkles size={14} /> Составить общий ответ</>}
+              </button>
+              {composeMut.isError && <p className="text-xs text-orange-400">Ошибка составления ответа. Попробуйте снова.</p>}
+            </>
+          )}
+          {!isAggregate && (() => {
             const suffix = allCreatedPlates.length
               ? `\n\nПо ТС ${allCreatedPlates.join(', ')} оформлены отдельные заявки для индивидуального рассмотрения.`
               : ''
@@ -919,7 +943,7 @@ function BatchAnalysis({ issueId, onUseDraft, issueTitle, onOpenExternal }: { is
               </div>
             )
           })()}
-          {(() => {
+          {!isAggregate && (() => {
             const children = res.objects.filter(o => o.plate && !rowCreated[o.plate]?.ok && (o.verdict === 'Данные верны' || o.verdict === 'Нет данных'))
             const totalEligible = res.objects.filter(o => o.verdict === 'Данные верны' || o.verdict === 'Нет данных').length
             if (totalEligible === 0) return null
@@ -1256,9 +1280,10 @@ export function IssueDetail() {
                 disabled={!comment || quickResolve.isPending}
                 onClick={() => quickResolve.mutate('delayed')}
                 title="Отправить ответ и перевести в «Ожидание ответа» (+3 дня)"
-                className="flex items-center justify-center gap-1.5 flex-1 bg-frame border border-border hover:border-accent text-white text-xs font-semibold py-1.5 rounded-lg transition-colors disabled:opacity-40"
+                style={{ background: '#bb7db2' }}
+                className="flex items-center justify-center gap-1.5 flex-1 text-white text-xs font-semibold py-1.5 rounded-lg transition-all hover:brightness-110 disabled:opacity-40"
               >
-                {quickResolve.isPending && quickResolve.variables === 'delayed' ? '...' : <><Pause size={14} /> Ожидание</>}
+                {quickResolve.isPending && quickResolve.variables === 'delayed' ? '...' : <><Pause size={14} /> Ожидание ответа</>}
               </button>
               <button
                 disabled={!comment || quickResolve.isPending}
@@ -1270,7 +1295,8 @@ export function IssueDetail() {
                   quickResolve.mutate('completed')
                 }}
                 title="Отправить ответ клиенту и перевести в «Решена»"
-                className="flex items-center justify-center gap-1.5 flex-1 bg-green-600/90 hover:bg-green-500 text-white text-xs font-semibold py-1.5 rounded-lg transition-colors disabled:opacity-40"
+                style={{ background: '#67a030' }}
+                className="flex items-center justify-center gap-1.5 flex-1 text-white text-xs font-semibold py-1.5 rounded-lg transition-all hover:brightness-110 disabled:opacity-40"
               >
                 {quickResolve.isPending && quickResolve.variables === 'completed' ? 'Отправка...' : <><Check size={14} /> Решить</>}
               </button>

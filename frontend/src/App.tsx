@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useState } from 'react'
-import { ChevronDown, RefreshCw } from 'lucide-react'
+import { ChevronDown, RefreshCw, ClipboardList, Phone, Truck, BarChart3, Settings, type LucideIcon } from 'lucide-react'
 import { IssueFilters } from './components/IssueFilters'
 import { IssuesList } from './components/IssuesList'
 import { IssueDetail } from './components/IssueDetail'
@@ -84,10 +84,11 @@ function Dashboard() {
       <Sidebar active={section} onSelect={setSection} />
 
       <div className="flex flex-col flex-1 min-w-0">
-        {/* Top bar */}
-        <header className="flex items-center justify-between px-6 py-3 border-b border-border shrink-0">
-          <div className="flex items-center gap-2 text-sm">
-            <span className="text-muted">/ {section === 'issues' ? 'Заявки' : sectionTitle(section)}</span>
+        {/* Top bar / header */}
+        <header className="flex items-center justify-between px-6 h-14 border-b border-border shrink-0 bg-darker">
+          <div className="flex items-center gap-2.5">
+            {(() => { const HI = SECTION_ICON[section]; return <HI size={18} className="text-accent shrink-0" /> })()}
+            <h1 className="text-sm font-bold text-white">{sectionTitle(section)}</h1>
           </div>
           <div className="flex items-center gap-3">
             {isIssues && lastSynced != null && (
@@ -143,6 +144,10 @@ function Dashboard() {
       </div>
     </div>
   )
+}
+
+const SECTION_ICON: Record<Section, LucideIcon> = {
+  issues: ClipboardList, mango: Phone, installers: Truck, analytics: BarChart3, settings: Settings,
 }
 
 function sectionTitle(s: Section): string {

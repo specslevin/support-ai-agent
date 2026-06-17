@@ -35,6 +35,23 @@ log = structlog.get_logger(__name__)
 router = APIRouter(prefix="/issues", tags=["dashboard:issues"])
 
 
+def _is_aggregate(company_name: str | None, description: str | None,
+                  objects: list[dict[str, object]]) -> bool:
+    """Aggregate (ОДКР) issue — answer once, do NOT split into children.
+
+    TRUE if the company is ОДКР, OR the issue body is empty AND there are
+    >= 5 distinct plates across attachments.
+    """
+    if company_name and "одкр" in company_name.lower():
+        return True
+    body = (description or "").strip()
+    if not body:
+        plates = {o.get("plate") for o in objects if o.get("plate")}
+        if len(plates) >= 5:
+            return True
+    return False
+
+
 @router.get("", response_model=PaginatedIssuesResponse)
 async def list_issues(
     status: str | None = Query(None, description="Filter by status code"),
@@ -463,10 +480,12 @@ async def automate_batch(
         objects = await automation.analyze_batch(external_id, live.attachments)
         jamming = sum(1 for o in objects if o.get("verdict") == "Глушение")
         ok_data = sum(1 for o in objects if o.get("verdict") == "Данные верны")
+        company_name = getattr(issue_data["issue"], "company_name", None)
         payload = {
             "total": len(objects),
             "jamming_count": jamming,
             "ok_count": ok_data,
+            "is_aggregate": _is_aggregate(company_name, live.description, objects),
             "objects": objects,
         }
         try:
@@ -501,6 +520,41 @@ async def get_cached_batch(
     except Exception:
         log.exception("get_cached_batch_failed", issue_id=issue_id)
         raise HTTPException(status_code=500, detail="Failed to read cached batch")
+
+
+@router.post("/{issue_id}/compose_answer")
+async def compose_answer(
+    issue_id: int,
+    cache: CacheService = Depends(get_cache_service),
+    okdesk: OkdeskService = Depends(get_okdesk_service),
+    automation: IssueAutomationService = Depends(get_issue_automation_service),
+) -> dict[str, object]:
+    """Compose ONE comprehensive answer for an aggregate (ОДКР) issue.
+
+    Loads the cached batch result (or runs analyze_batch if absent), then asks
+    the LLM to summarise all objects grouped by verdict into a single answer.
+    """
+    try:
+        issue_data = await cache.get_issue_with_analysis(issue_id)
+        if not issue_data:
+            raise HTTPException(status_code=404, detail="Issue not found")
+        external_id = issue_data["issue"].external_id
+        company_name = getattr(issue_data["issue"], "company_name", None)
+
+        cached = await cache.get_result_cache(external_id, "batch")
+        if cached and cached.get("data", {}).get("objects"):
+            objects = cached["data"]["objects"]
+        else:
+            live = await okdesk.get_issue(external_id)
+            objects = await automation.analyze_batch(external_id, live.attachments)
+
+        answer = await automation.compose_aggregate_answer(objects, company_name)
+        return {"answer": answer}
+    except HTTPException:
+        raise
+    except Exception:
+        log.exception("compose_answer_failed", issue_id=issue_id)
+        raise HTTPException(status_code=500, detail="Failed to compose answer")
 
 
 @router.post("/{issue_id}/create_children")

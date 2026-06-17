@@ -416,7 +416,6 @@ class IssueAutomationService:
             "по-разному — Оренбургэнерго (Восточное/Центральное ПО) обычно указывают гос.номер и дату в теме; "
             "Волжское ПО присылает табличный «Акт» с полем «Дата неисправности»; Самарские РС (Чапаевское ПО) — "
             "общие заявки с вложением-актом по каждому ТС. Текст вложений — первоисточник, верь ему больше темы. "
-            "Обращайся к клиенту вежливо, по контактному лицу если оно указано. "
             "Не выдумывай данные, которых нет. Верни СТРОГО JSON без пояснений: "
             '{"category": "...", "answer": "...", "confidence": 0.0-1.0, "reasoning": "..."}'
         )
@@ -742,6 +741,39 @@ class IssueAutomationService:
                     plate, parsed.date, parsed.sheet_mileage_km, address, name,
                 ))
         return results
+
+    async def compose_aggregate_answer(self, objects: list[dict[str, Any]],
+                                       company: str | None = None) -> str:
+        """Compose ONE comprehensive, polite Russian answer for an aggregate
+        (ОДКР) issue, grouping objects by verdict. No splitting into children.
+        """
+        # Compact the objects for the prompt (only fields the answer needs).
+        compact = [
+            {
+                "плата": o.get("plate"),
+                "дата": o.get("date"),
+                "пробег_путевой_лист_км": o.get("sheet_mileage_km"),
+                "пробег_система_км": o.get("system_mileage_km"),
+                "вердикт": o.get("verdict"),
+            }
+            for o in objects
+        ]
+        system = (
+            "Ты — ассистент техподдержки GPSPOS. По списку транспортных средств составь ОДИН "
+            "общий, вежливый и связный ответ клиенту на русском по всем объектам сразу. "
+            "Сгруппируй ТС по вердикту: например «По ТС X, Y данные верны; по ТС Z — глушение GPS …». "
+            "Указывай реальные гос.номера и числа из данных. Это агрегатная заявка — НЕ предлагай "
+            "разбивать на отдельные заявки. Будь конкретным и кратким. "
+            'Верни СТРОГО JSON без пояснений: {"answer": "..."}'
+        )
+        user = (
+            (f"Компания-отправитель: {company}\n\n" if company else "")
+            + f"Объекты заявки (JSON):\n{json.dumps(compact, ensure_ascii=False)}\n\n"
+            "Ответ строго в JSON."
+        )
+        raw = await self._llm.chat(system, user)
+        parsed = self._parse_llm_json(raw)
+        return str(parsed.get("answer") or "").strip()
 
     async def _analyze_object(self, plate: str, date: str | None, sheet: float | None,
                               address: str | None, file: str) -> dict[str, Any]:
