@@ -106,10 +106,56 @@ class CacheService:
         await self.db.commit()
         log.info("issue_cache_refreshed", count=count)
 
+        # Авто-чистка «призраков»: активные заявки, которых больше нет в Okdesk
+        # (слиты/удалены) — иначе висят open навсегда (синк только upsert).
+        await self._cleanup_merged_ghosts(set(by_id.keys()))
+
         # Batch-sync assignees for active issues (opened/wait/delayed)
         await self._sync_assignees_for_active()
 
         return count
+
+    # Активные статусы (заявка «в работе», не финальная)
+    _ACTIVE_STATUSES = ("opened", "wait", "delayed", "no_time")
+
+    async def _cleanup_merged_ghosts(self, seen_ids: set[int]) -> int:
+        """Заявки в активном статусе, которых НЕ было в свежей выгрузке Okdesk,
+        проверяем поштучно. Если Okdesk отвечает 404 — заявка слита/удалена,
+        закрываем её локально (status='closed'). Если жива — обновляем статус.
+        Закрываем ТОЛЬКО при подтверждённом 404, не при транзиентной ошибке.
+        """
+        import httpx
+
+        result = await self.db.execute(
+            select(IssueCache)
+            .where(IssueCache.status.in_(self._ACTIVE_STATUSES))
+            .where(IssueCache.external_id.notin_(seen_ids))
+            .order_by(IssueCache.updated_at.desc())
+            .limit(300)
+        )
+        rows = list(result.scalars().all())
+        if not rows:
+            return 0
+        closed = 0
+        for row in rows:
+            try:
+                live = await self.okdesk.get_issue(row.external_id)
+            except httpx.HTTPStatusError as e:
+                if e.response is not None and e.response.status_code == 404:
+                    row.status = "closed"  # слита/удалена в Okdesk
+                    self.db.add(row)
+                    closed += 1
+                continue  # прочие коды (5xx/403) — не трогаем
+            except Exception:
+                continue  # сетевой сбой — пропускаем, попробуем в следующий синк
+            new_status = live.status.code if live.status else None
+            if new_status and new_status != row.status:
+                row.status = new_status
+                self.db.add(row)
+        await self.db.commit()
+        if closed:
+            log.info("ghost_issues_closed", count=closed)
+        return closed
 
     async def _sync_assignees_for_active(self) -> None:
         """Fetch assignee from Okdesk for all issues missing assignee_name.
