@@ -791,9 +791,15 @@ class IssueAutomationService:
         return results
 
     async def compose_aggregate_answer(self, objects: list[dict[str, Any]],
-                                       company: str | None = None) -> str:
+                                       company: str | None = None,
+                                       prior: dict[str, dict] | None = None) -> str:
         """Compose ONE comprehensive, polite Russian answer for an aggregate
         (ОДКР) issue, grouping objects by verdict. No splitting into children.
+
+        ``prior`` maps a normalized plate -> ``{category, answer, fault_date}``
+        for vehicles that already received a resolved answer in a past issue.
+        When provided, those prior answers are surfaced to the model so the new
+        aggregate response stays consistent with what the client was told before.
         """
         # Compact the objects for the prompt (only fields the answer needs).
         compact = [
@@ -806,18 +812,52 @@ class IssueAutomationService:
             }
             for o in objects
         ]
+        # Match objects to prior answers by normalized plate (strip spaces/hyphens, upper).
+        prior_lines: list[str] = []
+        if prior:
+            def _norm(p: str | None) -> str | None:
+                if not p:
+                    return None
+                n = re.sub(r"[\s\-]", "", str(p)).upper()
+                return n or None
+            seen: set[str] = set()
+            for o in objects:
+                norm = _norm(o.get("plate"))
+                if not norm or norm in seen or norm not in prior:
+                    continue
+                seen.add(norm)
+                info = prior[norm]
+                ans = str(info.get("answer") or "").strip().replace("\n", " ")
+                if len(ans) > 200:
+                    ans = ans[:200] + "…"
+                cat = info.get("category")
+                prior_lines.append(
+                    f"- {o.get('plate')}"
+                    + (f" (ранее: {cat})" if cat else "")
+                    + f": «{ans}»"
+                )
+                if len(prior_lines) >= 30:
+                    break
         system = (
             "Ты — ассистент техподдержки GPSPOS. По списку транспортных средств составь ОДИН "
             "общий, вежливый и связный ответ клиенту на русском по всем объектам сразу. "
             "Сгруппируй ТС по вердикту: например «По ТС X, Y данные верны; по ТС Z — глушение GPS …». "
             "Указывай реальные гос.номера и числа из данных. Это агрегатная заявка — НЕ предлагай "
             "разбивать на отдельные заявки. Будь конкретным и кратким. "
+            "Если по части ТС ранее уже отвечали клиенту — придерживайся той же позиции, не противоречь "
+            "прежним ответам. "
             'Верни СТРОГО JSON без пояснений: {"answer": "..."}'
+        )
+        prior_block = (
+            ("По этим ТС ранее уже отвечали клиенту (сохраняй ту же позицию):\n"
+             + "\n".join(prior_lines) + "\n\n")
+            if prior_lines else ""
         )
         user = (
             (f"Компания-отправитель: {company}\n\n" if company else "")
             + f"Объекты заявки (JSON):\n{json.dumps(compact, ensure_ascii=False)}\n\n"
-            "Ответ строго в JSON."
+            + prior_block
+            + "Ответ строго в JSON."
         )
         raw = await self._llm.chat(system, user)
         parsed = self._parse_llm_json(raw)

@@ -559,8 +559,19 @@ async def compose_answer(
             live = await okdesk.get_issue(external_id)
             objects = await automation.analyze_batch(external_id, live.attachments)
 
-        answer = await automation.compose_aggregate_answer(objects, company_name)
-        return {"answer": answer}
+        # Best-effort: surface prior resolved answers for the same vehicles so
+        # the aggregate stays consistent with what the client was told before.
+        prior: dict[str, dict] = {}
+        try:
+            plates = [str(o.get("plate")) for o in objects if o.get("plate")]
+            if plates:
+                prior = await cache.prior_answers_for_plates(plates)
+        except Exception:
+            log.warning("compose_answer_prior_lookup_failed", issue_id=issue_id)
+            prior = {}
+
+        answer = await automation.compose_aggregate_answer(objects, company_name, prior=prior)
+        return {"answer": answer, "linked_count": len(prior)}
     except HTTPException:
         raise
     except Exception:

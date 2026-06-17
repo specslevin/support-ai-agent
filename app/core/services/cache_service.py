@@ -451,6 +451,54 @@ class CacheService:
         scored.sort(key=lambda t: (t[0], t[1]), reverse=True)
         return [item for _, _, item in scored[:limit]]
 
+    async def prior_answers_for_plates(self, plates: list[str]) -> dict[str, dict]:
+        """For each plate, find the most recent RESOLVED TrainingSample with a
+        non-empty operator answer and return what was previously told to the
+        client for that exact vehicle.
+
+        Returns ``{normalized_plate: {category, answer, fault_date}}`` only for
+        plates that have a prior answer. Best-effort — never raises; on a query
+        failure returns whatever was gathered so far (possibly empty).
+        """
+        def _norm(p: str | None) -> str | None:
+            if not p:
+                return None
+            n = re.sub(r"[\s\-]", "", str(p)).upper()
+            return n or None
+
+        wanted = {n for n in (_norm(p) for p in (plates or [])) if n}
+        if not wanted:
+            return {}
+
+        out: dict[str, dict] = {}
+        try:
+            result = await self.db.execute(
+                select(TrainingSample)
+                .where(TrainingSample.plate.isnot(None))
+                .where(TrainingSample.operator_answer.isnot(None))
+                .where(TrainingSample.operator_answer != "")
+                .where(TrainingSample.final_status.in_(("completed", "closed")))
+                .order_by(TrainingSample.created_at.desc())
+            )
+            rows = list(result.scalars().all())
+        except Exception:
+            log.warning("prior_answers_for_plates_query_failed")
+            return out
+
+        # rows are newest-first; first hit per normalized plate wins.
+        for row in rows:
+            norm = _norm(row.plate)
+            if not norm or norm not in wanted or norm in out:
+                continue
+            out[norm] = {
+                "category": row.ai_category,
+                "answer": row.operator_answer,
+                "fault_date": row.fault_date,
+            }
+            if len(out) == len(wanted):
+                break
+        return out
+
     async def save_training_sample(
         self, issue_external_id: int, payload: dict[str, Any],
         ai_category: str | None = None, ai_was_used: bool = False,
