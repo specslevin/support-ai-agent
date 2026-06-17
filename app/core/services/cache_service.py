@@ -120,12 +120,10 @@ class CacheService:
 
     async def _cleanup_merged_ghosts(self, seen_ids: set[int]) -> int:
         """Заявки в активном статусе, которых НЕ было в свежей выгрузке Okdesk,
-        проверяем поштучно. Если Okdesk отвечает 404 — заявка слита/удалена,
-        закрываем её локально (status='closed'). Если жива — обновляем статус.
-        Закрываем ТОЛЬКО при подтверждённом 404, не при транзиентной ошибке.
+        проверяем поштучно через issue_exists. Слитая/удалённая заявка отдаёт
+        {"errors": ...} (HTTP 200) либо 404 → закрываем локально (status='closed').
+        При неопределённом ответе (сеть/5xx) не трогаем — попробуем в след. синк.
         """
-        import httpx
-
         result = await self.db.execute(
             select(IssueCache)
             .where(IssueCache.status.in_(self._ACTIVE_STATUSES))
@@ -138,20 +136,12 @@ class CacheService:
             return 0
         closed = 0
         for row in rows:
-            try:
-                live = await self.okdesk.get_issue(row.external_id)
-            except httpx.HTTPStatusError as e:
-                if e.response is not None and e.response.status_code == 404:
-                    row.status = "closed"  # слита/удалена в Okdesk
-                    self.db.add(row)
-                    closed += 1
-                continue  # прочие коды (5xx/403) — не трогаем
-            except Exception:
-                continue  # сетевой сбой — пропускаем, попробуем в следующий синк
-            new_status = live.status.code if live.status else None
-            if new_status and new_status != row.status:
-                row.status = new_status
+            exists = await self.okdesk.issue_exists(row.external_id)
+            if exists is False:  # слита/удалена в Okdesk
+                row.status = "closed"
                 self.db.add(row)
+                closed += 1
+            # exists is True/None — оставляем как есть
         await self.db.commit()
         if closed:
             log.info("ghost_issues_closed", count=closed)

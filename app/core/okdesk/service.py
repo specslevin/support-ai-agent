@@ -57,6 +57,30 @@ class OkdeskService:
         data = await self._client._request("GET", f"issues/{issue_id}")
         return Issue.model_validate(data)
 
+    async def issue_exists(self, issue_id: int) -> bool | None:
+        """Жива ли заявка в Okdesk.
+
+        Слитая/удалённая заявка отдаёт HTTP 200 с телом {"errors": ...} (а не
+        404), поэтому проверяем содержимое. Возвращает:
+          True  — заявка существует,
+          False — слита/удалена (errors / 404),
+          None  — неопределённо (сеть/5xx) → вызывающий не трогает.
+        """
+        import httpx
+
+        try:
+            data = await self._client._request("GET", f"issues/{issue_id}")
+        except httpx.HTTPStatusError as e:
+            if e.response is not None and e.response.status_code == 404:
+                return False
+            return None
+        except Exception:
+            return None
+        if isinstance(data, dict) and "id" not in data:
+            # {"errors": ...} или иной ответ без идентификатора заявки
+            return False
+        return True
+
     async def download_attachment(self, issue_id: int, attachment_id: int) -> tuple[bytes, str] | None:
         return await self._client.download_attachment(issue_id, attachment_id)
 
