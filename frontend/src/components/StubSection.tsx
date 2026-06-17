@@ -1,7 +1,7 @@
 import { Phone, Truck, BarChart3, Settings, Construction, type LucideIcon } from 'lucide-react'
 import type { Section } from './Sidebar'
 
-const META: Record<Exclude<Section, 'issues'>, { icon: LucideIcon; title: string; desc: string; chart?: boolean }> = {
+const META: Record<Exclude<Section, 'issues' | 'chat'>, { icon: LucideIcon; title: string; desc: string; chart?: boolean }> = {
   mango: {
     icon: Phone,
     title: 'Mango — телефония',
@@ -47,7 +47,7 @@ function FakeChart() {
   )
 }
 
-export function StubSection({ section }: { section: Exclude<Section, 'issues'> }) {
+export function StubSection({ section }: { section: Exclude<Section, 'issues' | 'chat'> }) {
   const meta = META[section]
   const Icon = meta.icon
 

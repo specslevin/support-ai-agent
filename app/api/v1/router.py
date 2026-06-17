@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from .endpoints import (
+    chat,
     employees,
     issue_types,
     issues_dashboard,
@@ -22,3 +23,4 @@ api_v1_router.include_router(employees.router)
 api_v1_router.include_router(templates.router)
 api_v1_router.include_router(issue_types.router)
 api_v1_router.include_router(objects.router)
+api_v1_router.include_router(chat.router)

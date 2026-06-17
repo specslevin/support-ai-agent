@@ -12,6 +12,21 @@ export interface Issue {
   synced_at: string
 }
 
+export interface ChatIssue {
+  id: number
+  external_id: number | null
+  subject: string | null
+  company_name: string | null
+  status: string | null
+  assignee_name: string | null
+}
+
+export interface ChatResponse {
+  reply: string
+  filters: Record<string, string>
+  issues: ChatIssue[]
+}
+
 export interface Pagination {
   page: number
   limit: number

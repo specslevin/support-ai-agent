@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import {
   ClipboardList,
+  MessageSquare,
   Phone,
   Truck,
   BarChart3,
@@ -10,7 +11,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 
-export type Section = 'issues' | 'mango' | 'installers' | 'analytics' | 'settings'
+export type Section = 'issues' | 'chat' | 'mango' | 'installers' | 'analytics' | 'settings'
 
 type NavEntry = {
   id: Section
@@ -22,6 +23,7 @@ type NavEntry = {
 
 const NAV: NavEntry[] = [
   { id: 'issues', label: 'Заявки', icon: ClipboardList },
+  { id: 'chat', label: 'ИИ-чат', icon: MessageSquare },
   { id: 'mango', label: 'Mango — звонки', icon: Phone, stub: true },
   { id: 'installers', label: 'Выезды монтажников', icon: Truck, stub: true },
   { id: 'analytics', label: 'Аналитика', icon: BarChart3, stub: true },

@@ -179,6 +179,52 @@ _GENERAL_SYSTEM_PROMPT = (
 )
 
 
+# PASS 1 (control center): classify the issue intent and list which concrete
+# data would help resolve it, so we can fetch only those facts via Geo tools.
+_GENERAL_INTENT_PROMPT = (
+    "Ты — диспетчер техподдержки GPSPOS (мониторинг транспорта Россетей: Okdesk, "
+    "GPSPOS Nav, GPSPOS Geo). Проанализируй заявку и определи её НАМЕРЕНИЕ и какие "
+    "конкретные данные помогут её решить. Намерения (intent): "
+    "mileage (расхождение пробега), object_offline (объект/терминал не на связи), "
+    "data_gap (нет данных/трека за период), track_request (запрос трека/маршрута), "
+    "settings (настройки объекта/детектора), billing (оплата/тариф/договор), "
+    "other (прочее). В поле needed перечисли, что стоит подтянуть из системы "
+    "(допустимо: object_status, daily_stats, track, company). Если в тексте есть "
+    "гос.номер ТС — верни его в plate_guess (кириллица, формат А123ВС64, без пробелов), "
+    "иначе null. Если есть дата сбоя/периода — date_guess в формате YYYY-MM-DD, иначе null. "
+    "Не выдумывай. Верни СТРОГО JSON без пояснений: "
+    '{"intent": "...", "needed": ["..."], "plate_guess": "...", '
+    '"date_guess": "YYYY-MM-DD", "reasoning": "..."}'
+)
+
+
+# PASS 2 (control center): given the original question + facts we gathered from
+# Geo tools, draft the answer (or an operator note) and self-assess confidence.
+_GENERAL_ANSWER_PROMPT = (
+    "Ты — ассистент техподдержки GPSPOS (мониторинг транспорта Россетей). Тебе дали "
+    "исходную заявку и ФАКТЫ, собранные из системы мониторинга (статус объекта, "
+    "суточная статистика и т.п.). Опираясь ТОЛЬКО на эти факты и текст заявки: "
+    "(а) сформулируй проблему клиента; (б) дай вежливый черновик ответа на русском, "
+    "подставляя реальные числа из фактов; если данных не хватает — кратко скажи, что "
+    "оператору нужно ещё проверить, и заполни это в needs_more. Не выдумывай данные, "
+    "которых нет в фактах. Верни СТРОГО JSON без пояснений: "
+    '{"problem": "...", "answer": "...", "confidence": 0.0-1.0, '
+    '"reasoning": "...", "needs_more": "..."}'
+)
+
+
+# Maps PASS 1 intent → a human-readable category label for the operator UI.
+_INTENT_CATEGORY: dict[str, str] = {
+    "mileage": "Расхождение пробега",
+    "object_offline": "Объект не на связи",
+    "data_gap": "Нет данных",
+    "track_request": "Запрос трека",
+    "settings": "Настройки объекта",
+    "billing": "Биллинг/договор",
+    "other": "Общий разбор",
+}
+
+
 class IssueAutomationService:
     def __init__(self, okdesk: OkdeskService, geo: GpsposGeoService, llm: Any) -> None:
         self._okdesk = okdesk
@@ -504,63 +550,186 @@ class IssueAutomationService:
     async def _draft_general(self, title: str | None, description: str | None,
                              attachments_text: str | None = None,
                              sender: dict[str, Any] | None = None) -> AutomationResult:
-        """General-assistant fallback for issues the mileage path can't handle.
+        """Intent-routed, tool-using analyzer (bounded ReAct «control center»).
 
-        Reads the issue question (title + cleaned description + bounded
-        attachments) and asks the LLM to understand the problem, name the
-        missing data, and draft an answer (or an operator note). Always returns
-        a valid AutomationResult with needs_review=True; never raises.
+        Replaces the old single-shot fallback. Strictly bounded:
+          PASS 1 — one LLM call: classify intent + list needed data.
+          FETCH  — at most 3 cheap Geo tool calls (object lookup, status, daily
+                   stats) guided by ``needed`` + a parsed/guessed plate & date.
+          PASS 2 — one LLM call: draft the answer from the gathered facts.
+        Always returns a valid AutomationResult(needs_review=True); never raises.
         """
         body = _strip_html(description)
         att = (attachments_text or "").strip()
         att_block = f"\n\nТекст вложений:\n{att[:3000]}" if att else ""
-        user = (
-            (f"Отправитель: {json.dumps(sender, ensure_ascii=False)}\n\n" if sender else "")
+        sender_block = (
+            f"Отправитель: {json.dumps(sender, ensure_ascii=False)}\n\n" if sender else ""
+        )
+        question = (
+            sender_block
             + f"Тема заявки: {title or ''}\n\n"
             + f"Описание: {body or ''}"
             + att_block
-            + "\n\nОтвет строго в JSON."
         )
-        try:
-            raw = await self._llm.chat(_GENERAL_SYSTEM_PROMPT, user)
-            data = self._parse_llm_json(raw)
-        except Exception:  # pragma: no cover - never break automate
-            log.warning("draft_general_failed", title=(title or "")[:60])
-            data = {}
 
-        problem = str(data.get("problem") or "").strip()
-        answer = str(data.get("answer") or "").strip()
-        reasoning_raw = str(data.get("reasoning") or "").strip()
-        needed = data.get("needed_data")
-        if isinstance(needed, list):
-            needed_list = [str(x).strip() for x in needed if str(x).strip()]
-        elif needed:
-            needed_list = [str(needed).strip()]
-        else:
-            needed_list = []
+        # ---- PASS 1: intent + data needs --------------------------------
+        intent = "other"
+        needed: list[str] = []
+        plate_guess: str | None = None
+        date_guess: str | None = None
+        intent_reasoning = ""
         try:
-            confidence = float(data.get("confidence") or 0.0)
-        except (TypeError, ValueError):
-            confidence = 0.0
+            raw = await self._llm.chat(
+                _GENERAL_INTENT_PROMPT, question + "\n\nОтвет строго в JSON."
+            )
+            p1 = self._parse_llm_json(raw)
+            intent = str(p1.get("intent") or "other").strip().lower() or "other"
+            nd = p1.get("needed")
+            if isinstance(nd, list):
+                needed = [str(x).strip().lower() for x in nd if str(x).strip()]
+            plate_guess = (str(p1.get("plate_guess")).strip()
+                           if p1.get("plate_guess") else None)
+            date_guess = (str(p1.get("date_guess")).strip()
+                          if p1.get("date_guess") else None)
+            intent_reasoning = str(p1.get("reasoning") or "").strip()
+        except Exception:  # pragma: no cover - never break automate
+            log.warning("general_intent_failed", title=(title or "")[:60])
+
+        # ---- resolve plate & date (regex first, then model's guess) -----
+        parsed = self.parse_issue(title, description, None, extra_text=attachments_text)
+        plate = parsed.plate
+        if not plate and plate_guess:
+            cand = re.sub(r"[\s-]", "", plate_guess).upper()
+            if _PLATE_RE.search(cand) or _PLATE_FALLBACK_RE.search(cand):
+                plate = cand
+        if not plate:
+            all_plates = extract_all_plates(f"{title or ''} {body} {att}")
+            if all_plates:
+                plate = all_plates[0]
+        date = parsed.date
+        if not date and date_guess:
+            try:
+                date = _dt.date.fromisoformat(date_guess[:10]).isoformat()
+            except (ValueError, TypeError):
+                date = None
+
+        # ---- FETCH: at most 3 bounded Geo tool calls --------------------
+        facts: dict[str, Any] = {}
+        fetched: list[str] = []
+        failed: list[str] = []
+        obj: dict[str, Any] | None = None
+        object_name: str | None = None
+        object_id: int | None = None
+        want_status = (not needed) or ("object_status" in needed)
+        want_stats = "daily_stats" in needed or intent in ("mileage", "data_gap")
+
+        if plate and (want_status or want_stats):
+            try:  # tool 1: resolve object
+                obj = await self._geo.find_object_by_plate(plate)
+            except Exception:  # pragma: no cover - tool may fail
+                obj = None
+                failed.append("find_object")
+            if obj:
+                object_id = int(obj["id"])
+                object_name = obj.get("name")
+                facts["object_name"] = object_name
+                fetched.append("object")
+            else:
+                facts["object_lookup"] = "объект по гос.номеру не найден"
+
+        if object_id is not None and want_status:
+            try:  # tool 2: current status
+                st = await self._geo.get_object_status(object_id)
+                if st is not None:
+                    facts["status"] = {
+                        "online": st.online,
+                        "last_time_unix": st.time,
+                        "speed": st.speed,
+                        "sat": st.sat,
+                        "lat": st.lat,
+                        "lng": st.lng,
+                    }
+                    fetched.append("object_status")
+            except Exception:  # pragma: no cover - tool may fail
+                failed.append("object_status")
+
+        if object_id is not None and date and want_stats:
+            try:  # tool 3: daily stats for the given day
+                day = _dt.date.fromisoformat(date)
+                start = _dt.datetime.combine(day, _dt.time.min)
+                from_ms = int(start.timestamp() * 1000)
+                till_ms = int((start + _dt.timedelta(days=1)).timestamp() * 1000)
+                stats = await self._geo.get_daily_stats(object_id, from_ms, till_ms)
+                ymd = int(day.strftime("%Y%m%d"))
+                row = next((r for r in stats if r.get("day") == ymd),
+                           stats[0] if stats else None)
+                if row:
+                    facts["daily_stats"] = {
+                        "дата": date,
+                        "пробег_км": round(float(row.get("length") or 0) / 1000.0, 2),
+                        "макс_скорость": row.get("maxSpeed"),
+                        "время_в_движении_мин": round(
+                            float(row.get("moveTime") or 0) / 60000.0, 1),
+                    }
+                    fetched.append("daily_stats")
+                else:
+                    facts["daily_stats"] = "нет суточной статистики за дату"
+            except Exception:  # pragma: no cover - tool may fail
+                failed.append("daily_stats")
+
+        # ---- PASS 2: draft the answer from gathered facts ---------------
+        problem = ""
+        answer = ""
+        answer_reasoning = ""
+        needs_more = ""
+        confidence = 0.0
+        try:
+            facts_json = json.dumps(facts, ensure_ascii=False, default=str)
+            p2_user = (
+                question
+                + f"\n\nГос.номер: {plate or '—'}; дата: {date or '—'}; "
+                + f"намерение: {intent}\n\n"
+                + f"Собранные факты из системы (JSON):\n{facts_json}\n\n"
+                + "Ответ строго в JSON."
+            )
+            raw = await self._llm.chat(_GENERAL_ANSWER_PROMPT, p2_user)
+            p2 = self._parse_llm_json(raw)
+            problem = str(p2.get("problem") or "").strip()
+            answer = str(p2.get("answer") or "").strip()
+            answer_reasoning = str(p2.get("reasoning") or "").strip()
+            needs_more = str(p2.get("needs_more") or "").strip()
+            try:
+                confidence = float(p2.get("confidence") or 0.0)
+            except (TypeError, ValueError):
+                confidence = 0.0
+        except Exception:  # pragma: no cover - never break automate
+            log.warning("general_answer_failed", title=(title or "")[:60])
         confidence = max(0.0, min(confidence, 1.0))
 
-        # Summarize problem + needed data + model reasoning into one reasoning string.
-        parts: list[str] = []
+        # ---- assemble reasoning + result --------------------------------
+        parts: list[str] = [f"Намерение: {_INTENT_CATEGORY.get(intent, intent)}"]
         if problem:
             parts.append(f"Суть обращения: {problem}")
-        if needed_list:
-            parts.append("Не хватает данных: " + "; ".join(needed_list))
-        if reasoning_raw:
-            parts.append(reasoning_raw)
+        if fetched:
+            parts.append("Использованы данные: " + ", ".join(fetched))
+        if failed:
+            parts.append("Не удалось получить: " + ", ".join(failed))
+        if needs_more:
+            parts.append("Ещё нужно проверить: " + needs_more)
+        if answer_reasoning:
+            parts.append(answer_reasoning)
+        elif intent_reasoning:
+            parts.append(intent_reasoning)
         reasoning = " | ".join(parts) or (
-            "Общий разбор: не удалось распознать заявку как расхождение пробега. "
+            "Общий разбор: не удалось автоматически распознать заявку. "
             "Оператору нужно уточнить детали обращения."
         )
 
+        telemetry = TelemetryFacts(object_id=object_id, object_name=object_name)
         return AutomationResult(
-            parsed=ParsedIssue(),
-            telemetry=TelemetryFacts(),
-            category="Общий разбор",
+            parsed=ParsedIssue(plate=plate, date=date),
+            telemetry=telemetry,
+            category=_INTENT_CATEGORY.get(intent, "Общий разбор"),
             confidence=confidence,
             draft_answer=answer,
             reasoning=reasoning,

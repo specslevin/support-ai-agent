@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { IssuesListResponse, IssueDetail, Comment, Analysis, Template, AutomationResult, TrackData, IssueAttachment, BatchResult, TemplateValues } from '../types'
+import type { IssuesListResponse, IssueDetail, Comment, Analysis, Template, AutomationResult, TrackData, IssueAttachment, BatchResult, TemplateValues, ChatResponse } from '../types'
 
 const http = axios.create({
   baseURL: '/api/v1',
@@ -126,6 +126,10 @@ export const api = {
 
   bulkStatus(issue_ids: number[], status_code: string, comment?: string, delay_to?: string, comment_public = true): Promise<BulkResult> {
     return http.post('/issues/bulk/status', { issue_ids, status_code, comment, delay_to, comment_public }).then(r => r.data)
+  },
+
+  chat(message: string): Promise<ChatResponse> {
+    return http.post('/chat', { message }).then(r => r.data)
   },
 }
 

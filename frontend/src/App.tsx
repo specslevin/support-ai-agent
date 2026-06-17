@@ -1,10 +1,11 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useState } from 'react'
-import { ChevronDown, RefreshCw, ClipboardList, Phone, Truck, BarChart3, Settings, type LucideIcon } from 'lucide-react'
+import { ChevronDown, RefreshCw, ClipboardList, MessageSquare, Phone, Truck, BarChart3, Settings, type LucideIcon } from 'lucide-react'
 import { IssueFilters } from './components/IssueFilters'
 import { IssuesList } from './components/IssuesList'
 import { IssueDetail } from './components/IssueDetail'
 import { TrackPanel } from './components/TrackPanel'
+import { ChatPanel } from './components/ChatPanel'
 import { Sidebar, type Section } from './components/Sidebar'
 import { StubSection } from './components/StubSection'
 import { EmployeeMenu } from './components/pickers'
@@ -108,7 +109,18 @@ function Dashboard() {
           </div>
         </header>
 
-        {isIssues ? (
+        {section === 'chat' ? (
+          <div className="flex flex-1 min-h-0 relative">
+            <div className={`flex flex-col transition-all ${selectedIssueId ? 'w-3/5' : 'w-full'} min-h-0`}>
+              <ChatPanel />
+            </div>
+            {selectedIssueId && (
+              <div className="w-2/5 flex flex-col min-h-0 overflow-hidden border-l border-border">
+                <IssueDetail />
+              </div>
+            )}
+          </div>
+        ) : isIssues ? (
           <>
             {/* Filters */}
             <div className="px-6 py-3 border-b border-border shrink-0">
@@ -139,7 +151,7 @@ function Dashboard() {
             </div>
           </>
         ) : (
-          <StubSection section={section} />
+          <StubSection section={section as Exclude<Section, 'issues' | 'chat'>} />
         )}
       </div>
     </div>
@@ -147,12 +159,13 @@ function Dashboard() {
 }
 
 const SECTION_ICON: Record<Section, LucideIcon> = {
-  issues: ClipboardList, mango: Phone, installers: Truck, analytics: BarChart3, settings: Settings,
+  issues: ClipboardList, chat: MessageSquare, mango: Phone, installers: Truck, analytics: BarChart3, settings: Settings,
 }
 
 function sectionTitle(s: Section): string {
   const map: Record<Section, string> = {
     issues: 'Заявки',
+    chat: 'ИИ-чат',
     mango: 'Mango — звонки',
     installers: 'Выезды монтажников',
     analytics: 'Аналитика',
