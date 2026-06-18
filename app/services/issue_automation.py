@@ -280,6 +280,7 @@ class TelemetryFacts:
     last_message_date: str | None = None  # ISO: дата последнего выхода объекта на связь
     last_packet_msk: str | None = None  # HH:MM последнего пакета за дату (МСК)
     tail_gap_min: float | None = None  # разрыв от последнего пакета до конца суток, мин
+    day_profile: list[dict[str, Any]] | None = None  # профиль суток по 4-ч отрезкам
     flags: list[str] = field(default_factory=list)
 
 
@@ -544,6 +545,32 @@ class IssueAutomationService:
                 facts.last_packet_msk = _dt.datetime.fromtimestamp(last_ms / 1000.0, _MSK).strftime("%H:%M")
                 facts.tail_gap_min = round(max(0.0, (till_ms - last_ms) / 60000.0), 1)
 
+            # Профиль суток по 4-часовым отрезкам — чтобы ИИ «читал график»:
+            # как менялись напряжение и движение в течение дня (64281/64275).
+            seg_ms = 4 * 3600 * 1000
+            profile: list[dict[str, Any]] = []
+            for i in range(6):
+                b0 = from_ms + i * seg_ms
+                b1 = b0 + seg_ms
+                seg = [p for p in packets if b0 <= (p.get("time") or 0) < b1]
+                label = f"{i * 4:02d}–{i * 4 + 4:02d}"
+                if not seg:
+                    profile.append({"период": label, "статус": "нет данных"})
+                    continue
+                seg_v = [
+                    (p.get("tags") or {}).get("pwr_ext") for p in seg
+                    if isinstance(p.get("tags"), dict) and (p.get("tags") or {}).get("pwr_ext") is not None
+                ]
+                seg_v = [v for v in seg_v if v >= _GLITCH_V]
+                seg_speed = [p.get("speed") or 0 for p in seg]
+                profile.append({
+                    "период": label,
+                    "пакетов": len(seg),
+                    "напряжение_В": round(sum(seg_v) / len(seg_v), 1) if seg_v else None,
+                    "макс_скорость": max(seg_speed) if seg_speed else 0,
+                })
+            facts.day_profile = profile
+
             # speed spikes (spoofing): implausibly high reported speed
             speeds = [p.get("speed") or 0 for p in packets]
             facts.max_speed_packet = max(speeds) if speeds else 0
@@ -789,6 +816,8 @@ class IssueAutomationService:
                 "последний_пакет_мск": f.last_packet_msk,
                 "хвостовой_разрыв_мин": f.tail_gap_min,
             }
+        if f.day_profile:
+            facts["профиль_дня_по_4ч"] = f.day_profile
         system = (
             "Ты — ассистент техподдержки GPSPOS. По данным телеметрии классифицируй причину "
             "расхождения пробега и составь короткий вежливый ответ клиенту на русском. "
@@ -833,6 +862,9 @@ class IssueAutomationService:
             "пропало среди дня (после времени последнего пакета) и было восстановлено позже: ответь, что в указанную дату после "
             "<последний_пакет_мск> отсутствовало питающее напряжение на входах терминала, питание восстановлено <дата_возобновления>, "
             "трек за период отсутствия восстановить нельзя; категория «Не было питания». "
+            "Поле «профиль_дня_по_4ч» — это «график» суток по 4-часовым отрезкам (напряжение, макс.скорость, число пакетов): "
+            "читай его как телеметрический график — если в отрезках есть движение (макс_скорость>0) и нормальное напряжение (≈12–30 В), "
+            "значит питание БЫЛО (не пиши «нет питания»); «нет данных» в отрезке = в это время пакеты не поступали. "
             "Будь гибким в формулировках и опирайся на конкретику фактов, но НЕ выходи за рамки категорий каталога и не выдумывай данные. "
             "Держи ответ кратким (2–4 предложения), по делу, без воды. "
             "Не выдумывай данные, которых нет. Верни СТРОГО JSON без пояснений: "
