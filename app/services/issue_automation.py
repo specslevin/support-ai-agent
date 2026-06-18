@@ -141,61 +141,54 @@ def _parse_date_short(m: "re.Match[str]") -> str | None:
 def _parse_summary_table(text: str) -> list[tuple[str, str | None]]:
     """Parse a «сводное письмо» table (header contains «Дата выезда»).
 
-    Each ТС occupies one or more rows:
-      • The first row for a ТС contains a plate in the «Автомобиль, г/н» cell.
-      • Every data row contains a date (possibly a range like «DD.MM.YY - DD.MM.YY»
-        or «DD.MM.YYYY (HH:MM) - DD.MM.YYYY (HH:MM)»).
-      • «нет данных» means no Glonass data — we still want the plate, date=None
-        for that row, but we don't add a separate entry (the plate/date pair is
-        tracked separately for the plate; we only need ONE entry per plate).
+    Each ТС occupies one or more rows; one row = one «выезд» on its own date
+    (incl. «нет данных» rows, which still carry a date). One ТС may have SEVERAL
+    dates → SEVERAL records (по одному объекту несколько выездов по разным датам,
+    63317/О579СХ). We therefore emit ONE ``(plate, date)`` per distinct date row.
 
-    Returns a list of ``(plate, date_iso | None)`` pairs — one entry per
-    distinct plate, using the FIRST date found for that plate.  If a plate has
-    no valid date across all its rows, ``date_iso`` is None.
+    Returns a list of ``(plate, date_iso | None)`` pairs, deduped by
+    ``(plate, date)``. A plate that has no parseable date in any of its rows is
+    still emitted once as ``(plate, None)`` so it isn't silently dropped.
 
-    Strategy:
-      Line-by-line scan.  We track «current plate» and look for the first date
-      on that plate's rows.  A new plate is recognised by ``_PLATE_STD_RE``
-      appearing in the line (plates in these letters are always standard-format).
+    Strategy: line-by-line scan; ``_PLATE_STD_RE`` switches the «current plate»,
+    every parseable date under the current plate becomes a record.
     """
     results: list[tuple[str, str | None]] = []
-    seen_plates: set[str] = set()
+    seen_pairs: set[tuple[str, str | None]] = set()
+    plates_order: list[str] = []
+    plates_with_date: set[str] = set()
 
     current_plate: str | None = None
-    current_date: str | None = None  # first valid date for current_plate
-
-    def _flush() -> None:
-        nonlocal current_plate, current_date
-        if current_plate and current_plate not in seen_plates:
-            seen_plates.add(current_plate)
-            results.append((current_plate, current_date))
-        current_plate = None
-        current_date = None
 
     for line in text.splitlines():
         stripped = line.strip()
         if not stripped:
             continue
 
-        # Check whether this line introduces a new plate.
+        # Switch the current plate when a new one appears on the line.
         plate_match = _PLATE_STD_RE.search(stripped)
         if plate_match:
-            new_plate = re.sub(r"[\s-]", "", plate_match.group(0)).upper().translate(_PLATE_TRANSLIT)
-            if new_plate != current_plate:
-                _flush()
-                current_plate = new_plate
+            current_plate = re.sub(r"[\s-]", "", plate_match.group(0)).upper().translate(_PLATE_TRANSLIT)
+            if current_plate not in plates_order:
+                plates_order.append(current_plate)
 
-        # Extract the first date from the line (skip if we already have one
-        # for the current plate).
-        if current_plate and current_date is None:
+        # Each parseable date on the current plate's rows = a separate record.
+        if current_plate:
             dm = _DATE_SHORT_RE.search(stripped)
             if dm:
                 iso = _parse_date_short(dm)
                 if iso:
-                    current_date = iso
+                    key = (current_plate, iso)
+                    if key not in seen_pairs:
+                        seen_pairs.add(key)
+                        results.append((current_plate, iso))
+                        plates_with_date.add(current_plate)
 
-    # Don't forget the last plate.
-    _flush()
+    # Plates that appeared but never had a parseable date → emit once as None.
+    for p in plates_order:
+        if p not in plates_with_date:
+            results.append((p, None))
+
     return results
 
 
@@ -1477,12 +1470,15 @@ class IssueAutomationService:
                 })
                 continue
 
-            # Дедуп номеров (мульти-акт PDF может повторять номер в сегментах).
-            seen_plates: set[str] = set()
+            # Дедуп по ПАРЕ (номер, дата): один объект может иметь несколько
+            # выездов по разным датам (63317/О579СХ) — каждую дату разбираем
+            # отдельно; повторы той же пары (мульти-акт PDF) отсекаем.
+            seen_pairs: set[tuple[str, str | None]] = set()
             for plate, pdate, psheet in targets:
-                if plate in seen_plates:
+                key = (plate, pdate)
+                if key in seen_pairs:
                     continue
-                seen_plates.add(plate)
+                seen_pairs.add(key)
                 try:
                     results.append(await self._analyze_object(
                         plate, pdate, psheet, address, name,

@@ -903,6 +903,9 @@ function BatchAnalysis({ issueId, onUseDraft, onOpenExternal }: { issueId: numbe
   const queryClient = useQueryClient()
   const isDemo = useAuthStore(s => s.user?.role === 'demo')
   const openTrack = useIssuesStore(s => s.openTrack)
+  const trackOpen = useIssuesStore(s => s.trackOpen)
+  const trackPlate = useIssuesStore(s => s.trackPlate)
+  const trackDate = useIssuesStore(s => s.trackDate)
   const batchChildren = useIssuesStore(s => s.batchChildren)
   const setBatchChild = useIssuesStore(s => s.setBatchChild)
   const clearBatchChildren = useIssuesStore(s => s.clearBatchChildren)
@@ -1062,7 +1065,7 @@ function BatchAnalysis({ issueId, onUseDraft, onOpenExternal }: { issueId: numbe
                   const isLoading = !!o.plate && loadingPlates.has(o.plate)
                   const isVerdictLoading = !!o.plate && verdictLoading.has(o.plate)
                   return (
-                    <tr key={idx} className="border-t border-border/50">
+                    <tr key={idx} className={`border-t border-border/50 ${trackOpen && trackPlate === o.plate && trackDate === o.date ? 'bg-accent/10 border-l-2 border-l-accent/60' : ''}`}>
                       <td className="py-1 pr-2 font-mono">{o.plate ?? '—'}</td>
                       <td className="pr-2">{o.date ?? '—'}</td>
                       <td className="pr-2">{o.sheet_mileage_km ?? '—'}</td>
@@ -1133,11 +1136,13 @@ function BatchAnalysis({ issueId, onUseDraft, onOpenExternal }: { issueId: numbe
             </table>
           </div>
           {isAggregate && (
+            <p className="flex items-start gap-1.5 text-[11px] text-muted leading-relaxed">
+              <Info size={13} className="shrink-0 mt-0.5 text-info" />
+              <span>Агрегатная заявка (ОДКР) — отвечаем одним ответом по всем объектам, без разбивки на дочерние.</span>
+            </p>
+          )}
+          {(res?.objects?.length ?? 0) >= 2 && (
             <>
-              <p className="flex items-start gap-1.5 text-[11px] text-muted leading-relaxed">
-                <Info size={13} className="shrink-0 mt-0.5 text-info" />
-                <span>Агрегатная заявка (ОДКР) — отвечаем одним ответом по всем объектам, без разбивки на дочерние.</span>
-              </p>
               <button
                 onClick={() => composeMut.mutate()}
                 disabled={composeMut.isPending || isDemo}
