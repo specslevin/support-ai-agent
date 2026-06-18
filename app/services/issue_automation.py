@@ -24,6 +24,10 @@ log = structlog.get_logger(__name__)
 
 # Voltage below this on the external power input is treated as "power off".
 _POWER_OFF_V = 7.0
+# Readings below this are implausible glitches (sensor noise / dropped frame),
+# NOT a real "0 volts" — excluded from min/avg voltage so the answer doesn't
+# claim «0 В» while the terminal actually reported 27 В (see 64281).
+_GLITCH_V = 2.0
 # Satellites below this means effectively no reliable GPS fix.
 _MIN_SAT = 4
 # A gap in telemetry longer than this (minutes) during the day is a track break.
@@ -521,8 +525,12 @@ class IssueAutomationService:
             facts.avg_sat = round(sum(sats) / len(sats), 1)
             facts.low_sat_ratio = round(sum(1 for s in sats if s < _MIN_SAT) / len(sats), 2)
             if powers:
-                facts.min_power_v = round(min(powers), 1)
-                facts.avg_power_v = round(sum(powers) / len(powers), 1)
+                # min/avg по ВАЛИДНЫМ показаниям (≥ _GLITCH_V): битые near-zero
+                # пакеты не должны давать «мин. напряжение 0 В» при реальных 27 В.
+                valid_powers = [v for v in powers if v >= _GLITCH_V]
+                ref = valid_powers or powers
+                facts.min_power_v = round(min(ref), 1)
+                facts.avg_power_v = round(sum(ref) / len(ref), 1)
                 facts.power_off_ratio = round(sum(1 for v in powers if v < _POWER_OFF_V) / len(powers), 2)
             moving_zero = sum(
                 1 for p in packets
@@ -630,7 +638,13 @@ class IssueAutomationService:
 
     @staticmethod
     def _derive_flags(f: TelemetryFacts) -> None:
-        if f.power_off_ratio and f.power_off_ratio > 0.2:
+        # Движение = питание точно было. Используется и для power_off, и для jamming.
+        moving = bool((f.system_mileage_km or 0) > 0.5 or (f.move_time_min or 0) > 1)
+        # «Не было питания» НЕ ставим, если ТС реально двигалось: движущийся
+        # терминал запитан, а доля низких показаний — это битые near-zero пакеты
+        # датчика, а не отсутствие питания (64281). Реальное отключение питания —
+        # это стоящее ТС с устойчиво низким напряжением.
+        if f.power_off_ratio and f.power_off_ratio > 0.2 and not moving:
             f.flags.append("power_off")
         # Jamming = the GPS POSITION is corrupted: track shots (teleports) and/or
         # loss of satellites. Isolated speed spikes alone are NOT enough — a
@@ -641,8 +655,7 @@ class IssueAutomationService:
         # двигалось: у СТОЯЩЕГО терминала мало спутников — норма (плохой обзор неба
         # на стоянке), а не глушение. Иначе припаркованное авто с потерей питания
         # среди дня ложно помечалось «Глушение» (64275). Телепорты (явный спуфинг)
-        # остаются признаком глушения независимо от движения.
-        moving = bool((f.system_mileage_km or 0) > 0.5 or (f.move_time_min or 0) > 1)
+        # остаются признаком глушения независимо от движения (``moving`` выше).
         jamming = (
             f.teleport_jumps >= 5
             or (f.max_implied_kmh is not None and f.max_implied_kmh > 500 and f.teleport_jumps >= 2)
