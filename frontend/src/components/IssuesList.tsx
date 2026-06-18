@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { ChevronDown, ChevronLeft, ChevronRight, Check, X } from 'lucide-react'
 import { api } from '../api/client'
 import { useIssuesStore } from '../store/issuesStore'
+import { useAuthStore } from '../store/authStore'
 import { StatusBadge } from './StatusBadge'
 import { TemplatePicker } from './IssueDetail'
 import { EmployeeMenu, TypeMenu } from './pickers'
@@ -47,6 +48,7 @@ function Dropdown({ label, children }: { label: string; children: (close: () => 
 
 function BulkActionBar() {
   const { checkedIds, clearChecked } = useIssuesStore()
+  const isDemo = useAuthStore(s => s.user?.role === 'demo')
   const queryClient = useQueryClient()
   const [comment, setComment] = useState('')
   const [notice, setNotice] = useState<string | null>(null)
@@ -85,31 +87,36 @@ function BulkActionBar() {
     <div className="flex items-center gap-2 px-4 py-2 bg-accent/10 border-b border-accent/30 flex-wrap">
       <span className="text-xs font-semibold text-white">{checkedIds.length} выбрано</span>
       {busy && <span className="text-[10px] text-muted animate-pulse">применяю...</span>}
+      {isDemo && <span className="text-[10px] text-warning/80">Демо: массовые изменения недоступны</span>}
 
-      <Dropdown label="Ответственный">
-        {(close) => <EmployeeMenu onPick={emp => { assign.mutate(emp.id); close() }} />}
-      </Dropdown>
+      {!isDemo && (
+        <>
+          <Dropdown label="Ответственный">
+            {(close) => <EmployeeMenu onPick={emp => { assign.mutate(emp.id); close() }} />}
+          </Dropdown>
 
-      <Dropdown label="Тип">
-        {(close) => <TypeMenu onPick={t => { setType.mutate(t.code); close() }} />}
-      </Dropdown>
+          <Dropdown label="Тип">
+            {(close) => <TypeMenu onPick={t => { setType.mutate(t.code); close() }} />}
+          </Dropdown>
 
-      <Dropdown label="Статус">
-        {(close) => BULK_STATUSES.map(s => (
-          <button key={s.code} onClick={() => { setStatus.mutate(s.code); close() }}
-            className="w-full text-left px-4 py-1.5 text-xs text-white hover:bg-white/5">{s.label}</button>
-        ))}
-      </Dropdown>
+          <Dropdown label="Статус">
+            {(close) => BULK_STATUSES.map(s => (
+              <button key={s.code} onClick={() => { setStatus.mutate(s.code); close() }}
+                className="w-full text-left px-4 py-1.5 text-xs text-white hover:bg-white/5">{s.label}</button>
+            ))}
+          </Dropdown>
 
-      <div className="flex items-center gap-1.5 flex-1 min-w-[180px]">
-        <input
-          value={comment}
-          onChange={e => setComment(e.target.value)}
-          placeholder="Комментарий (для статуса)"
-          className="flex-1 bg-base border border-border rounded px-2.5 py-1 text-xs focus:outline-none focus:border-accent"
-        />
-        <TemplatePicker onSelect={text => setComment(text)} />
-      </div>
+          <div className="flex items-center gap-1.5 flex-1 min-w-[180px]">
+            <input
+              value={comment}
+              onChange={e => setComment(e.target.value)}
+              placeholder="Комментарий (для статуса)"
+              className="flex-1 bg-base border border-border rounded px-2.5 py-1 text-xs focus:outline-none focus:border-accent"
+            />
+            <TemplatePicker onSelect={text => setComment(text)} />
+          </div>
+        </>
+      )}
 
       <button onClick={clearChecked} className="flex items-center gap-1 text-xs text-muted hover:text-white px-2"><X size={13} /> снять</button>
     </div>

@@ -67,3 +67,52 @@ class OkdeskClient:
         r = await self._client.get(url, follow_redirects=True)
         r.raise_for_status()
         return r.content, r.headers.get("content-type", "application/octet-stream")
+
+    async def upload_attachment(
+        self,
+        issue_id: int,
+        filename: str,
+        content: bytes,
+        content_type: str = "application/octet-stream",
+    ) -> dict[str, Any] | None:
+        """Upload a file to an issue as an attachment.
+
+        Okdesk supports ``POST /api/v1/issues/{id}/attachments`` with
+        multipart/form-data.  The file field must be named ``attachment_file``.
+        If the endpoint is unavailable (404/422) we fall back to attaching the
+        file via a private comment with ``attachment_file`` in the multipart
+        body of ``POST /api/v1/issues/{id}/comments``.
+
+        Returns the parsed JSON response, or None on failure (caller should
+        log and continue — not raise).
+        """
+        url_direct = f"{self._base_url}/issues/{issue_id}/attachments"
+        params = {"api_token": self._token}
+        files = {"attachment_file": (filename, content, content_type)}
+
+        r = await self._client.post(url_direct, params=params, files=files, timeout=60.0)
+
+        if r.status_code in (404, 405, 422):
+            # Endpoint not available for this Okdesk plan/version — fallback:
+            # create a private (internal) comment that carries the file.
+            url_comment = f"{self._base_url}/issues/{issue_id}/comments"
+            data_fields = {
+                "comment[content]": f"[Вложение из родительской заявки: {filename}]",
+                "comment[public]": "false",
+            }
+            r = await self._client.post(
+                url_comment,
+                params=params,
+                data=data_fields,
+                files={"comment[attachments][][attachment_file]": (filename, content, content_type)},
+                timeout=60.0,
+            )
+
+        if r.status_code >= 400:
+            print(f"[Okdesk] upload_attachment failed {r.status_code}: {r.text[:200]}")
+            return None
+
+        try:
+            return r.json()
+        except Exception:
+            return {"status": r.status_code}

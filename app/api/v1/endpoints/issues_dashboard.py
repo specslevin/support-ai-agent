@@ -647,7 +647,8 @@ async def automate_batch(
         objects: list[dict[str, object]] = []
         note: str | None = None
         try:
-            objects = await automation.analyze_batch(external_id, live.attachments)
+            objects = await automation.analyze_batch(external_id, live.attachments,
+                                                     issue_title=live.title)
         except Exception:
             # analyze_batch is best-effort and shouldn't raise, but guard anyway
             # so a single bad attachment never turns into a 500 «Ошибка разбора».
@@ -739,7 +740,8 @@ async def compose_answer(
             objects = cached["data"]["objects"]
         else:
             live = await okdesk.get_issue(external_id)
-            objects = await automation.analyze_batch(external_id, live.attachments)
+            objects = await automation.analyze_batch(external_id, live.attachments,
+                                                     issue_title=live.title)
 
         # Best-effort: surface prior resolved answers for the same vehicles so
         # the aggregate stays consistent with what the client was told before.
@@ -759,6 +761,75 @@ async def compose_answer(
     except Exception:
         log.exception("compose_answer_failed", issue_id=issue_id)
         raise HTTPException(status_code=500, detail="Failed to compose answer")
+
+
+async def _attach_source_file_to_child(
+    *,
+    okdesk: OkdeskService,
+    parent_external_id: int,
+    parent_attachments: list,
+    child_id: int,
+    source_filename: str | None,
+) -> None:
+    """Download the matching attachment from the parent and upload it to the child.
+
+    Matching strategy:
+    1. If *source_filename* is provided — find attachments whose
+       ``attachment_file_name`` equals it (case-insensitive).
+    2. If nothing matches (or no filename given) — attach ALL parent attachments
+       as a best-effort fallback (avoids losing the source data).
+    Deduplication: we track what we've already uploaded by attachment id.
+    """
+    if not parent_attachments:
+        return
+
+    # Determine which attachments to copy.
+    candidates = []
+    if source_filename:
+        needle = source_filename.lower()
+        candidates = [
+            a for a in parent_attachments
+            if a.attachment_file_name and a.attachment_file_name.lower() == needle
+        ]
+
+    if not candidates:
+        # Fallback: attach all parent attachments (but skip duplicates later).
+        candidates = list(parent_attachments)
+
+    seen_ids: set[int] = set()
+    for attachment in candidates:
+        if attachment.id in seen_ids:
+            continue
+        seen_ids.add(attachment.id)
+
+        result = await okdesk.download_attachment(parent_external_id, attachment.id)
+        if result is None:
+            log.warning(
+                "source_attachment_download_failed",
+                parent_id=parent_external_id,
+                attachment_id=attachment.id,
+            )
+            continue
+
+        file_bytes, content_type = result
+        filename = attachment.attachment_file_name or f"attachment_{attachment.id}"
+
+        upload_result = await okdesk.upload_attachment(
+            child_id, filename, file_bytes, content_type
+        )
+        if upload_result is None:
+            log.warning(
+                "source_attachment_upload_failed",
+                child_id=child_id,
+                filename=filename,
+            )
+        else:
+            log.info(
+                "source_attachment_copied",
+                parent_id=parent_external_id,
+                child_id=child_id,
+                filename=filename,
+            )
 
 
 @router.post("/{issue_id}/create_children")
@@ -812,6 +883,25 @@ async def create_children(
             except Exception:
                 log.warning("create_child_failed", plate=obj.plate)
                 created.append({"plate": obj.plate, "ok": False})
+                continue
+
+            # Best-effort: attach the source file from the parent issue to the
+            # newly created child.  Failure must NOT break issue creation.
+            try:
+                await _attach_source_file_to_child(
+                    okdesk=okdesk,
+                    parent_external_id=external_id,
+                    parent_attachments=parent.attachments,
+                    child_id=child.id,
+                    source_filename=obj.file,
+                )
+            except Exception:
+                log.warning(
+                    "attach_source_file_failed",
+                    plate=obj.plate,
+                    child_id=child.id,
+                )
+
         ok = sum(1 for c in created if c["ok"])
         return {"ok": True, "created": ok, "failed": len(created) - ok, "results": created}
     except HTTPException:

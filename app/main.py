@@ -13,9 +13,10 @@ from aiogram import Dispatcher
 from aiogram.types import Update
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from .api.v1.router import api_v1_router
+from .core.auth import AuthConfig, verify_token
 from .core.ai.agent import AIAgent
 from .core.db.database import AsyncSessionLocal, init_db
 from .core.db.sync import sync_companies
@@ -84,6 +85,7 @@ async def lifespan(app: FastAPI):
     app.state.okdesk_service = okdesk_service
     app.state.ai_agent = ai_agent
     app.state.gpspos_geo_service = geo_service
+    app.state.auth_config = AuthConfig()
 
     async def _cache_refresh_loop(interval: int = 300) -> None:
         _log = structlog.get_logger("cache_refresh")
@@ -194,6 +196,38 @@ app = FastAPI(
     redoc_url="/redoc",
     lifespan=lifespan,
 )
+
+
+# Paths under /api/v1 that must stay open: login itself, the external Okdesk
+# webhook (carries its own X-Okdesk-Secret) and the test route (own X-Test-Token).
+_AUTH_PUBLIC_PREFIXES = ("/api/v1/auth/login", "/api/v1/webhooks", "/api/v1/test")
+_DEMO_WRITE_ALLOWED_METHODS = ("GET", "HEAD", "OPTIONS")
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    """Enforce a valid token on /api/v1 routes; block writes for the demo role.
+
+    Non-API paths (SPA, static, /health, /docs, Telegram webhook) are untouched —
+    the React app must load so the user can reach the login screen.
+    """
+    path = request.url.path
+    if path.startswith("/api/v1/") and not path.startswith(_AUTH_PUBLIC_PREFIXES):
+        if request.method == "OPTIONS":
+            return await call_next(request)
+        cfg = getattr(request.app.state, "auth_config", None)
+        auth_header = request.headers.get("Authorization", "")
+        token = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else None
+        payload = verify_token(token, cfg.secret) if cfg else None
+        if not payload:
+            return JSONResponse({"detail": "Не авторизовано"}, status_code=401)
+        request.state.user = payload
+        if payload.get("r") == "demo" and request.method not in _DEMO_WRITE_ALLOWED_METHODS:
+            return JSONResponse(
+                {"detail": "Демо-режим: только просмотр. Изменения недоступны."},
+                status_code=403,
+            )
+    return await call_next(request)
 
 
 @app.get("/health", tags=["health"])

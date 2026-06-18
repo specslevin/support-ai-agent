@@ -7,6 +7,64 @@ const http = axios.create({
   timeout: 90_000,
 })
 
+// Attach auth token to every request
+http.interceptors.request.use((config) => {
+  // Import lazily to avoid circular dependency at module init
+  const raw = localStorage.getItem('auth')
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as { state?: { token?: string } }
+      const token = parsed?.state?.token
+      if (token) {
+        config.headers = config.headers ?? {}
+        config.headers['Authorization'] = `Bearer ${token}`
+      }
+    } catch {
+      // ignore malformed storage
+    }
+  }
+  return config
+})
+
+// Global 401 → logout; 403 → demo-mode notification
+http.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (axios.isAxiosError(error)) {
+      if (error.response?.status === 401) {
+        // Clear auth state and trigger re-render via storage event
+        localStorage.removeItem('auth')
+        // Dispatch a custom event so App.tsx can react without hard reload
+        window.dispatchEvent(new Event('auth:logout'))
+      }
+      if (error.response?.status === 403) {
+        window.dispatchEvent(
+          new CustomEvent('auth:demo-blocked', {
+            detail: error.response.data?.detail ?? 'Демо-режим: только просмотр. Изменения недоступны.',
+          })
+        )
+      }
+    }
+    return Promise.reject(error)
+  }
+)
+
+// Auth-specific API calls
+export interface LoginResponse {
+  token: string
+  user: { username: string; role: 'admin' | 'demo' }
+}
+
+export const authApi = {
+  login(username: string, password: string): Promise<LoginResponse> {
+    return http.post('/auth/login', { username, password }).then(r => r.data)
+  },
+
+  getMe(): Promise<{ username: string; role: 'admin' | 'demo' }> {
+    return http.get('/auth/me').then(r => r.data)
+  },
+}
+
 export interface IssuesQuery {
   status?: string
   company?: string

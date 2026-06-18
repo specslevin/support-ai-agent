@@ -4,6 +4,7 @@ import {
   Plus, Search, Star, Trash2, Pencil, X, Check, Sparkles, FileText, Loader2,
 } from 'lucide-react'
 import { api } from '../api/client'
+import { useAuthStore } from '../store/authStore'
 import type { Template, TemplateCreate } from '../types'
 import { hasPlaceholders } from '../lib/templates'
 
@@ -185,6 +186,7 @@ function TemplateForm({
 
 export function TemplatesManager() {
   const queryClient = useQueryClient()
+  const isDemo = useAuthStore(s => s.user?.role === 'demo')
   const [search, setSearch] = useState('')
   const [form, setForm] = useState<FormState | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null)
@@ -234,8 +236,10 @@ export function TemplatesManager() {
           </h2>
           <span className="text-xs text-muted">{templates.length}</span>
           <button
-            onClick={() => setForm({ ...EMPTY_FORM })}
-            className="ml-auto flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-accent text-black rounded-lg hover:opacity-90 transition-opacity"
+            onClick={() => !isDemo && setForm({ ...EMPTY_FORM })}
+            disabled={isDemo}
+            title={isDemo ? 'Недоступно в демо-режиме' : undefined}
+            className={`ml-auto flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-accent text-black rounded-lg hover:opacity-90 transition-opacity disabled:opacity-40 ${isDemo ? 'cursor-not-allowed' : ''}`}
           >
             <Plus size={14} /> Создать шаблон
           </button>
@@ -271,9 +275,10 @@ export function TemplatesManager() {
                     <div key={t.id} className="bg-card border border-border rounded-lg px-3 py-2.5 space-y-1.5">
                       <div className="flex items-center gap-2">
                         <button
-                          onClick={() => favMut.mutate({ id: t.id, value: !t.is_favorite })}
-                          title={t.is_favorite ? 'Убрать из избранного' : 'В избранное'}
-                          className="shrink-0 text-muted hover:text-warning transition-colors"
+                          onClick={() => !isDemo && favMut.mutate({ id: t.id, value: !t.is_favorite })}
+                          title={isDemo ? 'Недоступно в демо-режиме' : (t.is_favorite ? 'Убрать из избранного' : 'В избранное')}
+                          disabled={isDemo}
+                          className={`shrink-0 text-muted hover:text-warning transition-colors ${isDemo ? 'cursor-not-allowed' : ''}`}
                         >
                           <Star size={14} className={t.is_favorite ? 'text-warning fill-warning' : ''} />
                         </button>
@@ -287,18 +292,20 @@ export function TemplatesManager() {
                           </span>
                         )}
                         {t.usage_count > 0 && <span className="text-[10px] text-muted shrink-0">{t.usage_count}</span>}
-                        <button
-                          onClick={() => setForm({
-                            id: t.id, name: t.name, content: t.content,
-                            category_id: t.category_id ?? null,
-                            is_dynamic: t.is_dynamic, is_favorite: t.is_favorite,
-                          })}
-                          title="Редактировать"
-                          className="shrink-0 text-muted hover:text-accent transition-colors"
-                        >
-                          <Pencil size={13} />
-                        </button>
-                        {confirmDelete === t.id ? (
+                        {!isDemo && (
+                          <button
+                            onClick={() => setForm({
+                              id: t.id, name: t.name, content: t.content,
+                              category_id: t.category_id ?? null,
+                              is_dynamic: t.is_dynamic, is_favorite: t.is_favorite,
+                            })}
+                            title="Редактировать"
+                            className="shrink-0 text-muted hover:text-accent transition-colors"
+                          >
+                            <Pencil size={13} />
+                          </button>
+                        )}
+                        {!isDemo && (confirmDelete === t.id ? (
                           <span className="flex items-center gap-1 shrink-0">
                             <button
                               onClick={() => deleteMut.mutate(t.id)}
@@ -317,7 +324,7 @@ export function TemplatesManager() {
                           >
                             <Trash2 size={13} />
                           </button>
-                        )}
+                        ))}
                       </div>
                       <p className="text-[11px] text-muted line-clamp-2 leading-relaxed whitespace-pre-wrap">{t.content}</p>
                     </div>

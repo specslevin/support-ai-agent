@@ -84,6 +84,7 @@ class ChildIssueItem(BaseModel):
     sheet_mileage_km: float | None = None
     system_mileage_km: float | None = None
     verdict: str | None = None
+    file: str | None = None  # Source attachment filename (used to copy attachment to child)
 
 
 class CreateChildren(BaseModel):

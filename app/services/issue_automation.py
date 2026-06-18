@@ -34,6 +34,32 @@ _TELEPORT_KMH = 150
 # Plausible top speed (km/h) for the tracked vehicles; spikes above = spoofing.
 _SPEED_SPIKE_KMH = 110
 
+# Trackers/Okdesk report in Moscow time (UTC+3); the prod server runs in UTC.
+# Day windows MUST be built in MSK — otherwise the daily window is shifted by 3h
+# and DailyStat.day / packet windows miss the real Moscow day, producing a false
+# «нет данных» even when data exists (see 64284).
+_MSK = _dt.timezone(_dt.timedelta(hours=3))
+
+
+def _msk_day_window_ms(day: _dt.date) -> tuple[int, int]:
+    """[00:00; 24:00) of ``day`` in Moscow time, as unix-ms for the Geo API."""
+    start = _dt.datetime.combine(day, _dt.time.min, tzinfo=_MSK)
+    end = start + _dt.timedelta(days=1)
+    return int(start.timestamp() * 1000), int(end.timestamp() * 1000)
+
+
+def _msk_today() -> _dt.date:
+    return _dt.datetime.now(_MSK).date()
+
+
+def _msk_date_from_ms(ms: float) -> _dt.date:
+    return _dt.datetime.fromtimestamp(ms / 1000.0, _MSK).date()
+
+
+# Latin lookalikes → Cyrillic, so a plate parsed as "Y538OK" normalises to
+# "У538ОК" — consistent with geo object matching and the batch path (64250).
+_PLATE_TRANSLIT = str.maketrans("ABEKMHOPCTYX", "АВЕКМНОРСТУХ")
+
 
 def _haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     r = 6371000.0
@@ -78,6 +104,21 @@ def extract_all_plates(text: str, limit: int = 40) -> list[str]:
             if len(out) >= limit:
                 break
     return out
+
+
+def _split_acts(text: str) -> list[str]:
+    """Split a multi-act PDF into per-act segments by the «Акт №» marker.
+
+    A single forwarded PDF often bundles several acts (one vehicle each), each
+    with its OWN «Дата неисправности» and waybill. Parsing the whole text gives
+    every vehicle the FIRST act's date (64250). Splitting lets each vehicle take
+    the date/mileage from its own act. Returns the whole text as one segment if
+    there is no «Акт №» marker.
+    """
+    parts = re.split(r"(?=\bАкт\s+№)", text or "", flags=re.I)
+    return [p for p in parts if p.strip()]
+
+
 _DATE_RE = re.compile(r"(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{4})")
 # Mileage figure inside a comment («пробег … 49 км по ССМ ГЛОНАСС 0 км»):
 # a number immediately followed by км/м. Used only to confirm a comment is
@@ -163,6 +204,7 @@ class TelemetryFacts:
     speed_spike_count: int = 0  # пакетов со скоростью > _SPEED_SPIKE_KMH
     teleport_jumps: int = 0  # «прострелы» трека (телепорты координат)
     max_implied_kmh: float | None = None  # макс расчётная скорость между точками
+    last_message_date: str | None = None  # ISO: дата последнего выхода объекта на связь
     flags: list[str] = field(default_factory=list)
 
 
@@ -284,7 +326,7 @@ class IssueAutomationService:
         m = (_PLATE_RE.search(title) or _PLATE_FALLBACK_RE.search(title)
              or _PLATE_RE.search(text) or _PLATE_FALLBACK_RE.search(text))
         if m:
-            parsed.plate = re.sub(r"[\s-]", "", m.group(0)).upper()
+            parsed.plate = re.sub(r"[\s-]", "", m.group(0)).upper().translate(_PLATE_TRANSLIT)
 
         # Fault-date detection. The fault date is rarely the first date in the
         # text — that's usually the report/send/act date (e.g. Волжское ПО акты:
@@ -320,8 +362,8 @@ class IssueAutomationService:
             _from_match(re.search(_fault + d, text, re.I | re.S))
             or _from_iso(re.search(_fault + iso, text, re.I | re.S))
             or _from_match(re.search(r"в\s+системе(?:\s+с)?[^\d]{0,20}" + d, text, re.I))
-            or _from_match(re.search(r"за\s*" + d, text, re.I))
-            or _from_iso(re.search(r"за\s*" + iso, text, re.I))
+            or _from_match(re.search(r"(?<!период\s)за\s*" + d, text, re.I))
+            or _from_iso(re.search(r"(?<!период\s)за\s*" + iso, text, re.I))
             or _from_match(_DATE_RE.search(title))
             or _from_match(_DATE_RE.search(text))
             or _from_iso(re.search(iso, text))
@@ -373,14 +415,13 @@ class IssueAutomationService:
         facts.object_name = obj.get("name")
 
         day = _dt.date.fromisoformat(iso_date)
-        start = _dt.datetime.combine(day, _dt.time.min)
-        end = start + _dt.timedelta(days=1)
-        from_ms = int(start.timestamp() * 1000)
-        till_ms = int(end.timestamp() * 1000)
+        from_ms, till_ms = _msk_day_window_ms(day)
 
         stats = await self._geo.get_daily_stats(oid, from_ms, till_ms)
         ymd = int(day.strftime("%Y%m%d"))
-        row = next((r for r in stats if r.get("day") == ymd), stats[0] if stats else None)
+        # No stats[0] fallback: borrowing a neighbouring day's row reports the
+        # wrong day's mileage (64284). If the exact day is absent, treat as none.
+        row = next((r for r in stats if r.get("day") == ymd), None)
         if row:
             facts.system_mileage_km = round(float(row.get("length") or 0) / 1000.0, 2)
             facts.max_speed = row.get("maxSpeed")
@@ -447,6 +488,17 @@ class IssueAutomationService:
                 facts.system_mileage_km = round(track_m / 1000.0, 2)
 
         self._derive_flags(facts)
+        # Если данных за указанную дату нет — узнаём, когда объект последний раз
+        # выходил на связь. Это вход в алгоритм: молчит ли он ещё ДО даты (давно
+        # оффлайн → диагностика) или выходил ПОЗЖЕ (питания не было, потом дали).
+        if facts.packets == 0:
+            try:
+                st = await self._geo.get_object_status(oid)
+                last_ts = getattr(st, "time", None) if st else None
+                if last_ts:
+                    facts.last_message_date = _msk_date_from_ms(last_ts).isoformat()
+            except Exception:  # pragma: no cover - best effort, never break analysis
+                log.warning("object_status_failed", object_id=oid)
         return facts
 
     async def _verify_data_resumed(self, object_id: int, fault_date: str,
@@ -472,15 +524,13 @@ class IssueAutomationService:
         """
         try:
             start_day = _dt.date.fromisoformat(fault_date) + _dt.timedelta(days=1)
-            today = _dt.date.today()
+            today = _msk_today()
             end_day = min(today, _dt.date.fromisoformat(fault_date)
                           + _dt.timedelta(days=max_days))
             if end_day < start_day:
                 return None
-            start = _dt.datetime.combine(start_day, _dt.time.min)
-            end = _dt.datetime.combine(end_day, _dt.time.min) + _dt.timedelta(days=1)
-            from_ms = int(start.timestamp() * 1000)
-            till_ms = int(end.timestamp() * 1000)
+            from_ms, _ = _msk_day_window_ms(start_day)
+            _, till_ms = _msk_day_window_ms(end_day)
             packets = await self._geo.get_packets(object_id, from_ms, till_ms)
             resumed_on: str | None = None
             first_ts = min(
@@ -489,7 +539,7 @@ class IssueAutomationService:
                 default=None,
             )
             if first_ts is not None:
-                resumed_on = _dt.date.fromtimestamp(first_ts / 1000.0).isoformat()
+                resumed_on = _msk_date_from_ms(first_ts).isoformat()
             return {
                 "данные_возобновились": resumed_on is not None,
                 "дата_возобновления": resumed_on,
@@ -613,6 +663,22 @@ class IssueAutomationService:
         # telemetry gathered for that date too; analyze the freshest date.
         if comment_date_facts is not None:
             facts["данные_за_дату_из_комментария"] = comment_date_facts
+        # Детерминированная ветка «нет данных за дату» (алгоритм оператора):
+        # сравниваем дату последней связи объекта с датой неисправности, чтобы
+        # модель выбрала между диагностикой (объект давно молчит) и «не было
+        # питания, восстановлено позже».
+        if "no_data" in (f.flags or []):
+            situation: dict[str, Any] = {"данные_за_дату": "отсутствуют"}
+            if f.last_message_date:
+                situation["дата_последнего_сообщения"] = f.last_message_date
+                if parsed.date:
+                    if f.last_message_date < parsed.date:
+                        situation["последнее_сообщение_относительно_даты"] = "раньше_даты_неисправности"
+                    elif f.last_message_date > parsed.date:
+                        situation["последнее_сообщение_относительно_даты"] = "позже_даты_неисправности"
+                    else:
+                        situation["последнее_сообщение_относительно_даты"] = "в_дату_неисправности"
+            facts["ситуация_с_данными"] = situation
         system = (
             "Ты — ассистент техподдержки GPSPOS. По данным телеметрии классифицируй причину "
             "расхождения пробега и составь короткий вежливый ответ клиенту на русском. "
@@ -645,6 +711,15 @@ class IssueAutomationService:
             "и рекомендуй ВЫЕЗД бригады специалистов для диагностики на месте (а не повторную удалённую диагностику). "
             "(г) если в фактах есть «данные_за_дату_из_комментария» — клиент в комментарии указал НОВУЮ дату "
             "расхождения; анализируй именно её (самую свежую) и отвечай по данным за эту дату, подставляя её число и пробег. "
+            "(д) если данных за указанную дату НЕТ (признак no_data / поле «ситуация_с_данными») — действуй по алгоритму: "
+            "— если «последнее_сообщение_относительно_даты»=«раньше_даты_неисправности» — объект перестал выходить на связь ещё ДО заявленной даты: "
+            "рекомендуй удалённую диагностику (проверить питание/массу терминала, проводку, светодиодную индикацию), категория «Диагностика»; "
+            "— иначе если в «проверка_данных_после_даты» данные_возобновились=true — в указанную дату питания/связи не было, но позже данные пошли: "
+            "ответь, что в указанную дату отсутствовало питающее напряжение/связь, данные возобновились (укажи дату_возобновления), "
+            "трек за период отсутствия восстановить нельзя; категория «Не было питания», уверенность ≥0.8; "
+            "— иначе (последнее сообщение позже даты, но данные так и не возобновились) — рекомендуй ВЫЕЗД бригады специалистов для диагностики на месте. "
+            "Будь гибким в формулировках и опирайся на конкретику фактов, но НЕ выходи за рамки категорий каталога и не выдумывай данные. "
+            "Держи ответ кратким (2–4 предложения), по делу, без воды. "
             "Не выдумывай данные, которых нет. Верни СТРОГО JSON без пояснений: "
             '{"category": "...", "answer": "...", "confidence": 0.0-1.0, "reasoning": "..."}'
         )
@@ -792,13 +867,10 @@ class IssueAutomationService:
         if object_id is not None and date and want_stats:
             try:  # tool 3: daily stats for the given day
                 day = _dt.date.fromisoformat(date)
-                start = _dt.datetime.combine(day, _dt.time.min)
-                from_ms = int(start.timestamp() * 1000)
-                till_ms = int((start + _dt.timedelta(days=1)).timestamp() * 1000)
+                from_ms, till_ms = _msk_day_window_ms(day)
                 stats = await self._geo.get_daily_stats(object_id, from_ms, till_ms)
                 ymd = int(day.strftime("%Y%m%d"))
-                row = next((r for r in stats if r.get("day") == ymd),
-                           stats[0] if stats else None)
+                row = next((r for r in stats if r.get("day") == ymd), None)
                 if row:
                     facts["daily_stats"] = {
                         "дата": date,
@@ -1015,9 +1087,10 @@ class IssueAutomationService:
         # whether anything actually resumed after the fault date. Bounded to one
         # extra daily-stats call; any failure omits the fact (never breaks).
         verify_resumed: dict[str, Any] | None = None
-        if (comments and comments.strip()
-                and telemetry.object_id is not None
+        if (telemetry.object_id is not None
                 and ("power_off" in telemetry.flags or "no_data" in telemetry.flags)):
+            # Запускаем и без комментариев: это вход в детерминированную ветку
+            # «нет данных за дату → возобновились ли они позже» (алгоритм ниже).
             verify_resumed = await self._verify_data_resumed(
                 telemetry.object_id, parsed.date)
 
@@ -1109,9 +1182,8 @@ class IssueAutomationService:
             d_from, d_to = d_to, d_from
         if (d_to - d_from).days > 31:
             d_to = d_from + _dt.timedelta(days=31)
-        start = _dt.datetime.combine(d_from, _dt.time.min)
-        from_ms = int(start.timestamp() * 1000)
-        till_ms = int((_dt.datetime.combine(d_to, _dt.time.min) + _dt.timedelta(days=1)).timestamp() * 1000)
+        from_ms, _ = _msk_day_window_ms(d_from)
+        _, till_ms = _msk_day_window_ms(d_to)
         packets = await self._geo.get_packets(oid, from_ms, till_ms)
         packets.sort(key=lambda p: p.get("time") or 0)
 
@@ -1177,7 +1249,8 @@ class IssueAutomationService:
     # per request — the call never returns and the UI shows «Ошибка разбора».
     _BATCH_MAX_ATTACHMENTS = 25
 
-    async def analyze_batch(self, issue_external_id: int, attachments: list[Any]) -> list[dict[str, Any]]:
+    async def analyze_batch(self, issue_external_id: int, attachments: list[Any],
+                            issue_title: str | None = None) -> list[dict[str, Any]]:
         """Per-object analysis of a batch/«общая» issue (one vehicle act per attachment).
 
         Returns a list of {file, plate, date, sheet_mileage_km, system_mileage_km,
@@ -1213,34 +1286,65 @@ class IssueAutomationService:
             if not text or not text.strip():
                 continue
             try:
-                # Имя файла — надёжный источник гос.номера (в нём «…_с255но_КАМАЗ_…»),
-                # текст акта парсит дату/ПЛ. В тексте год+«Не» давал ложный «2026НЕ».
-                parsed = self.parse_issue(name, "", None, extra_text=text)
                 addr_m = re.search(r"по\s+адресу[:\s]+(.{5,120}?)(?:\s+и\s+состав|\s+наход|\.|$)", text, re.I | re.S)
                 address = re.sub(r"\s+", " ", addr_m.group(1)).strip() if addr_m else None
-                # Решаем по номеру ИЗ ИМЕНИ ФАЙЛА: есть → один ТС (акт на одно авто);
-                # нет → «общая» заявка со СПИСКОМ ТС в одном файле (1. УАЗ В152ТУ …) —
-                # разбираем каждый номер с общей датой/ПЛ.
+                # Имя файла — надёжный источник гос.номера (в нём «…_с255но_КАМАЗ_…»).
+                # В тексте год+«Не» давал ложный «2026НЕ».
                 filename_plate = self.parse_issue(name, "", None).plate
-                if filename_plate:
-                    plates = [filename_plate]
-                else:
-                    plates = extract_all_plates(text)
             except Exception:
                 log.warning("analyze_batch_parse_failed", file=name)
                 continue
-            if not plates:
+
+            # Сформировать цели (plate, date, sheet) для анализа.
+            # Имя файла с номером → один ТС, факты из всего текста. Иначе —
+            # либо мульти-акт PDF (каждый акт = свой ТС/дата/ПЛ, см. 64250),
+            # либо «общая» заявка со списком ТС (общая дата/ПЛ).
+            targets: list[tuple[str, str | None, float | None]] = []
+            base_date: str | None = None
+            if filename_plate:
+                p = self.parse_issue(name, "", None, extra_text=text)
+                base_date = p.date
+                targets.append((filename_plate, p.date, p.sheet_mileage_km))
+            else:
+                acts = _split_acts(text)
+                if len(acts) >= 2:
+                    for seg in acts:
+                        seg_plates = extract_all_plates(seg)
+                        if not seg_plates:
+                            continue
+                        sp = self.parse_issue(name, "", None, extra_text=seg)
+                        for plate in seg_plates:
+                            targets.append((plate, sp.date, sp.sheet_mileage_km))
+                else:
+                    p = self.parse_issue(name, "", None, extra_text=text)
+                    base_date = p.date
+                    plates = extract_all_plates(text)
+                    # 64290: номер только в ТЕМЕ тикета (forward-письмо), не в PDF.
+                    if not plates and issue_title:
+                        tp = self.parse_issue(issue_title, "", None).plate
+                        if tp:
+                            plates = [tp]
+                    for plate in plates:
+                        targets.append((plate, p.date, p.sheet_mileage_km))
+
+            if not targets:
                 results.append({
-                    "file": name, "plate": None, "date": parsed.date,
-                    "sheet_mileage_km": parsed.sheet_mileage_km, "system_mileage_km": None,
+                    "file": name, "plate": None, "date": base_date,
+                    "sheet_mileage_km": None, "system_mileage_km": None,
                     "address": address, "flags": [], "teleport_jumps": 0,
                     "verdict": "Нет номера/даты",
                 })
                 continue
-            for plate in plates:
+
+            # Дедуп номеров (мульти-акт PDF может повторять номер в сегментах).
+            seen_plates: set[str] = set()
+            for plate, pdate, psheet in targets:
+                if plate in seen_plates:
+                    continue
+                seen_plates.add(plate)
                 try:
                     results.append(await self._analyze_object(
-                        plate, parsed.date, parsed.sheet_mileage_km, address, name,
+                        plate, pdate, psheet, address, name,
                     ))
                 except Exception:
                     log.warning("analyze_batch_object_failed", file=name, plate=plate)

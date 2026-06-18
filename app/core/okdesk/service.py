@@ -84,6 +84,16 @@ class OkdeskService:
     async def download_attachment(self, issue_id: int, attachment_id: int) -> tuple[bytes, str] | None:
         return await self._client.download_attachment(issue_id, attachment_id)
 
+    async def upload_attachment(
+        self,
+        issue_id: int,
+        filename: str,
+        content: bytes,
+        content_type: str = "application/octet-stream",
+    ) -> dict[str, Any] | None:
+        """Upload a file to an issue. Returns response dict or None on failure."""
+        return await self._client.upload_attachment(issue_id, filename, content, content_type)
+
     async def get_issue_comments(self, issue_id: int) -> list[IssueComment]:
         data = await self._client.get_issue_comments(issue_id)
         rows = _ensure_list(data)

@@ -11,6 +11,7 @@ import {
 import { api } from '../api/client'
 import { useIssuesStore } from '../store/issuesStore'
 import { useUserStore } from '../store/userStore'
+import { useAuthStore } from '../store/authStore'
 import { StatusBadge } from './StatusBadge'
 import { EmployeeMenu, TypeMenu } from './pickers'
 import type { OkdeskDetail, Template, AutomationResult, Analysis, BatchResult } from '../types'
@@ -628,6 +629,7 @@ function Fact({ label, value, warn }: { label: string; value: React.ReactNode; w
 
 function AutoAnalysis({ issueId, onUseDraft, latestAnalysis, issueTitle, companyName }: { issueId: number; onUseDraft: (text: string) => void; latestAnalysis: Analysis | null; issueTitle?: string | null; companyName?: string | null }) {
   const queryClient = useQueryClient()
+  const isDemo = useAuthStore(s => s.user?.role === 'demo')
   const [result, setResult] = useState<AutomationResult | null>(null)
   const [confirmResolve, setConfirmResolve] = useState(false)
 
@@ -709,8 +711,9 @@ function AutoAnalysis({ issueId, onUseDraft, latestAnalysis, issueTitle, company
     <div className="space-y-3">
       <button
         onClick={() => run.mutate()}
-        disabled={run.isPending}
-        className={`flex items-center justify-center gap-2 w-full bg-card border border-accent/40 text-accent hover:bg-accent/10 text-xs font-semibold py-2 rounded-lg transition-colors disabled:opacity-60 ${run.isPending ? 'animate-pulse cursor-wait' : ''}`}
+        disabled={run.isPending || isDemo}
+        title={isDemo ? 'Недоступно в демо-режиме' : undefined}
+        className={`flex items-center justify-center gap-2 w-full bg-card border border-accent/40 text-accent hover:bg-accent/10 text-xs font-semibold py-2 rounded-lg transition-colors disabled:opacity-40 ${run.isPending ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
       >
         {run.isPending ? (
           <Working label="Анализирую заявку и данные geo…" />
@@ -893,6 +896,7 @@ const VERDICT_STYLE: Record<string, string> = {
 
 function BatchAnalysis({ issueId, onUseDraft, onOpenExternal }: { issueId: number; onUseDraft: (text: string) => void; issueTitle?: string | null; companyName?: string | null; onOpenExternal: (extId: number) => void }) {
   const queryClient = useQueryClient()
+  const isDemo = useAuthStore(s => s.user?.role === 'demo')
   const openTrack = useIssuesStore(s => s.openTrack)
   const batchChildren = useIssuesStore(s => s.batchChildren)
   const setBatchChild = useIssuesStore(s => s.setBatchChild)
@@ -976,11 +980,12 @@ function BatchAnalysis({ issueId, onUseDraft, onOpenExternal }: { issueId: numbe
   const allCreatedPlates = Object.entries(rowCreated).filter(([, v]) => v.ok).map(([plate]) => plate)
 
   return (
-    <div className="space-y-2 border-t border-border pt-3">
+    <div className="space-y-2">
       <button
         onClick={() => run.mutate()}
-        disabled={run.isPending}
-        className={`flex items-center justify-center gap-2 w-full bg-card border border-info/40 text-info hover:bg-info/10 text-xs font-semibold py-2 rounded-lg transition-colors disabled:opacity-60 ${run.isPending ? 'animate-pulse cursor-wait' : ''}`}
+        disabled={run.isPending || isDemo}
+        title={isDemo ? 'Недоступно в демо-режиме' : undefined}
+        className={`flex items-center justify-center gap-2 w-full bg-card border border-info/40 text-info hover:bg-info/10 text-xs font-semibold py-2 rounded-lg transition-colors disabled:opacity-40 ${run.isPending ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
       >
         {run.isPending ? (
           <Working label="Разбираю объекты…" />
@@ -1058,9 +1063,10 @@ function BatchAnalysis({ issueId, onUseDraft, onOpenExternal }: { issueId: numbe
                             <Check size={14} className="inline text-green-400" />
                           ) : (
                             <button
-                              onClick={() => createRow(o)}
-                              title="Создать дочернюю заявку"
-                              className="inline-flex text-muted hover:text-accent transition-colors"
+                              onClick={() => !isDemo && createRow(o)}
+                              title={isDemo ? 'Недоступно в демо-режиме' : 'Создать дочернюю заявку'}
+                              disabled={isDemo}
+                              className={`inline-flex transition-colors ${isDemo ? 'text-muted/40 cursor-not-allowed' : 'text-muted hover:text-accent'}`}
                             ><FilePlus size={14} /></button>
                           )
                         )}
@@ -1079,8 +1085,9 @@ function BatchAnalysis({ issueId, onUseDraft, onOpenExternal }: { issueId: numbe
               </p>
               <button
                 onClick={() => composeMut.mutate()}
-                disabled={composeMut.isPending}
-                className={`flex items-center justify-center gap-1.5 w-full bg-accent/90 hover:bg-accent text-black text-xs font-semibold py-1.5 rounded-lg transition-colors disabled:opacity-60 ${composeMut.isPending ? 'animate-pulse cursor-wait' : ''}`}
+                disabled={composeMut.isPending || isDemo}
+                title={isDemo ? 'Недоступно в демо-режиме' : undefined}
+                className={`flex items-center justify-center gap-1.5 w-full bg-accent/90 hover:bg-accent text-black text-xs font-semibold py-1.5 rounded-lg transition-colors disabled:opacity-40 ${composeMut.isPending ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
               >
                 {composeMut.isPending
                   ? <Working label="Составляю ответ…" />
@@ -1125,8 +1132,9 @@ function BatchAnalysis({ issueId, onUseDraft, onOpenExternal }: { issueId: numbe
                   createMut.isSuccess && children.length === 0 ? null : (
                     <button
                       onClick={() => createMut.mutate(children)}
-                      disabled={createMut.isPending || children.length === 0}
-                      className={`flex items-center justify-center gap-1.5 w-full bg-frame border border-accent/50 text-accent hover:bg-accent/10 text-xs font-semibold py-1.5 rounded-lg transition-colors disabled:opacity-60 ${createMut.isPending ? 'animate-pulse cursor-wait' : ''}`}
+                      disabled={createMut.isPending || children.length === 0 || isDemo}
+                      title={isDemo ? 'Недоступно в демо-режиме' : undefined}
+                      className={`flex items-center justify-center gap-1.5 w-full bg-frame border border-accent/50 text-accent hover:bg-accent/10 text-xs font-semibold py-1.5 rounded-lg transition-colors disabled:opacity-40 ${createMut.isPending ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
                     >
                       {createMut.isPending ? <Working label="Создаю заявки…" /> : <><FilePlus size={14} /> Создать все {children.length} (ещё не созданные)</>}
                     </button>
@@ -1197,6 +1205,7 @@ function AttachmentsSection({ issueId }: { issueId: number }) {
 
 export function IssueDetail() {
   const { selectedIssueId, selectIssue, trackOpen, setTrackOpen, openTrack, lastTemplate } = useIssuesStore()
+  const isDemo = useAuthStore(s => s.user?.role === 'demo')
   const queryClient = useQueryClient()
   const [comment, setComment] = useState('')
   const [commentPublic, setCommentPublic] = useState(true)
@@ -1290,9 +1299,9 @@ export function IssueDetail() {
             {od ? (
               <div className="relative">
                 <button
-                  onClick={() => setStatusDropdownOpen(v => !v)}
-                  title="Изменить статус"
-                  className="hover:opacity-75 transition-opacity"
+                  onClick={() => !isDemo && setStatusDropdownOpen(v => !v)}
+                  title={isDemo ? 'Недоступно в демо-режиме' : 'Изменить статус'}
+                  className={`hover:opacity-75 transition-opacity ${isDemo ? 'cursor-not-allowed' : ''}`}
                 >
                   <StatusBadge status={issue.status} />
                 </button>
@@ -1368,22 +1377,24 @@ export function IssueDetail() {
         <AttachmentsSection issueId={issue.id} />
 
         {/* ── 3. Анализ ────────────────────────────────────────── */}
-        <Block icon={Sparkles} title="Анализ пробега">
+        <Block icon={Sparkles} title="Анализ заявки">
           <div className="border border-border rounded-xl p-4 space-y-3">
-            <AutoAnalysis
-              issueId={issue.id}
-              onUseDraft={(text) => { setComment(text); setCommentPublic(true) }}
-              latestAnalysis={latest_analysis}
-              issueTitle={issue.subject}
-              companyName={issue.company_name}
-            />
-
+            {/* Сначала разбор по вложениям (рендерится только если есть вложения), */}
+            {/* ниже — анализ заявки. */}
             <BatchAnalysis
               issueId={issue.id}
               onUseDraft={(text) => { setComment(text); setCommentPublic(true) }}
               issueTitle={issue.subject}
               companyName={issue.company_name}
               onOpenExternal={openExternal}
+            />
+
+            <AutoAnalysis
+              issueId={issue.id}
+              onUseDraft={(text) => { setComment(text); setCommentPublic(true) }}
+              latestAnalysis={latest_analysis}
+              issueTitle={issue.subject}
+              companyName={issue.company_name}
             />
           </div>
         </Block>
@@ -1453,10 +1464,10 @@ export function IssueDetail() {
               <div className="flex flex-col gap-1.5 shrink-0">
                 <TemplatePicker onSelect={text => setComment(text)} issueId={selectedIssueId ?? undefined} />
                 <button
-                  disabled={!comment || addComment.isPending}
+                  disabled={!comment || addComment.isPending || isDemo}
                   onClick={() => addComment.mutate(comment)}
-                  title="Отправить (Ctrl+Enter)"
-                  className="flex items-center justify-center bg-frame border border-border hover:border-accent rounded-lg px-2.5 py-1.5 text-xs transition-colors disabled:opacity-40 text-muted hover:text-accent"
+                  title={isDemo ? 'Недоступно в демо-режиме' : 'Отправить (Ctrl+Enter)'}
+                  className={`flex items-center justify-center bg-frame border border-border hover:border-accent rounded-lg px-2.5 py-1.5 text-xs transition-colors disabled:opacity-40 text-muted hover:text-accent ${isDemo ? 'cursor-not-allowed' : ''}`}
                 >
                   {addComment.isPending ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
                 </button>
@@ -1480,16 +1491,16 @@ export function IssueDetail() {
             {/* Быстрое решение: комментарий + смена статуса одним кликом */}
             <div className="flex items-center gap-2">
               <button
-                disabled={!comment || quickResolve.isPending}
+                disabled={!comment || quickResolve.isPending || isDemo}
                 onClick={() => quickResolve.mutate('delayed')}
-                title="Отправить ответ и перевести в «Ожидание ответа» (+3 дня)"
+                title={isDemo ? 'Недоступно в демо-режиме' : 'Отправить ответ и перевести в «Ожидание ответа» (+3 дня)'}
                 style={{ background: '#bb7db2' }}
-                className={`flex items-center justify-center gap-1.5 flex-1 text-white text-xs font-semibold py-1.5 rounded-lg transition-all hover:brightness-110 disabled:opacity-50 ${quickResolve.isPending && quickResolve.variables === 'delayed' ? 'animate-pulse cursor-wait' : ''}`}
+                className={`flex items-center justify-center gap-1.5 flex-1 text-white text-xs font-semibold py-1.5 rounded-lg transition-all hover:brightness-110 disabled:opacity-50 ${quickResolve.isPending && quickResolve.variables === 'delayed' ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
               >
                 {quickResolve.isPending && quickResolve.variables === 'delayed' ? <Working label="Отправляю…" /> : <><Pause size={14} /> Ожидание ответа</>}
               </button>
               <button
-                disabled={!comment || quickResolve.isPending}
+                disabled={!comment || quickResolve.isPending || isDemo}
                 onClick={() => {
                   if (!od?.type_code || od.type_code === 'inner') {
                     setToast('Сначала укажите тип заявки')
@@ -1497,9 +1508,9 @@ export function IssueDetail() {
                   }
                   quickResolve.mutate('completed')
                 }}
-                title="Отправить ответ клиенту и перевести в «Решена»"
+                title={isDemo ? 'Недоступно в демо-режиме' : 'Отправить ответ клиенту и перевести в «Решена»'}
                 style={{ background: '#67a030' }}
-                className={`flex items-center justify-center gap-1.5 flex-1 text-white text-xs font-semibold py-1.5 rounded-lg transition-all hover:brightness-110 disabled:opacity-50 ${quickResolve.isPending && quickResolve.variables === 'completed' ? 'animate-pulse cursor-wait' : ''}`}
+                className={`flex items-center justify-center gap-1.5 flex-1 text-white text-xs font-semibold py-1.5 rounded-lg transition-all hover:brightness-110 disabled:opacity-50 ${quickResolve.isPending && quickResolve.variables === 'completed' ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
               >
                 {quickResolve.isPending && quickResolve.variables === 'completed' ? <Working label="Отправляю…" /> : <><Check size={14} /> Решить</>}
               </button>

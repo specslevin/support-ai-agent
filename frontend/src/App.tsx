@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { useState } from 'react'
-import { ChevronDown, RefreshCw, ClipboardList, MessageSquare, Phone, Truck, BarChart3, Settings, type LucideIcon } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { ChevronDown, RefreshCw, ClipboardList, MessageSquare, Phone, Truck, BarChart3, Settings, LogOut, type LucideIcon } from 'lucide-react'
 import { IssueFilters } from './components/IssueFilters'
 import { IssuesList } from './components/IssuesList'
 import { IssueDetail } from './components/IssueDetail'
@@ -10,9 +10,13 @@ import { Sidebar, type Section } from './components/Sidebar'
 import { StubSection } from './components/StubSection'
 import { TemplatesManager } from './components/TemplatesManager'
 import { EmployeeMenu } from './components/pickers'
+import { Login } from './components/Login'
+import { DemoBanner } from './components/DemoBanner'
+import { DemoToast } from './components/DemoToast'
 import { useIssuesStore } from './store/issuesStore'
 import { useUserStore } from './store/userStore'
-import { api } from './api/client'
+import { useAuthStore } from './store/authStore'
+import { api, authApi } from './api/client'
 
 const queryClient = new QueryClient()
 
@@ -60,12 +64,50 @@ function UserSelector() {
   )
 }
 
+function LogoutButton() {
+  const logout = useAuthStore(s => s.logout)
+  const [confirming, setConfirming] = useState(false)
+
+  if (confirming) {
+    return (
+      <div className="flex items-center gap-1.5">
+        <span className="text-xs text-muted">Выйти?</span>
+        <button
+          onClick={() => { logout() }}
+          className="text-xs px-2 py-1 rounded border border-orange-500/50 text-orange-400 hover:border-orange-500 transition-colors"
+        >
+          Да
+        </button>
+        <button
+          onClick={() => setConfirming(false)}
+          className="text-xs px-2 py-1 rounded border border-border text-muted hover:text-white transition-colors"
+        >
+          Нет
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <button
+      onClick={() => setConfirming(true)}
+      title="Выйти"
+      className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-border hover:border-orange-500/50 hover:text-orange-400 text-muted transition-colors"
+    >
+      <LogOut size={13} />
+      Выйти
+    </button>
+  )
+}
+
 function Dashboard() {
   const selectedIssueId = useIssuesStore(s => s.selectedIssueId)
   const trackOpen = useIssuesStore(s => s.trackOpen)
   const [section, setSection] = useState<Section>('issues')
   const [refreshing, setRefreshing] = useState(false)
   const [lastSynced, setLastSynced] = useState<number | null>(null)
+  const user = useAuthStore(s => s.user)
+  const isDemo = user?.role === 'demo'
 
   const handleRefresh = async () => {
     setRefreshing(true)
@@ -86,6 +128,9 @@ function Dashboard() {
       <Sidebar active={section} onSelect={setSection} />
 
       <div className="flex flex-col flex-1 min-w-0">
+        {/* Демо-баннер */}
+        {isDemo && <DemoBanner />}
+
         {/* Top bar / header */}
         <header className="flex items-center justify-between px-6 h-14 border-b border-border shrink-0 bg-darker">
           <div className="flex items-center gap-2.5">
@@ -107,6 +152,7 @@ function Dashboard() {
                 {refreshing ? 'Синхронизация...' : 'Обновить кэш'}
               </button>
             )}
+            <LogoutButton />
           </div>
         </header>
 
@@ -188,10 +234,57 @@ function sectionTitle(s: Section): string {
   return map[s]
 }
 
+function AuthGate() {
+  const { token, user, setAuth, logout } = useAuthStore()
+  const [validating, setValidating] = useState(true)
+
+  // On mount: if we have a stored token, validate it with /auth/me
+  useEffect(() => {
+    if (!token) {
+      setValidating(false)
+      return
+    }
+    authApi.getMe()
+      .then((me) => {
+        // Refresh user info (role may have changed)
+        setAuth(token, me)
+        setValidating(false)
+      })
+      .catch(() => {
+        logout()
+        setValidating(false)
+      })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Listen for auth:logout events dispatched by the axios interceptor
+  useEffect(() => {
+    const handler = () => logout()
+    window.addEventListener('auth:logout', handler)
+    return () => window.removeEventListener('auth:logout', handler)
+  }, [logout])
+
+  if (validating) {
+    // Minimal loading state while validating stored token
+    return (
+      <div className="flex h-screen bg-base items-center justify-center">
+        <span className="text-sm text-muted animate-pulse">Проверка сессии...</span>
+      </div>
+    )
+  }
+
+  if (!token || !user) {
+    return <Login />
+  }
+
+  return <Dashboard />
+}
+
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <Dashboard />
+      <AuthGate />
+      <DemoToast />
     </QueryClientProvider>
   )
 }
