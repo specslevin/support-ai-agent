@@ -88,6 +88,29 @@ def _parse_filters(raw: str) -> tuple[str, dict[str, str]]:
     return reply, filters
 
 
+def _company_stem(company: str) -> str | None:
+    """Shorten a company name to a search stem so an LLM-paraphrased name
+    («Волжский») still matches the canonical DB value («Волжское ПО»).
+
+    Strategy: take the first alphabetic word, strip a common Russian ending,
+    and fall back to its first ~5 letters. Returns None if nothing usable.
+    """
+    import re as _r
+
+    m = _r.search(r"[A-Za-zА-Яа-яЁё]{3,}", company or "")
+    if not m:
+        return None
+    word = m.group(0)
+    # Strip common Russian adjective/noun endings («ский», «ское», «ого», …).
+    lowered = word.lower()
+    for end in ("ского", "ское", "ский", "ская", "ское", "ого", "ому", "ом", "ое", "ий", "ый", "ая", "ое", "ой", "е", "а", "о", "ы", "и"):
+        if len(lowered) - len(end) >= 4 and lowered.endswith(end):
+            word = word[: len(word) - len(end)]
+            break
+    stem = word[:5] if len(word) > 5 else word
+    return stem or None
+
+
 @router.post("", response_model=ChatResponse)
 async def chat(
     body: ChatRequest,
@@ -113,6 +136,33 @@ async def chat(
     issues: list[ChatIssue] = []
     try:
         rows = await cache.get_issues_from_cache(**filters)
+
+        # Relaxed retry: the LLM often paraphrases the company name
+        # («Волжский» vs DB «Волжское ПО») or gives only a surname, so an exact
+        # ILIKE %…% misses. If we found nothing AND a company/assignee was set,
+        # try once more with a shortened company stem (assignee, already a
+        # surname substring, is kept as-is). Note the approximation in reply.
+        if not rows and (filters.get("company") or filters.get("assignee")):
+            relaxed = dict(filters)
+            stem = _company_stem(filters["company"]) if filters.get("company") else None
+            if stem and stem.lower() != str(filters.get("company", "")).lower():
+                relaxed["company"] = stem
+            if relaxed != filters:
+                try:
+                    relaxed_rows = await cache.get_issues_from_cache(**relaxed)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("chat.relaxed_cache_failed", error=str(exc), filters=relaxed)
+                    relaxed_rows = []
+                if relaxed_rows:
+                    rows = relaxed_rows
+                    reply = (
+                        "Точного совпадения нет, показываю похожие результаты. "
+                        + reply
+                    )
+
+        if not rows and (filters.get("company") or filters.get("assignee")):
+            reply = "По вашему запросу ничего не нашлось, даже с учётом похожих названий. Попробуйте уточнить."
+
         for row in rows[:_MAX_RESULTS]:
             issues.append(
                 ChatIssue(

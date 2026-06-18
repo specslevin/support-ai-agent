@@ -119,9 +119,14 @@ export function ChatPanel() {
           ))}
           {loading && (
             <div className="flex justify-start">
-              <div className="rounded-lg px-3 py-2 bg-card border border-border text-muted flex items-center gap-2 text-sm">
-                <Loader2 size={14} className="animate-spin" />
-                Обрабатываю...
+              <div className="rounded-lg px-3 py-2 bg-card border border-accent/40 text-secondary flex items-center gap-2 text-sm">
+                <Loader2 size={15} className="animate-spin text-accent" />
+                <span>ИИ думает…</span>
+                <span className="flex gap-0.5 ml-0.5">
+                  <span className="w-1 h-1 rounded-full bg-accent animate-pulse" />
+                  <span className="w-1 h-1 rounded-full bg-accent animate-pulse [animation-delay:150ms]" />
+                  <span className="w-1 h-1 rounded-full bg-accent animate-pulse [animation-delay:300ms]" />
+                </span>
               </div>
             </div>
           )}
@@ -136,7 +141,7 @@ export function ChatPanel() {
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={onKeyDown}
-            placeholder="Опишите, какие заявки нужны..."
+            placeholder={loading ? 'ИИ думает…' : 'Опишите, какие заявки нужны...'}
             disabled={loading}
             className="flex-1 bg-frame border border-border rounded-lg px-3 py-2 text-sm text-white placeholder:text-muted/60 focus:outline-none focus:border-accent transition-colors disabled:opacity-50"
           />
@@ -144,9 +149,9 @@ export function ChatPanel() {
             onClick={send}
             disabled={loading || !input.trim()}
             className="shrink-0 flex items-center justify-center w-9 h-9 rounded-lg bg-accent text-base hover:opacity-90 transition-opacity disabled:opacity-40"
-            title="Отправить"
+            title={loading ? 'ИИ думает…' : 'Отправить'}
           >
-            <Send size={16} />
+            {loading ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
           </button>
         </div>
       </div>

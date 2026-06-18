@@ -566,7 +566,23 @@ async def automate_batch(
             raise HTTPException(status_code=404, detail="Issue not found")
         external_id = issue_data["issue"].external_id
         live = await okdesk.get_issue(external_id)
-        objects = await automation.analyze_batch(external_id, live.attachments)
+        objects: list[dict[str, object]] = []
+        note: str | None = None
+        try:
+            objects = await automation.analyze_batch(external_id, live.attachments)
+        except Exception:
+            # analyze_batch is best-effort and shouldn't raise, but guard anyway
+            # so a single bad attachment never turns into a 500 «Ошибка разбора».
+            log.warning("automate_batch_analyze_failed", issue_id=issue_id)
+            objects = []
+        if not objects:
+            # No extractable acts / OCR empty / no plates (e.g. ОДКРА «письма»):
+            # degrade gracefully instead of failing the whole request.
+            note = (
+                "Не удалось разобрать вложения по объектам: во вложениях нет "
+                "распознаваемых гос.номеров (вероятно, это письма/сканы без таблицы ТС). "
+                "Обработайте заявку вручную."
+            )
         jamming = sum(1 for o in objects if o.get("verdict") == "Глушение")
         ok_data = sum(1 for o in objects if o.get("verdict") == "Данные верны")
         company_name = getattr(issue_data["issue"], "company_name", None)
@@ -576,6 +592,7 @@ async def automate_batch(
             "ok_count": ok_data,
             "is_aggregate": _is_aggregate(company_name, live.description, objects),
             "objects": objects,
+            "note": note,
         }
         try:
             await cache.save_result_cache(external_id, "batch", json.dumps(payload, ensure_ascii=False))
@@ -585,8 +602,17 @@ async def automate_batch(
     except HTTPException:
         raise
     except Exception:
+        # Last-resort guard: still return a usable payload rather than a 500 so
+        # the operator sees a note instead of «Ошибка разбора».
         log.exception("automate_batch_failed", issue_id=issue_id)
-        raise HTTPException(status_code=500, detail="Batch analysis failed")
+        return {
+            "total": 0,
+            "jamming_count": 0,
+            "ok_count": 0,
+            "is_aggregate": False,
+            "objects": [],
+            "note": "Не удалось выполнить разбор по объектам. Обработайте заявку вручную.",
+        }
 
 
 @router.get("/{issue_id}/automate_batch")
@@ -801,12 +827,31 @@ async def get_issue_comments(
             raise HTTPException(status_code=404, detail="Issue not found")
         external_id = issue_data["issue"].external_id
         comments = await okdesk.get_issue_comments(external_id)
+
+        # Okdesk returns the comment timestamp as `published_at` (the parsed
+        # IssueComment model uses extra="ignore", so that field is dropped and
+        # `created_at` ends up None). Re-read the raw payload to recover the
+        # timestamp the frontend renders via formatDate(c.created_at).
+        raw_dates: dict[int, str] = {}
+        try:
+            raw = await okdesk._client.get_issue_comments(external_id)
+            raw_rows = raw if isinstance(raw, list) else (raw.get("data") if isinstance(raw, dict) else None)
+            for r in raw_rows or []:
+                if not isinstance(r, dict):
+                    continue
+                cid = r.get("id")
+                ts = r.get("published_at") or r.get("created_at")
+                if cid is not None and ts:
+                    raw_dates[cid] = ts
+        except Exception:
+            log.warning("comment_dates_lookup_failed", issue_id=issue_id)
+
         return [
             {
                 "id": c.id,
                 "author": c.author.name if c.author else "Unknown",
                 "content": c.content,
-                "created_at": c.created_at,
+                "created_at": c.created_at or raw_dates.get(c.id),
                 "is_internal": c.is_internal,
             }
             for c in comments

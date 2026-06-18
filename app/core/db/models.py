@@ -200,6 +200,59 @@ class ObjectResolveCache(Base):
     )
 
 
+class TemplateCategory(Base):
+    """Our editable copy of okdesk-console answer-template categories.
+
+    Migrated from the live console DB so we can edit safely. ``original_id``
+    keeps the console-side id for idempotent UPSERT.
+    """
+
+    __tablename__ = "app_template_categories"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    original_id: Mapped[int | None] = mapped_column(Integer, unique=True, nullable=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    color: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class Template(Base):
+    """Our editable copy of okdesk-console answer templates (few-shot for AI).
+
+    Migrated from the live console DB so edits don't touch the production
+    console. ``original_id`` keeps the console-side id for idempotent UPSERT.
+    """
+
+    __tablename__ = "app_templates"
+    __table_args__ = (
+        Index("ix_app_templates_category", "category_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    original_id: Mapped[int | None] = mapped_column(Integer, unique=True, nullable=True)
+    name: Mapped[str] = mapped_column(String(500), nullable=False)
+    content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    category_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    active: Mapped[bool] = mapped_column(Integer, default=1, nullable=False)
+    usage_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    is_dynamic: Mapped[bool] = mapped_column(Integer, default=0, nullable=False)
+    is_favorite: Mapped[bool] = mapped_column(Integer, default=0, nullable=False)
+    source: Mapped[str] = mapped_column(
+        String(32), default="console", nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
 class ChatHistory(Base):
     __tablename__ = "chat_history"
 

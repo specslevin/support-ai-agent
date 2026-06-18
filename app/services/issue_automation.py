@@ -1000,40 +1000,63 @@ class IssueAutomationService:
             "teleports": [index_map[i] for i in teleports if i in index_map],
         }
 
+    # Hard cap on attachments processed per batch. Without it, issues like
+    # ОДКРА «письма» (9+ scanned letter-PDFs) trigger minutes of Tesseract OCR
+    # per request — the call never returns and the UI shows «Ошибка разбора».
+    _BATCH_MAX_ATTACHMENTS = 25
+
     async def analyze_batch(self, issue_external_id: int, attachments: list[Any]) -> list[dict[str, Any]]:
         """Per-object analysis of a batch/«общая» issue (one vehicle act per attachment).
 
         Returns a list of {file, plate, date, sheet_mileage_km, system_mileage_km,
         flags, teleport_jumps, verdict}. Mass issues are usually jamming, but some
         objects have correct data (system ≈ waybill) and need separate handling.
+
+        Degrades gracefully: never raises. When there are no extractable
+        attachments, OCR yields nothing, or no plates can be parsed, returns
+        ``[]`` (the endpoint surfaces a note) instead of propagating an error.
         """
         from app.services import attachment_reader
 
         results: list[dict[str, Any]] = []
-        for a in attachments:
+        try:
+            attachments = list(attachments or [])
+        except Exception:
+            attachments = []
+        extractable = [
+            a for a in attachments
+            if attachment_reader.is_extractable(
+                getattr(a, "attachment_file_name", None) or ""
+            )
+        ]
+        # Bound the OCR work so the request always returns in reasonable time.
+        for a in extractable[: self._BATCH_MAX_ATTACHMENTS]:
             name = getattr(a, "attachment_file_name", None) or ""
-            if not attachment_reader.is_extractable(name):
-                continue
             try:
                 res = await self._okdesk.download_attachment(issue_external_id, a.id)
                 text = attachment_reader.extract_text(name, res[0]) if res else ""
             except Exception:
+                log.warning("analyze_batch_extract_failed", file=name)
                 text = ""
-            if not text.strip():
+            if not text or not text.strip():
                 continue
-            # Имя файла — надёжный источник гос.номера (в нём «…_с255но_КАМАЗ_…»),
-            # текст акта парсит дату/ПЛ. В тексте год+«Не» давал ложный «2026НЕ».
-            parsed = self.parse_issue(name, "", None, extra_text=text)
-            addr_m = re.search(r"по\s+адресу[:\s]+(.{5,120}?)(?:\s+и\s+состав|\s+наход|\.|$)", text, re.I | re.S)
-            address = re.sub(r"\s+", " ", addr_m.group(1)).strip() if addr_m else None
-            # Решаем по номеру ИЗ ИМЕНИ ФАЙЛА: есть → один ТС (акт на одно авто);
-            # нет → «общая» заявка со СПИСКОМ ТС в одном файле (1. УАЗ В152ТУ …) —
-            # разбираем каждый номер с общей датой/ПЛ.
-            filename_plate = self.parse_issue(name, "", None).plate
-            if filename_plate:
-                plates = [filename_plate]
-            else:
-                plates = extract_all_plates(text)
+            try:
+                # Имя файла — надёжный источник гос.номера (в нём «…_с255но_КАМАЗ_…»),
+                # текст акта парсит дату/ПЛ. В тексте год+«Не» давал ложный «2026НЕ».
+                parsed = self.parse_issue(name, "", None, extra_text=text)
+                addr_m = re.search(r"по\s+адресу[:\s]+(.{5,120}?)(?:\s+и\s+состав|\s+наход|\.|$)", text, re.I | re.S)
+                address = re.sub(r"\s+", " ", addr_m.group(1)).strip() if addr_m else None
+                # Решаем по номеру ИЗ ИМЕНИ ФАЙЛА: есть → один ТС (акт на одно авто);
+                # нет → «общая» заявка со СПИСКОМ ТС в одном файле (1. УАЗ В152ТУ …) —
+                # разбираем каждый номер с общей датой/ПЛ.
+                filename_plate = self.parse_issue(name, "", None).plate
+                if filename_plate:
+                    plates = [filename_plate]
+                else:
+                    plates = extract_all_plates(text)
+            except Exception:
+                log.warning("analyze_batch_parse_failed", file=name)
+                continue
             if not plates:
                 results.append({
                     "file": name, "plate": None, "date": parsed.date,
@@ -1043,9 +1066,12 @@ class IssueAutomationService:
                 })
                 continue
             for plate in plates:
-                results.append(await self._analyze_object(
-                    plate, parsed.date, parsed.sheet_mileage_km, address, name,
-                ))
+                try:
+                    results.append(await self._analyze_object(
+                        plate, parsed.date, parsed.sheet_mileage_km, address, name,
+                    ))
+                except Exception:
+                    log.warning("analyze_batch_object_failed", file=name, plate=plate)
         return results
 
     async def compose_aggregate_answer(self, objects: list[dict[str, Any]],

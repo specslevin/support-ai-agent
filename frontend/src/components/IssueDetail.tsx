@@ -5,6 +5,7 @@ import {
   Lightbulb, ArrowDown, ArrowLeft, Map, FilePlus, ExternalLink, Pause, Send,
   Layers, Power, RadioTower, Scissors, HelpCircle, FileText, Sheet,
   Image as ImageIcon, Paperclip, PanelRightClose, Info, MessageSquare, Sparkles, Wand2,
+  Loader2,
   type LucideIcon,
 } from 'lucide-react'
 import { api } from '../api/client'
@@ -21,6 +22,16 @@ function formatDate(iso: string | null | undefined) {
     day: '2-digit', month: '2-digit', year: '2-digit',
     hour: '2-digit', minute: '2-digit',
   })
+}
+
+/** Небольшой единообразный индикатор «ИИ работает»: спиннер + подпись. */
+function Working({ label, className = '' }: { label: string; className?: string }) {
+  return (
+    <span className={`inline-flex items-center gap-1.5 ${className}`}>
+      <Loader2 size={14} className="animate-spin" />
+      {label}
+    </span>
+  )
 }
 
 function isOverdue(iso: string | null | undefined): boolean {
@@ -583,9 +594,9 @@ function StatusActionModal({
             disabled={!canSubmit || mutation.isPending}
             onClick={() => mutation.mutate()}
             style={{ background: canSubmit && !mutation.isPending ? targetStatus.bg : undefined }}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-white text-xs font-semibold transition-opacity disabled:opacity-40 disabled:cursor-not-allowed disabled:bg-frame disabled:border disabled:border-border"
+            className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-white text-xs font-semibold transition-opacity disabled:opacity-50 disabled:cursor-not-allowed disabled:bg-frame disabled:border disabled:border-border ${mutation.isPending ? 'animate-pulse cursor-wait' : ''}`}
           >
-            {mutation.isPending ? <span className="animate-pulse">Отправка...</span> : <><Check size={14} /> {targetStatus.label}</>}
+            {mutation.isPending ? <Working label="Отправляю…" /> : <><Check size={14} /> {targetStatus.label}</>}
           </button>
         </div>
 
@@ -693,10 +704,10 @@ function AutoAnalysis({ issueId, onUseDraft, latestAnalysis, issueTitle, company
       <button
         onClick={() => run.mutate()}
         disabled={run.isPending}
-        className="flex items-center justify-center gap-2 w-full bg-card border border-accent/40 text-accent hover:bg-accent/10 text-xs font-semibold py-2 rounded-lg transition-colors disabled:opacity-50"
+        className={`flex items-center justify-center gap-2 w-full bg-card border border-accent/40 text-accent hover:bg-accent/10 text-xs font-semibold py-2 rounded-lg transition-colors disabled:opacity-60 ${run.isPending ? 'animate-pulse cursor-wait' : ''}`}
       >
         {run.isPending ? (
-          <><Bot size={14} className="animate-pulse" /> Анализирую заявку и данные geo...</>
+          <Working label="Анализирую заявку и данные geo…" />
         ) : shown ? (
           <><RefreshCw size={14} /> Обновить анализ</>
         ) : (
@@ -710,6 +721,14 @@ function AutoAnalysis({ issueId, onUseDraft, latestAnalysis, issueTitle, company
 
       {run.isError && (
         <p className="text-xs text-orange-400">Ошибка анализа. Попробуйте снова.</p>
+      )}
+
+      {/* Пока идёт ПЕРВЫЙ анализ (результата ещё нет) — заметная заглушка в области данных */}
+      {run.isPending && !shown && (
+        <div className="flex items-center gap-2 bg-frame border border-accent/30 rounded-lg px-3 py-3 text-xs text-secondary animate-pulse">
+          <Loader2 size={15} className="animate-spin text-accent shrink-0" />
+          <span>ИИ анализирует заявку и данные… это может занять несколько секунд.</span>
+        </div>
       )}
 
       {shown && (
@@ -831,9 +850,9 @@ function AutoAnalysis({ issueId, onUseDraft, latestAnalysis, issueTitle, company
                 <button
                   onClick={() => resolve.mutate(shown.draft_answer)}
                   disabled={resolve.isPending}
-                  className="flex items-center justify-center gap-1.5 flex-1 bg-green-600 hover:bg-green-500 text-white text-xs font-semibold py-1.5 rounded-lg transition-colors disabled:opacity-50"
+                  className={`flex items-center justify-center gap-1.5 flex-1 bg-green-600 hover:bg-green-500 text-white text-xs font-semibold py-1.5 rounded-lg transition-colors disabled:opacity-60 ${resolve.isPending ? 'animate-pulse cursor-wait' : ''}`}
                 >
-                  {resolve.isPending ? 'Отправка...' : <>Точно решить? <Check size={14} /></>}
+                  {resolve.isPending ? <Working label="Отправляю ответ…" /> : <>Точно решить? <Check size={14} /></>}
                 </button>
               ) : (
                 <button
@@ -962,10 +981,10 @@ function BatchAnalysis({ issueId, onUseDraft, issueTitle, companyName, onOpenExt
       <button
         onClick={() => run.mutate()}
         disabled={run.isPending}
-        className="flex items-center justify-center gap-2 w-full bg-card border border-info/40 text-info hover:bg-info/10 text-xs font-semibold py-2 rounded-lg transition-colors disabled:opacity-50"
+        className={`flex items-center justify-center gap-2 w-full bg-card border border-info/40 text-info hover:bg-info/10 text-xs font-semibold py-2 rounded-lg transition-colors disabled:opacity-60 ${run.isPending ? 'animate-pulse cursor-wait' : ''}`}
       >
         {run.isPending ? (
-          <><Layers size={14} className="animate-pulse" /> Разбираю объекты…</>
+          <Working label="Разбираю объекты…" />
         ) : res ? (
           <><RefreshCw size={14} /> Обновить разбор</>
         ) : (
@@ -974,6 +993,14 @@ function BatchAnalysis({ issueId, onUseDraft, issueTitle, companyName, onOpenExt
       </button>
       {isCached && (
         <p className="flex items-center gap-1 text-[10px] text-muted/70"><Database size={11} /> показан сохранённый разбор{cachedQ.data?.created_at ? ` от ${new Date(cachedQ.data.created_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}` : ''}</p>
+      )}
+
+      {/* Первый разбор (результата ещё нет) — заметная заглушка */}
+      {run.isPending && !res && (
+        <div className="flex items-center gap-2 bg-frame border border-info/30 rounded-lg px-3 py-3 text-xs text-secondary animate-pulse">
+          <Loader2 size={15} className="animate-spin text-info shrink-0" />
+          <span>ИИ разбирает объекты заявки… это может занять несколько секунд.</span>
+        </div>
       )}
 
       {res && (
@@ -1054,10 +1081,10 @@ function BatchAnalysis({ issueId, onUseDraft, issueTitle, companyName, onOpenExt
               <button
                 onClick={() => composeMut.mutate()}
                 disabled={composeMut.isPending}
-                className="flex items-center justify-center gap-1.5 w-full bg-accent/90 hover:bg-accent text-black text-xs font-semibold py-1.5 rounded-lg transition-colors disabled:opacity-50"
+                className={`flex items-center justify-center gap-1.5 w-full bg-accent/90 hover:bg-accent text-black text-xs font-semibold py-1.5 rounded-lg transition-colors disabled:opacity-60 ${composeMut.isPending ? 'animate-pulse cursor-wait' : ''}`}
               >
                 {composeMut.isPending
-                  ? <><Sparkles size={14} className="animate-pulse" /> Составляю ответ…</>
+                  ? <Working label="Составляю ответ…" />
                   : <><Sparkles size={14} /> Составить общий ответ</>}
               </button>
               {composeMut.isError && <p className="text-xs text-orange-400">Ошибка составления ответа. Попробуйте снова.</p>}
@@ -1100,9 +1127,9 @@ function BatchAnalysis({ issueId, onUseDraft, issueTitle, companyName, onOpenExt
                     <button
                       onClick={() => createMut.mutate(children)}
                       disabled={createMut.isPending || children.length === 0}
-                      className="flex items-center justify-center gap-1.5 w-full bg-frame border border-accent/50 text-accent hover:bg-accent/10 text-xs font-semibold py-1.5 rounded-lg transition-colors disabled:opacity-50"
+                      className={`flex items-center justify-center gap-1.5 w-full bg-frame border border-accent/50 text-accent hover:bg-accent/10 text-xs font-semibold py-1.5 rounded-lg transition-colors disabled:opacity-60 ${createMut.isPending ? 'animate-pulse cursor-wait' : ''}`}
                     >
-                      {createMut.isPending ? 'Создаю…' : <><FilePlus size={14} /> Создать все {children.length} (ещё не созданные)</>}
+                      {createMut.isPending ? <Working label="Создаю заявки…" /> : <><FilePlus size={14} /> Создать все {children.length} (ещё не созданные)</>}
                     </button>
                   )
                 )}
@@ -1367,9 +1394,9 @@ export function IssueDetail() {
           <div className="space-y-2">
             {comments.map(c => (
               <div key={c.id} className="bg-frame rounded-lg px-3 py-2.5 text-xs space-y-0.5">
-                <div className="flex items-center justify-between text-muted">
-                  <span className="font-medium text-white/70">{c.author}</span>
-                  <span>{formatDate(c.created_at)}</span>
+                <div className="flex items-center justify-between gap-2 text-muted">
+                  <span className="font-medium text-white/70 truncate">{c.author}</span>
+                  <span className="shrink-0 tabular-nums text-muted" title="Дата и время комментария">{formatDate(c.created_at) ?? '—'}</span>
                 </div>
                 <p className="leading-relaxed">{c.content ?? ''}</p>
               </div>
@@ -1399,7 +1426,7 @@ export function IssueDetail() {
                   title="Отправить (Ctrl+Enter)"
                   className="flex items-center justify-center bg-frame border border-border hover:border-accent rounded-lg px-2.5 py-1.5 text-xs transition-colors disabled:opacity-40 text-muted hover:text-accent"
                 >
-                  {addComment.isPending ? '...' : <Send size={15} />}
+                  {addComment.isPending ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
                 </button>
               </div>
             </div>
@@ -1425,9 +1452,9 @@ export function IssueDetail() {
                 onClick={() => quickResolve.mutate('delayed')}
                 title="Отправить ответ и перевести в «Ожидание ответа» (+3 дня)"
                 style={{ background: '#bb7db2' }}
-                className="flex items-center justify-center gap-1.5 flex-1 text-white text-xs font-semibold py-1.5 rounded-lg transition-all hover:brightness-110 disabled:opacity-40"
+                className={`flex items-center justify-center gap-1.5 flex-1 text-white text-xs font-semibold py-1.5 rounded-lg transition-all hover:brightness-110 disabled:opacity-50 ${quickResolve.isPending && quickResolve.variables === 'delayed' ? 'animate-pulse cursor-wait' : ''}`}
               >
-                {quickResolve.isPending && quickResolve.variables === 'delayed' ? '...' : <><Pause size={14} /> Ожидание ответа</>}
+                {quickResolve.isPending && quickResolve.variables === 'delayed' ? <Working label="Отправляю…" /> : <><Pause size={14} /> Ожидание ответа</>}
               </button>
               <button
                 disabled={!comment || quickResolve.isPending}
@@ -1440,9 +1467,9 @@ export function IssueDetail() {
                 }}
                 title="Отправить ответ клиенту и перевести в «Решена»"
                 style={{ background: '#67a030' }}
-                className="flex items-center justify-center gap-1.5 flex-1 text-white text-xs font-semibold py-1.5 rounded-lg transition-all hover:brightness-110 disabled:opacity-40"
+                className={`flex items-center justify-center gap-1.5 flex-1 text-white text-xs font-semibold py-1.5 rounded-lg transition-all hover:brightness-110 disabled:opacity-50 ${quickResolve.isPending && quickResolve.variables === 'completed' ? 'animate-pulse cursor-wait' : ''}`}
               >
-                {quickResolve.isPending && quickResolve.variables === 'completed' ? 'Отправка...' : <><Check size={14} /> Решить</>}
+                {quickResolve.isPending && quickResolve.variables === 'completed' ? <Working label="Отправляю…" /> : <><Check size={14} /> Решить</>}
               </button>
             </div>
           </div>
