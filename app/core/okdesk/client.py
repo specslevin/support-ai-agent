@@ -75,38 +75,32 @@ class OkdeskClient:
         content: bytes,
         content_type: str = "application/octet-stream",
     ) -> dict[str, Any] | None:
-        """Upload a file to an issue as an attachment.
+        """Attach a file to an issue via a private (internal) comment.
 
-        Okdesk supports ``POST /api/v1/issues/{id}/attachments`` with
-        multipart/form-data.  The file field must be named ``attachment_file``.
-        If the endpoint is unavailable (404/422) we fall back to attaching the
-        file via a private comment with ``attachment_file`` in the multipart
-        body of ``POST /api/v1/issues/{id}/comments``.
+        Okdesk has NO standalone issue-attachments endpoint (``/issues/{id}/
+        attachments`` → 404). Files are added through ``POST /issues/{id}/
+        comments`` as multipart/form-data, with the comment fields wrapped under
+        ``comment[...]`` and each file under the ASSOCIATIVE key
+        ``comment[attachments][<i>][attachment]`` (sequential ``[]`` and the
+        name ``attachment_file`` are rejected with 422 — verified empirically).
 
-        Returns the parsed JSON response, or None on failure (caller should
-        log and continue — not raise).
+        Returns the parsed JSON (the created comment) or None on failure — the
+        caller logs and continues, an attach failure must not break the flow.
         """
-        url_direct = f"{self._base_url}/issues/{issue_id}/attachments"
+        url = f"{self._base_url}/issues/{issue_id}/comments"
         params = {"api_token": self._token}
-        files = {"attachment_file": (filename, content, content_type)}
-
-        r = await self._client.post(url_direct, params=params, files=files, timeout=60.0)
-
-        if r.status_code in (404, 405, 422):
-            # Endpoint not available for this Okdesk plan/version — fallback:
-            # create a private (internal) comment that carries the file.
-            url_comment = f"{self._base_url}/issues/{issue_id}/comments"
-            data_fields = {
-                "comment[content]": f"[Вложение из родительской заявки: {filename}]",
-                "comment[public]": "false",
-            }
-            r = await self._client.post(
-                url_comment,
-                params=params,
-                data=data_fields,
-                files={"comment[attachments][][attachment_file]": (filename, content, content_type)},
-                timeout=60.0,
-            )
+        data = {
+            "comment[content]": f"Файл из родительской заявки: {filename}",
+            "comment[public]": "false",
+        }
+        if self._employee_id:
+            data["comment[author_id]"] = str(self._employee_id)
+        files = {"comment[attachments][0][attachment]": (filename, content, content_type)}
+        try:
+            r = await self._client.post(url, params=params, data=data, files=files, timeout=60.0)
+        except Exception:
+            print(f"[Okdesk] upload_attachment request error for issue {issue_id}")
+            return None
 
         if r.status_code >= 400:
             print(f"[Okdesk] upload_attachment failed {r.status_code}: {r.text[:200]}")
