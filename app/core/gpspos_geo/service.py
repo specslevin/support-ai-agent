@@ -29,8 +29,25 @@ def _unwrap_list(data: Any, *keys: str) -> list[dict[str, Any]]:
 
 
 class GpsposGeoService:
+    _OBJECTS_TTL = 120.0  # сек: кэш списка /Objects (внутри одного пакетного разбора)
+
     def __init__(self, client: GpsposGeoClient) -> None:
         self._client = client
+        self._objects_cache: tuple[float, list[dict[str, Any]]] | None = None
+
+    async def _objects_cached(self) -> list[dict[str, Any]]:
+        """Список всех объектов с коротким TTL-кэшем.
+
+        ``find_object_by_plate`` раньше качал ВЕСЬ список на каждый вызов — в
+        пакетном разборе (десятки/сотни ТС) это давало сотни полных загрузок и
+        многоминутные таймауты (63317). Кэш на 120с убирает повторные загрузки."""
+        now = time.time()
+        if self._objects_cache and now - self._objects_cache[0] < self._OBJECTS_TTL:
+            return self._objects_cache[1]
+        raw = await self._client.request("GET", "Objects")
+        rows = _unwrap_list(raw)
+        self._objects_cache = (now, rows)
+        return rows
 
     async def list_objects(self) -> list[ObjectInfo]:
         raw = await self._client.request("GET", "Objects")
@@ -138,8 +155,7 @@ class GpsposGeoService:
             return None
         core = self._plate_core(needle)
         special = self._special_candidates(needle)  # for спецтехника (5297СУ / СУ5297)
-        raw = await self._client.request("GET", "Objects")
-        rows = _unwrap_list(raw)
+        rows = await self._objects_cached()
         partial: dict[str, Any] | None = None
         core_match: dict[str, Any] | None = None
         special_match: dict[str, Any] | None = None

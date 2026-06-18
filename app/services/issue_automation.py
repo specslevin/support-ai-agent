@@ -8,6 +8,7 @@ answer for the operator to confirm.
 
 from __future__ import annotations
 
+import asyncio
 import datetime as _dt
 import json
 import math
@@ -37,6 +38,10 @@ _TRACK_GAP_MIN = 30
 _TELEPORT_KMH = 150
 # Plausible top speed (km/h) for the tracked vehicles; spikes above = spoofing.
 _SPEED_SPIKE_KMH = 110
+# Параллелизм разбора объектов в пакетной заявке (сводные письма с десятками ТС).
+# Последовательно сотни запросов телеметрии давали таймаут (63317, 187 записей,
+# ~270с). Ограниченная конкуренция держит нагрузку на GPSPOS в рамках.
+_BATCH_CONCURRENCY = 8
 
 # Trackers/Okdesk report in Moscow time (UTC+3); the prod server runs in UTC.
 # Day windows MUST be built in MSK — otherwise the daily window is shifted by 3h
@@ -1536,17 +1541,28 @@ class IssueAutomationService:
             # выездов по разным датам (63317/О579СХ) — каждую дату разбираем
             # отдельно; повторы той же пары (мульти-акт PDF) отсекаем.
             seen_pairs: set[tuple[str, str | None]] = set()
+            uniq: list[tuple[str, str | None, float | None]] = []
             for plate, pdate, psheet in targets:
                 key = (plate, pdate)
                 if key in seen_pairs:
                     continue
                 seen_pairs.add(key)
-                try:
-                    results.append(await self._analyze_object(
-                        plate, pdate, psheet, address, name,
-                    ))
-                except Exception:
-                    log.warning("analyze_batch_object_failed", file=name, plate=plate)
+                uniq.append((plate, pdate, psheet))
+
+            # Параллельный разбор с ограничением конкуренции — иначе сотни
+            # последовательных запросов телеметрии дают таймаут (63317).
+            sem = asyncio.Semaphore(_BATCH_CONCURRENCY)
+
+            async def _one(plate: str, pdate: str | None, psheet: float | None) -> dict[str, Any] | None:
+                async with sem:
+                    try:
+                        return await self._analyze_object(plate, pdate, psheet, address, name)
+                    except Exception:
+                        log.warning("analyze_batch_object_failed", file=name, plate=plate)
+                        return None
+
+            chunk = await asyncio.gather(*(_one(p, d, s) for p, d, s in uniq))
+            results.extend(r for r in chunk if r is not None)
         return results
 
     async def compose_aggregate_answer(self, objects: list[dict[str, Any]],
