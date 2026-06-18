@@ -27,7 +27,7 @@ const NAV: NavEntry[] = [
   { id: 'mango', label: 'Mango — звонки', icon: Phone, stub: true },
   { id: 'installers', label: 'Выезды монтажников', icon: Truck, stub: true },
   { id: 'analytics', label: 'Аналитика', icon: BarChart3, stub: true },
-  { id: 'settings', label: 'Настройки', icon: Settings, stub: true },
+  { id: 'settings', label: 'Шаблоны', icon: Settings },
 ]
 
 const STORAGE_KEY = 'sidebar.expanded'

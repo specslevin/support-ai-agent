@@ -79,6 +79,8 @@ export interface Comment {
   content: string | null
   created_at: string | null
   is_internal: boolean | null
+  is_public?: boolean
+  author_kind?: string
 }
 
 export type StatusCode = 'opened' | 'in_progress' | 'resolved' | 'closed' | string
@@ -198,4 +200,27 @@ export interface Template {
   usage_count: number
   is_favorite: boolean
   is_dynamic: boolean
+}
+
+export interface TemplateCategory {
+  id: number
+  name: string
+  color: string | null
+}
+
+export interface TemplateCreate {
+  name: string
+  content: string
+  category_id?: number | null
+  is_dynamic?: boolean
+  is_favorite?: boolean
+}
+
+export interface TemplateUpdate {
+  name?: string
+  content?: string
+  category_id?: number | null
+  is_dynamic?: boolean
+  is_favorite?: boolean
+  active?: boolean
 }

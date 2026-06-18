@@ -8,6 +8,7 @@ import { TrackPanel } from './components/TrackPanel'
 import { ChatPanel } from './components/ChatPanel'
 import { Sidebar, type Section } from './components/Sidebar'
 import { StubSection } from './components/StubSection'
+import { TemplatesManager } from './components/TemplatesManager'
 import { EmployeeMenu } from './components/pickers'
 import { useIssuesStore } from './store/issuesStore'
 import { useUserStore } from './store/userStore'
@@ -119,6 +120,17 @@ function Dashboard() {
                 <IssueDetail />
               </div>
             )}
+
+            {/* Track + charts panel — same overlay as the issues branch */}
+            {selectedIssueId && (
+              <div
+                className={`absolute top-0 bottom-0 right-[40%] bg-base border-r border-border z-30 flex flex-col min-h-0 shadow-2xl transition-all duration-300 ${
+                  trackOpen ? 'left-0 opacity-100' : 'left-[40%] opacity-0 pointer-events-none'
+                }`}
+              >
+                {trackOpen && <TrackPanel issueId={selectedIssueId} />}
+              </div>
+            )}
           </div>
         ) : isIssues ? (
           <>
@@ -150,8 +162,10 @@ function Dashboard() {
               )}
             </div>
           </>
+        ) : section === 'settings' ? (
+          <TemplatesManager />
         ) : (
-          <StubSection section={section as Exclude<Section, 'issues' | 'chat'>} />
+          <StubSection section={section as Exclude<Section, 'issues' | 'chat' | 'settings'>} />
         )}
       </div>
     </div>

@@ -5,7 +5,7 @@ import {
   Lightbulb, ArrowDown, ArrowLeft, Map, FilePlus, ExternalLink, Pause, Send,
   Layers, Power, RadioTower, Scissors, HelpCircle, FileText, Sheet,
   Image as ImageIcon, Paperclip, PanelRightClose, Info, MessageSquare, Sparkles, Wand2,
-  Loader2,
+  Loader2, Lock, User, Headset,
   type LucideIcon,
 } from 'lucide-react'
 import { api } from '../api/client'
@@ -1392,15 +1392,48 @@ export function IssueDetail() {
         {/* ── 4. Комментарии ───────────────────────────────────── */}
         <Block icon={MessageSquare} title="Комментарии" count={comments.length > 0 ? comments.length : null}>
           <div className="space-y-2">
-            {comments.map(c => (
-              <div key={c.id} className="bg-frame rounded-lg px-3 py-2.5 text-xs space-y-0.5">
-                <div className="flex items-center justify-between gap-2 text-muted">
-                  <span className="font-medium text-white/70 truncate">{c.author}</span>
-                  <span className="shrink-0 tabular-nums text-muted" title="Дата и время комментария">{formatDate(c.created_at) ?? '—'}</span>
+            {comments.map(c => {
+              const isClient = c.author_kind === 'client'
+              const isSystem = c.author_kind === 'system'
+              // is_internal is the legacy flag; is_public (new) takes precedence when present.
+              const isInternal = c.is_public === false || (c.is_public == null && c.is_internal === true)
+              const KindIcon = isClient ? User : isSystem ? Bot : Headset
+              const kindLabel = isClient ? 'Клиент' : isSystem ? 'Система' : 'Сотрудник'
+              return (
+                <div
+                  key={c.id}
+                  className={[
+                    'rounded-lg px-3 py-2.5 text-xs space-y-1',
+                    isClient ? 'bg-frame border-l-2 border-info/60' : 'bg-card border-l-2 border-accent/40',
+                    isInternal ? 'border border-dashed border-warning/50 bg-warning/5' : '',
+                  ].join(' ')}
+                >
+                  <div className="flex items-center justify-between gap-2 text-muted">
+                    <span className="flex items-center gap-1.5 min-w-0">
+                      <span
+                        title={kindLabel}
+                        className={`inline-flex items-center gap-1 shrink-0 px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wide ${
+                          isClient ? 'bg-info/15 text-info' : isSystem ? 'bg-frame text-muted' : 'bg-accent/15 text-accent'
+                        }`}
+                      >
+                        <KindIcon size={10} /> {kindLabel}
+                      </span>
+                      <span className="font-medium text-white/70 truncate">{c.author}</span>
+                      {isInternal && (
+                        <span
+                          title="Внутренний комментарий — не виден клиенту"
+                          className="inline-flex items-center gap-1 shrink-0 px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wide bg-warning/15 text-warning"
+                        >
+                          <Lock size={10} /> Внутренний
+                        </span>
+                      )}
+                    </span>
+                    <span className="shrink-0 tabular-nums text-muted" title="Дата и время комментария">{formatDate(c.created_at) ?? '—'}</span>
+                  </div>
+                  <p className="leading-relaxed whitespace-pre-wrap">{c.content ?? ''}</p>
                 </div>
-                <p className="leading-relaxed">{c.content ?? ''}</p>
-              </div>
-            ))}
+              )
+            })}
             {comments.length === 0 && <p className="text-xs text-muted">Комментариев нет</p>}
           </div>
 

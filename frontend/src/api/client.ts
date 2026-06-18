@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { IssuesListResponse, IssueDetail, Comment, Analysis, Template, AutomationResult, TrackData, IssueAttachment, BatchResult, TemplateValues, ChatResponse } from '../types'
+import type { IssuesListResponse, IssueDetail, Comment, Analysis, Template, TemplateCategory, TemplateCreate, TemplateUpdate, AutomationResult, TrackData, IssueAttachment, BatchResult, TemplateValues, ChatResponse } from '../types'
 
 const http = axios.create({
   baseURL: '/api/v1',
@@ -102,6 +102,26 @@ export const api = {
 
   listTemplates(): Promise<Template[]> {
     return http.get('/templates').then(r => r.data)
+  },
+
+  listTemplateCategories(): Promise<TemplateCategory[]> {
+    return http.get('/templates/categories').then(r => r.data)
+  },
+
+  createTemplate(body: TemplateCreate): Promise<Template> {
+    return http.post('/templates', body).then(r => r.data)
+  },
+
+  updateTemplate(id: number, body: TemplateUpdate): Promise<Template> {
+    return http.put(`/templates/${id}`, body).then(r => r.data)
+  },
+
+  deleteTemplate(id: number): Promise<{ ok: boolean }> {
+    return http.delete(`/templates/${id}`).then(r => r.data)
+  },
+
+  createTemplateCategory(name: string, color?: string): Promise<TemplateCategory> {
+    return http.post('/templates/categories', { name, ...(color ? { color } : {}) }).then(r => r.data)
   },
 
   listIssueTypes(): Promise<{ code: string; name: string }[]> {

@@ -768,10 +768,56 @@ async def get_issue_track(
         attachments_text = ""
         if live.attachments:
             attachments_text = await automation.read_attachments(external_id, live.attachments)
-        return await automation.build_track(
+        result = await automation.build_track(
             live.title, live.description, attachments_text=attachments_text or None,
             date_from=date_from, date_to=date_to,
         )
+        # The independent single-plate parse in build_track sometimes fails where
+        # automate() succeeds: automate has an LLM-extraction fallback (e.g. the
+        # fault date hidden in an HTML table — issue 64196). When the parse can't
+        # produce a clean plate+date, reuse the plate/date the AI already found
+        # (cached automate result) so the track panel matches the AI analysis.
+        if isinstance(result, dict) and result.get("error") == "no_plate_or_date":
+            fb_plate: str | None = None
+            fb_date: str | None = None
+            try:
+                cached = await cache.get_result_cache(external_id, "automate")
+                if cached and isinstance(cached.get("data"), dict):
+                    parsed = cached["data"].get("parsed") or {}
+                    p = parsed.get("plate")
+                    d = parsed.get("date")
+                    if isinstance(p, str) and p:
+                        fb_plate = p
+                    if isinstance(d, str) and d:
+                        fb_date = d[:10]
+            except Exception:
+                log.warning("track_fallback_cache_failed", issue_id=issue_id)
+            # Secondary fallback: first plate from the text + parsed date, when
+            # the cached automate result is missing one of the two fields.
+            try:
+                from app.services.issue_automation import extract_all_plates
+
+                if not fb_plate:
+                    plates = extract_all_plates(
+                        f"{live.title or ''} {attachments_text or ''}"
+                    )
+                    if plates:
+                        fb_plate = plates[0]
+                if not fb_date:
+                    parsed_again = automation.parse_issue(
+                        live.title, live.description, None,
+                        extra_text=attachments_text or None,
+                    )
+                    if parsed_again.date:
+                        fb_date = parsed_again.date
+            except Exception:
+                log.warning("track_fallback_extract_failed", issue_id=issue_id)
+            if fb_plate and fb_date:
+                result = await automation.build_track(
+                    "", "", plate=fb_plate, fault_date=fb_date,
+                    date_from=date_from, date_to=date_to,
+                )
+        return result
     except HTTPException:
         raise
     except Exception:
@@ -831,8 +877,23 @@ async def get_issue_comments(
         # Okdesk returns the comment timestamp as `published_at` (the parsed
         # IssueComment model uses extra="ignore", so that field is dropped and
         # `created_at` ends up None). Re-read the raw payload to recover the
-        # timestamp the frontend renders via formatDate(c.created_at).
+        # timestamp the frontend renders via formatDate(c.created_at), plus the
+        # visibility flag (`public`) and the author type (`author.type`) the UI
+        # uses to distinguish client vs employee / public vs private comments.
         raw_dates: dict[int, str] = {}
+        raw_public: dict[int, bool] = {}
+        raw_author_kind: dict[int, str] = {}
+
+        def _map_author_kind(author_type: object) -> str:
+            # Okdesk `author.type` values: "contact" (client portal user),
+            # "employee"/"user"/"staff" (support staff). Map to UI buckets.
+            t = str(author_type or "").lower()
+            if t in ("contact", "client"):
+                return "client"
+            if t in ("employee", "staff", "user", "operator"):
+                return "employee"
+            return "system"
+
         try:
             raw = await okdesk._client.get_issue_comments(external_id)
             raw_rows = raw if isinstance(raw, list) else (raw.get("data") if isinstance(raw, dict) else None)
@@ -840,11 +901,19 @@ async def get_issue_comments(
                 if not isinstance(r, dict):
                     continue
                 cid = r.get("id")
+                if cid is None:
+                    continue
                 ts = r.get("published_at") or r.get("created_at")
-                if cid is not None and ts:
+                if ts:
                     raw_dates[cid] = ts
+                pub = r.get("public")
+                if pub is not None:
+                    raw_public[cid] = bool(pub)
+                author = r.get("author")
+                if isinstance(author, dict):
+                    raw_author_kind[cid] = _map_author_kind(author.get("type"))
         except Exception:
-            log.warning("comment_dates_lookup_failed", issue_id=issue_id)
+            log.warning("comment_meta_lookup_failed", issue_id=issue_id)
 
         return [
             {
@@ -853,6 +922,9 @@ async def get_issue_comments(
                 "content": c.content,
                 "created_at": c.created_at or raw_dates.get(c.id),
                 "is_internal": c.is_internal,
+                # Best-effort UI metadata: default public=True, kind=employee.
+                "is_public": raw_public.get(c.id, True),
+                "author_kind": raw_author_kind.get(c.id, "employee"),
             }
             for c in comments
         ]

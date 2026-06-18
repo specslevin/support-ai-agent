@@ -11,7 +11,7 @@ import sqlite3
 from pathlib import Path
 
 import structlog
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Body, HTTPException
 from sqlalchemy import select
 
 from app.core.db.database import AsyncSessionLocal
@@ -341,3 +341,194 @@ async def migrate_templates() -> dict:
         raise HTTPException(status_code=500, detail="Failed to migrate templates")
 
     return {"ok": True, "templates": tpl_count, "categories": cat_count}
+
+
+# --------------------------------------------------------------------------- #
+# CRUD on OUR DB (app_templates / app_template_categories) — async ORM only.
+# Targets ONLY our tables; never writes to the okdesk-console DB.
+# --------------------------------------------------------------------------- #
+async def _shape_template(session, tpl: Template) -> dict:
+    """Render a ``Template`` row in the SAME shape ``GET /templates`` returns.
+
+    ``GET`` exposes the console-side id (``original_id``) as ``id`` and joins
+    categories on ``original_id``. For locally-created rows ``original_id`` is
+    NULL, so we fall back to the primary key ``id`` to keep a stable identifier
+    the other CRUD endpoints can address.
+    """
+    category_name = None
+    category_color = None
+    if tpl.category_id is not None:
+        cat = (
+            await session.execute(
+                select(TemplateCategory).where(
+                    TemplateCategory.original_id == tpl.category_id
+                )
+            )
+        ).scalar_one_or_none()
+        if cat is not None:
+            category_name = cat.name
+            category_color = cat.color
+    return {
+        "id": tpl.original_id if tpl.original_id is not None else tpl.id,
+        "name": tpl.name,
+        "content": tpl.content,
+        "category_id": tpl.category_id,
+        "usage_count": tpl.usage_count,
+        "is_favorite": tpl.is_favorite,
+        "is_dynamic": tpl.is_dynamic,
+        "category_name": category_name,
+        "category_color": category_color,
+    }
+
+
+async def _get_template_or_404(session, template_id: int) -> Template:
+    """Resolve a template by the public id (``original_id`` first, then PK)."""
+    tpl = (
+        await session.execute(
+            select(Template).where(Template.original_id == template_id)
+        )
+    ).scalar_one_or_none()
+    if tpl is None:
+        tpl = (
+            await session.execute(
+                select(Template).where(Template.id == template_id)
+            )
+        ).scalar_one_or_none()
+    if tpl is None:
+        raise HTTPException(status_code=404, detail="Template not found")
+    return tpl
+
+
+@router.post("")
+async def create_template(payload: dict = Body(...)) -> dict:
+    """Create a template in OUR DB.
+
+    Body: ``{name, content, category_id?, is_dynamic?, is_favorite?}``.
+    Inserts into ``app_templates`` with ``active=1, usage_count=0,
+    source="local"``. Returns the created row in the ``GET /templates`` shape.
+    """
+    name = (payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    try:
+        async with AsyncSessionLocal() as session:
+            tpl = Template(
+                original_id=None,
+                name=name,
+                content=payload.get("content"),
+                category_id=payload.get("category_id"),
+                active=1,
+                usage_count=0,
+                is_dynamic=1 if payload.get("is_dynamic") else 0,
+                is_favorite=1 if payload.get("is_favorite") else 0,
+                source="local",
+            )
+            session.add(tpl)
+            await session.commit()
+            await session.refresh(tpl)
+            return await _shape_template(session, tpl)
+    except HTTPException:
+        raise
+    except Exception:
+        log.exception("create_template_failed")
+        raise HTTPException(status_code=500, detail="Failed to create template")
+
+
+@router.put("/{template_id}")
+async def update_template(template_id: int, payload: dict = Body(...)) -> dict:
+    """Partial update of a template (name/content/category_id/is_dynamic/
+    is_favorite/active). Returns the updated row in the ``GET`` shape. 404 if
+    not found."""
+    try:
+        async with AsyncSessionLocal() as session:
+            tpl = await _get_template_or_404(session, template_id)
+            if "name" in payload:
+                new_name = (payload.get("name") or "").strip()
+                if not new_name:
+                    raise HTTPException(
+                        status_code=400, detail="name cannot be empty"
+                    )
+                tpl.name = new_name
+            if "content" in payload:
+                tpl.content = payload.get("content")
+            if "category_id" in payload:
+                tpl.category_id = payload.get("category_id")
+            if "is_dynamic" in payload:
+                tpl.is_dynamic = 1 if payload.get("is_dynamic") else 0
+            if "is_favorite" in payload:
+                tpl.is_favorite = 1 if payload.get("is_favorite") else 0
+            if "active" in payload:
+                tpl.active = 1 if payload.get("active") else 0
+            await session.commit()
+            await session.refresh(tpl)
+            return await _shape_template(session, tpl)
+    except HTTPException:
+        raise
+    except Exception:
+        log.exception("update_template_failed", template_id=template_id)
+        raise HTTPException(status_code=500, detail="Failed to update template")
+
+
+@router.delete("/{template_id}")
+async def delete_template(template_id: int) -> dict:
+    """Soft delete: set ``active=0`` so it disappears from ``GET /templates``.
+    404 if not found."""
+    try:
+        async with AsyncSessionLocal() as session:
+            tpl = await _get_template_or_404(session, template_id)
+            tpl.active = 0
+            await session.commit()
+            return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception:
+        log.exception("delete_template_failed", template_id=template_id)
+        raise HTTPException(status_code=500, detail="Failed to delete template")
+
+
+@router.post("/{template_id}/usage")
+async def increment_template_usage(template_id: int) -> dict:
+    """Increment ``usage_count`` by 1. Returns ``{ok, usage_count}``. 404 if not
+    found."""
+    try:
+        async with AsyncSessionLocal() as session:
+            tpl = await _get_template_or_404(session, template_id)
+            tpl.usage_count = int(tpl.usage_count or 0) + 1
+            await session.commit()
+            await session.refresh(tpl)
+            return {"ok": True, "usage_count": tpl.usage_count}
+    except HTTPException:
+        raise
+    except Exception:
+        log.exception("increment_template_usage_failed", template_id=template_id)
+        raise HTTPException(status_code=500, detail="Failed to update usage")
+
+
+@router.post("/categories")
+async def create_category(payload: dict = Body(...)) -> dict:
+    """Create a category ``{name, color?}`` in OUR DB. Returns the created
+    category ``{id, name, color}`` (``id`` is the console-side ``original_id``
+    when set, else the PK — matching ``GET /templates/categories``)."""
+    name = (payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    try:
+        async with AsyncSessionLocal() as session:
+            cat = TemplateCategory(
+                original_id=None,
+                name=name,
+                color=payload.get("color"),
+            )
+            session.add(cat)
+            await session.commit()
+            await session.refresh(cat)
+            return {
+                "id": cat.original_id if cat.original_id is not None else cat.id,
+                "name": cat.name,
+                "color": cat.color,
+            }
+    except HTTPException:
+        raise
+    except Exception:
+        log.exception("create_category_failed")
+        raise HTTPException(status_code=500, detail="Failed to create category")
