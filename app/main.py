@@ -204,12 +204,24 @@ _AUTH_PUBLIC_PREFIXES = ("/api/v1/auth/login", "/api/v1/webhooks", "/api/v1/test
 _DEMO_WRITE_ALLOWED_METHODS = ("GET", "HEAD", "OPTIONS")
 
 
+def _demo_write_allowed(path: str) -> bool:
+    """Writes a demo user MAY perform — so management can see what the AI does.
+
+    Only «Анализ заявки» (single automate) and the chat. The per-issue/per-chat
+    usage limit is enforced on the frontend (demo is for showcasing). Everything
+    else (statuses, comments, batch разбор, дочерние) stays blocked.
+    """
+    return path.endswith("/automate") or path == "/api/v1/chat"
+
+
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     """Enforce a valid token on /api/v1 routes; block writes for the demo role.
 
     Non-API paths (SPA, static, /health, /docs, Telegram webhook) are untouched —
-    the React app must load so the user can reach the login screen.
+    the React app must load so the user can reach the login screen. The token is
+    read from the ``Authorization: Bearer`` header OR a ``?token=`` query param
+    (needed for direct attachment-download links opened by the browser).
     """
     path = request.url.path
     if path.startswith("/api/v1/") and not path.startswith(_AUTH_PUBLIC_PREFIXES):
@@ -218,11 +230,15 @@ async def auth_middleware(request: Request, call_next):
         cfg = getattr(request.app.state, "auth_config", None)
         auth_header = request.headers.get("Authorization", "")
         token = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else None
+        if not token:
+            token = request.query_params.get("token")
         payload = verify_token(token, cfg.secret) if cfg else None
         if not payload:
             return JSONResponse({"detail": "Не авторизовано"}, status_code=401)
         request.state.user = payload
-        if payload.get("r") == "demo" and request.method not in _DEMO_WRITE_ALLOWED_METHODS:
+        if (payload.get("r") == "demo"
+                and request.method not in _DEMO_WRITE_ALLOWED_METHODS
+                and not _demo_write_allowed(path)):
             return JSONResponse(
                 {"detail": "Демо-режим: только просмотр. Изменения недоступны."},
                 status_code=403,

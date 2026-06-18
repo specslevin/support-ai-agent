@@ -12,8 +12,31 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import time
 from typing import Any
+
+_PBKDF2_ITERS = 200_000
+
+
+def hash_password(password: str) -> str:
+    """Salted PBKDF2-SHA256 hash, format ``pbkdf2_sha256$iters$salt_hex$hash_hex``."""
+    salt = os.urandom(16)
+    dk = hashlib.pbkdf2_hmac("sha256", (password or "").encode("utf-8"), salt, _PBKDF2_ITERS)
+    return f"pbkdf2_sha256${_PBKDF2_ITERS}${salt.hex()}${dk.hex()}"
+
+
+def verify_password(password: str, stored: str) -> bool:
+    try:
+        algo, iters, salt_hex, hash_hex = stored.split("$")
+        if algo != "pbkdf2_sha256":
+            return False
+        dk = hashlib.pbkdf2_hmac(
+            "sha256", (password or "").encode("utf-8"), bytes.fromhex(salt_hex), int(iters)
+        )
+        return hmac.compare_digest(dk.hex(), hash_hex)
+    except Exception:
+        return False
 
 
 def _b64e(raw: bytes) -> str:

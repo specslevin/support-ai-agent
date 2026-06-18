@@ -52,3 +52,37 @@ async def me(request: Request) -> UserOut:
     if not user:
         raise HTTPException(status_code=401, detail="Не авторизовано")
     return UserOut(username=user.get("u", ""), role=user.get("r", ""))
+
+
+def _require_admin(request: Request) -> None:
+    user = getattr(request.state, "user", None)
+    if not user or user.get("r") != "admin":
+        raise HTTPException(status_code=403, detail="Только для администратора")
+
+
+class PasswordIn(BaseModel):
+    password: str
+
+
+@router.get("/users", response_model=list[UserOut])
+async def list_users(request: Request) -> list[UserOut]:
+    """List all accounts (admin only) — for the password-management UI."""
+    _require_admin(request)
+    cfg = getattr(request.app.state, "auth_config", None)
+    if cfg is None:
+        raise HTTPException(status_code=503, detail="Авторизация не настроена")
+    return [UserOut(**u) for u in cfg.list_users()]
+
+
+@router.post("/users/{username}/password")
+async def change_password(username: str, body: PasswordIn, request: Request) -> dict[str, bool]:
+    """Change the password of any account (admin only)."""
+    _require_admin(request)
+    cfg = getattr(request.app.state, "auth_config", None)
+    if cfg is None:
+        raise HTTPException(status_code=503, detail="Авторизация не настроена")
+    if not (body.password or "").strip():
+        raise HTTPException(status_code=400, detail="Пароль не может быть пустым")
+    if not cfg.set_password(username, body.password):
+        raise HTTPException(status_code=404, detail="Учётная запись не найдена")
+    return {"ok": True}

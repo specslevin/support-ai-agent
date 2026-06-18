@@ -119,6 +119,82 @@ def _split_acts(text: str) -> list[str]:
     return [p for p in parts if p.strip()]
 
 
+# Short date: DD.MM.YY  or  DD.MM.YYYY
+_DATE_SHORT_RE = re.compile(r"(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{2}(?:\d{2})?)")
+
+
+def _parse_date_short(m: "re.Match[str]") -> str | None:
+    """Parse DD.MM.YY or DD.MM.YYYY match → ISO, or None on invalid."""
+    try:
+        d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if y < 100:
+            y += 2000
+        return _dt.date(y, mo, d).isoformat()
+    except (ValueError, IndexError):
+        return None
+
+
+def _parse_summary_table(text: str) -> list[tuple[str, str | None]]:
+    """Parse a «сводное письмо» table (header contains «Дата выезда»).
+
+    Each ТС occupies one or more rows:
+      • The first row for a ТС contains a plate in the «Автомобиль, г/н» cell.
+      • Every data row contains a date (possibly a range like «DD.MM.YY - DD.MM.YY»
+        or «DD.MM.YYYY (HH:MM) - DD.MM.YYYY (HH:MM)»).
+      • «нет данных» means no Glonass data — we still want the plate, date=None
+        for that row, but we don't add a separate entry (the plate/date pair is
+        tracked separately for the plate; we only need ONE entry per plate).
+
+    Returns a list of ``(plate, date_iso | None)`` pairs — one entry per
+    distinct plate, using the FIRST date found for that plate.  If a plate has
+    no valid date across all its rows, ``date_iso`` is None.
+
+    Strategy:
+      Line-by-line scan.  We track «current plate» and look for the first date
+      on that plate's rows.  A new plate is recognised by ``_PLATE_STD_RE``
+      appearing in the line (plates in these letters are always standard-format).
+    """
+    results: list[tuple[str, str | None]] = []
+    seen_plates: set[str] = set()
+
+    current_plate: str | None = None
+    current_date: str | None = None  # first valid date for current_plate
+
+    def _flush() -> None:
+        nonlocal current_plate, current_date
+        if current_plate and current_plate not in seen_plates:
+            seen_plates.add(current_plate)
+            results.append((current_plate, current_date))
+        current_plate = None
+        current_date = None
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        # Check whether this line introduces a new plate.
+        plate_match = _PLATE_STD_RE.search(stripped)
+        if plate_match:
+            new_plate = re.sub(r"[\s-]", "", plate_match.group(0)).upper().translate(_PLATE_TRANSLIT)
+            if new_plate != current_plate:
+                _flush()
+                current_plate = new_plate
+
+        # Extract the first date from the line (skip if we already have one
+        # for the current plate).
+        if current_plate and current_date is None:
+            dm = _DATE_SHORT_RE.search(stripped)
+            if dm:
+                iso = _parse_date_short(dm)
+                if iso:
+                    current_date = iso
+
+    # Don't forget the last plate.
+    _flush()
+    return results
+
+
 _DATE_RE = re.compile(r"(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{4})")
 # Mileage figure inside a comment («пробег … 49 км по ССМ ГЛОНАСС 0 км»):
 # a number immediately followed by км/м. Used only to confirm a comment is
@@ -232,7 +308,7 @@ _CATEGORY_CATALOG: list[dict[str, str]] = [
      "template": "Добрый день! Терминал временно терял связь, данные из внутренней памяти выгрузились. Пробег за {date} составил {system_km} км. Если терминал ещё не выгрузил все данные за период потери связи, пробег обновится после восстановления связи."},
     {"key": "Изменили настройки", "when": "Трек был, но детектор поездок занижал пробег; после корректировки настроек пробег отобразился полностью.",
      "template": "Добрый день! Изменили настройки детектора поездок. Трек отобразился полностью, пробег за {date} составил {system_km} км."},
-    {"key": "Диагностика", "when": "Терминал не на связи / нет данных за дату и нет признаков глушения или штатного отключения — нужна удалённая диагностика силами клиента.",
+    {"key": "Диагностика", "when": "Терминал не на связи / нет данных за дату и нет признаков глушения или штатного отключения — нужна удалённая проверка силами нашей техподдержки.",
      "template": "Здравствуйте! Для первичной удалённой диагностики терминала просим: 1. Включить питание терминала (массу или клеммы АКБ) и не выключать до конца рабочего дня. 2. Проверить целостность проводов питания. 3. Проверить светодиодную индикацию на корпусе. Сообщите о результате."},
 ]
 
@@ -286,7 +362,12 @@ _GENERAL_ANSWER_PROMPT = (
     "суточная статистика и т.п.). Опираясь ТОЛЬКО на эти факты и текст заявки: "
     "(а) сформулируй проблему клиента; (б) дай вежливый черновик ответа на русском, "
     "подставляя реальные числа из фактов; если данных не хватает — кратко скажи, что "
-    "оператору нужно ещё проверить, и заполни это в needs_more. Не выдумывай данные, "
+    "оператору нужно ещё проверить, и заполни это в needs_more. "
+    "ВАЖНО: если в фактах есть «ситуация_с_данными» с «последнее_сообщение_относительно_даты»=«раньше_даты_неисправности» "
+    "и данных за дату нет — объект перестал выходить на связь ещё ДО заявленной даты: это случай для "
+    "удалённой проверки силами НАШЕЙ техподдержки (проверить питание/массу терминала, проводку, светодиодную индикацию). "
+    "Не предлагай передачу/перенастройку объекта и НЕ пиши «силами клиента»; укажи дату последнего сообщения. "
+    "Не выдумывай данные, "
     "которых нет в фактах. Верни СТРОГО JSON без пояснений: "
     '{"problem": "...", "answer": "...", "confidence": 0.0-1.0, '
     '"reasoning": "...", "needs_more": "..."}'
@@ -719,7 +800,7 @@ class IssueAutomationService:
             "расхождения; анализируй именно её (самую свежую) и отвечай по данным за эту дату, подставляя её число и пробег. "
             "(д) если данных за указанную дату НЕТ (признак no_data / поле «ситуация_с_данными») — действуй по алгоритму: "
             "— если «последнее_сообщение_относительно_даты»=«раньше_даты_неисправности» — объект перестал выходить на связь ещё ДО заявленной даты: "
-            "рекомендуй удалённую диагностику (проверить питание/массу терминала, проводку, светодиодную индикацию), категория «Диагностика»; "
+            "рекомендуй удалённую проверку силами НАШЕЙ техподдержки (НЕ пиши «силами клиента»): проверить питание/массу терминала, проводку, светодиодную индикацию, категория «Диагностика»; "
             "— иначе если в «проверка_данных_после_даты» данные_возобновились=true — в указанную дату питания/связи не было, но позже данные пошли: "
             "ответь, что в указанную дату отсутствовало питающее напряжение/связь, данные возобновились (укажи дату_возобновления), "
             "трек за период отсутствия восстановить нельзя; категория «Не было питания», уверенность ≥0.8; "
@@ -890,6 +971,29 @@ class IssueAutomationService:
                     facts["daily_stats"] = "нет суточной статистики за дату"
             except Exception:  # pragma: no cover - tool may fail
                 failed.append("daily_stats")
+
+        # Детерминированная подсказка (64279): если объект последний раз выходил
+        # на связь ЯВНО раньше заявленной даты и данных за дату нет — это «давно
+        # не на связи» → удалённая проверка силами техподдержки, а не произвольный
+        # ответ про передачу/настройку объекта.
+        st_obj = facts.get("status") if isinstance(facts.get("status"), dict) else None
+        last_unix = st_obj.get("last_time_unix") if st_obj else None
+        if last_unix and date:
+            try:
+                last_date = _msk_date_from_ms(last_unix).isoformat()
+                sit: dict[str, Any] = {
+                    "дата_последнего_сообщения": last_date,
+                    "данные_за_дату": "есть" if isinstance(facts.get("daily_stats"), dict) else "отсутствуют",
+                }
+                if last_date < date:
+                    sit["последнее_сообщение_относительно_даты"] = "раньше_даты_неисправности"
+                elif last_date > date:
+                    sit["последнее_сообщение_относительно_даты"] = "позже_даты_неисправности"
+                else:
+                    sit["последнее_сообщение_относительно_даты"] = "в_дату_неисправности"
+                facts["ситуация_с_данными"] = sit
+            except Exception:  # pragma: no cover - best effort
+                pass
 
         # ---- PASS 2: draft the answer from gathered facts ---------------
         problem = ""
@@ -1302,15 +1406,33 @@ class IssueAutomationService:
                 continue
 
             # Сформировать цели (plate, date, sheet) для анализа.
-            # Имя файла с номером → один ТС, факты из всего текста. Иначе —
-            # либо мульти-акт PDF (каждый акт = свой ТС/дата/ПЛ, см. 64250),
-            # либо «общая» заявка со списком ТС (общая дата/ПЛ).
+            # Приоритет веток:
+            # 1. Имя файла содержит гос.номер → один ТС, факты из всего текста.
+            # 2. Сводное письмо с таблицей «Дата выезда» (63317) → каждый ТС
+            #    получает СВОЮ дату из его строки, а не общую первую дату.
+            # 3. Мульти-акт PDF (несколько «Акт №») → сегментация по актам (64250).
+            # 4. Общая заявка со списком ТС → одна дата/ПЛ на всех.
             targets: list[tuple[str, str | None, float | None]] = []
             base_date: str | None = None
             if filename_plate:
                 p = self.parse_issue(name, "", None, extra_text=text)
                 base_date = p.date
                 targets.append((filename_plate, p.date, p.sheet_mileage_km))
+            elif re.search(r"дат[аы]\s+выезда", text, re.I):
+                # Сводное письмо-таблица (Саратовские РС, 63317):
+                # «Автомобиль, г/н | Дата выезда | Пробег по Глонасс | Пробег по 1С».
+                # Каждый ТС — отдельная строка со своей датой. Без разбивки
+                # по «Акт №» парсер берёт первую дату из всего текста → неверно.
+                summary_pairs = _parse_summary_table(text)
+                for plate, pdate in summary_pairs:
+                    targets.append((plate, pdate, None))
+                if not targets:
+                    # Фолбэк: если парсер таблицы ничего не дал (OCR плохой),
+                    # падаем на стандартный путь.
+                    p = self.parse_issue(name, "", None, extra_text=text)
+                    base_date = p.date
+                    for plate in extract_all_plates(text):
+                        targets.append((plate, p.date, p.sheet_mileage_km))
             else:
                 acts = _split_acts(text)
                 if len(acts) >= 2:

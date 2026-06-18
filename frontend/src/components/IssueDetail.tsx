@@ -633,6 +633,10 @@ function AutoAnalysis({ issueId, onUseDraft, latestAnalysis, issueTitle, company
   const [result, setResult] = useState<AutomationResult | null>(null)
   const [confirmResolve, setConfirmResolve] = useState(false)
 
+  // Demo: allow analysis only once per issue. Track in localStorage.
+  const demoAnalyzedKey = `demo_analyzed_${issueId}`
+  const demoAlreadyAnalyzed = isDemo && !!localStorage.getItem(demoAnalyzedKey)
+
   // Multi-attachment («общая») issue → single-object analysis is misleading
   // (it picks just the first plate). Defer to «Разбор по объектам» below.
   const { data: attachments = [] } = useQuery({
@@ -676,6 +680,7 @@ function AutoAnalysis({ issueId, onUseDraft, latestAnalysis, issueTitle, company
     onSuccess: (data) => {
       setResult(data)
       setConfirmResolve(false)
+      if (isDemo) localStorage.setItem(demoAnalyzedKey, '1')
       queryClient.invalidateQueries({ queryKey: ['issue', issueId] })
       queryClient.invalidateQueries({ queryKey: ['automate-cached', issueId] })
     },
@@ -711,9 +716,9 @@ function AutoAnalysis({ issueId, onUseDraft, latestAnalysis, issueTitle, company
     <div className="space-y-3">
       <button
         onClick={() => run.mutate()}
-        disabled={run.isPending || isDemo}
-        title={isDemo ? 'Недоступно в демо-режиме' : undefined}
-        className={`flex items-center justify-center gap-2 w-full bg-card border border-accent/40 text-accent hover:bg-accent/10 text-xs font-semibold py-2 rounded-lg transition-colors disabled:opacity-40 ${run.isPending ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
+        disabled={run.isPending || demoAlreadyAnalyzed}
+        title={demoAlreadyAnalyzed ? 'Демо: анализ доступен один раз' : undefined}
+        className={`flex items-center justify-center gap-2 w-full bg-card border border-accent/40 text-accent hover:bg-accent/10 text-xs font-semibold py-2 rounded-lg transition-colors disabled:opacity-40 ${run.isPending ? 'animate-pulse cursor-wait' : ''} ${demoAlreadyAnalyzed ? 'cursor-not-allowed' : ''}`}
       >
         {run.isPending ? (
           <Working label="Анализирую заявку и данные geo…" />
@@ -992,7 +997,7 @@ function BatchAnalysis({ issueId, onUseDraft, onOpenExternal }: { issueId: numbe
         ) : res ? (
           <><RefreshCw size={14} /> Обновить разбор</>
         ) : (
-          <><Layers size={14} /> Разбор по объектам</>
+          <><Layers size={14} /> Разбор по вложениям</>
         )}
       </button>
       {isCached && (

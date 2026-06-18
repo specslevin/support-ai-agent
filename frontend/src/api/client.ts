@@ -63,6 +63,14 @@ export const authApi = {
   getMe(): Promise<{ username: string; role: 'admin' | 'demo' }> {
     return http.get('/auth/me').then(r => r.data)
   },
+
+  listUsers(): Promise<{ username: string; role: 'admin' | 'demo' }[]> {
+    return http.get('/auth/users').then(r => r.data)
+  },
+
+  changePassword(username: string, password: string): Promise<{ ok: boolean }> {
+    return http.post(`/auth/users/${username}/password`, { password }).then(r => r.data)
+  },
 }
 
 export interface IssuesQuery {
@@ -144,7 +152,17 @@ export const api = {
   },
 
   attachmentUrl(id: number, attId: number): string {
-    return `/api/v1/issues/${id}/attachments/${attId}/download`
+    // Token in query param — browsers don't send Authorization headers for direct links/window.open
+    const raw = localStorage.getItem('auth')
+    let token = ''
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw) as { state?: { token?: string } }
+        token = parsed?.state?.token ?? ''
+      } catch { /* ignore */ }
+    }
+    const qs = token ? `?token=${encodeURIComponent(token)}` : ''
+    return `/api/v1/issues/${id}/attachments/${attId}/download${qs}`
   },
 
   refreshCache(): Promise<{ ok: boolean; synced: number }> {

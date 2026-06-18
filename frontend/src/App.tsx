@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
-import { ChevronDown, RefreshCw, ClipboardList, MessageSquare, Phone, Truck, BarChart3, Settings, LogOut, type LucideIcon } from 'lucide-react'
+import { RefreshCw, ClipboardList, MessageSquare, Phone, Truck, BarChart3, Settings, LogOut, type LucideIcon } from 'lucide-react'
 import { IssueFilters } from './components/IssueFilters'
 import { IssuesList } from './components/IssuesList'
 import { IssueDetail } from './components/IssueDetail'
@@ -9,60 +9,15 @@ import { ChatPanel } from './components/ChatPanel'
 import { Sidebar, type Section } from './components/Sidebar'
 import { StubSection } from './components/StubSection'
 import { TemplatesManager } from './components/TemplatesManager'
-import { EmployeeMenu } from './components/pickers'
 import { Login } from './components/Login'
 import { DemoBanner } from './components/DemoBanner'
 import { DemoToast } from './components/DemoToast'
 import { useIssuesStore } from './store/issuesStore'
-import { useUserStore } from './store/userStore'
 import { useAuthStore } from './store/authStore'
 import { api, authApi } from './api/client'
 
 const queryClient = new QueryClient()
 
-function UserSelector() {
-  const { currentUser, setCurrentUser } = useUserStore()
-  const [open, setOpen] = useState(false)
-
-  return (
-    <div className="relative">
-      <button
-        onClick={() => setOpen(o => !o)}
-        className="flex items-center gap-2 text-xs px-3 py-1.5 rounded-lg border border-border hover:border-accent transition-colors"
-      >
-        <span className="text-muted">Я:</span>
-        <span className={currentUser ? 'text-white' : 'text-muted/60'}>
-          {currentUser?.name ?? 'Выбрать...'}
-        </span>
-        <ChevronDown size={13} className="text-muted" />
-      </button>
-
-      {open && (
-        <div className="absolute right-0 top-full mt-1 bg-card border border-border rounded-lg py-1 z-50 w-44 shadow-lg">
-          <EmployeeMenu
-            selectedId={currentUser?.id ?? null}
-            onPick={emp => { setCurrentUser(emp); setOpen(false) }}
-          />
-          {currentUser && (
-            <>
-              <div className="border-t border-border my-1" />
-              <button
-                onClick={() => { setCurrentUser(null); setOpen(false) }}
-                className="w-full text-left px-4 py-1.5 text-xs text-muted hover:text-white hover:bg-white/5 transition-colors"
-              >
-                Не выбрано
-              </button>
-            </>
-          )}
-        </div>
-      )}
-
-      {open && (
-        <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-      )}
-    </div>
-  )
-}
 
 function LogoutButton() {
   const logout = useAuthStore(s => s.logout)
@@ -141,7 +96,6 @@ function Dashboard() {
             {isIssues && lastSynced != null && (
               <span className="text-xs text-muted">Синхронизировано: {lastSynced}</span>
             )}
-            <UserSelector />
             {isIssues && (
               <button
                 onClick={handleRefresh}

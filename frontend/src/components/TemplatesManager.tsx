@@ -1,9 +1,9 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import {
-  Plus, Search, Star, Trash2, Pencil, X, Check, Sparkles, FileText, Loader2,
+  Plus, Search, Star, Trash2, Pencil, X, Check, Sparkles, FileText, Loader2, KeyRound,
 } from 'lucide-react'
-import { api } from '../api/client'
+import { api, authApi } from '../api/client'
 import { useAuthStore } from '../store/authStore'
 import type { Template, TemplateCreate } from '../types'
 import { hasPlaceholders } from '../lib/templates'
@@ -184,9 +184,71 @@ function TemplateForm({
   )
 }
 
+function PasswordManager() {
+  const { data: users = [], isLoading } = useQuery({
+    queryKey: ['auth-users'],
+    queryFn: () => authApi.listUsers(),
+    staleTime: 60_000,
+  })
+
+  const [passwords, setPasswords] = useState<Record<string, string>>({})
+  const [statuses, setStatuses] = useState<Record<string, 'ok' | 'error'>>({})
+
+  const changeMut = useMutation({
+    mutationFn: ({ username, password }: { username: string; password: string }) =>
+      authApi.changePassword(username, password),
+    onSuccess: (_data, { username }) => {
+      setStatuses(s => ({ ...s, [username]: 'ok' }))
+      setPasswords(p => ({ ...p, [username]: '' }))
+      setTimeout(() => setStatuses(s => { const n = { ...s }; delete n[username]; return n }), 3000)
+    },
+    onError: (_err, { username }) => {
+      setStatuses(s => ({ ...s, [username]: 'error' }))
+    },
+  })
+
+  if (isLoading) {
+    return <p className="flex items-center gap-2 text-xs text-muted"><Loader2 size={14} className="animate-spin" /> Загрузка учёток…</p>
+  }
+
+  return (
+    <div className="space-y-3">
+      {users.map(u => {
+        const pw = passwords[u.username] ?? ''
+        const st = statuses[u.username]
+        const isPending = changeMut.isPending && changeMut.variables?.username === u.username
+        return (
+          <div key={u.username} className="flex items-center gap-3 bg-card border border-border rounded-lg px-3 py-2">
+            <span className="text-xs font-medium text-white w-24 shrink-0 truncate">{u.username}</span>
+            <span className="text-[10px] uppercase tracking-wide text-muted/60 w-10 shrink-0">{u.role}</span>
+            <input
+              type="password"
+              value={pw}
+              onChange={e => setPasswords(p => ({ ...p, [u.username]: e.target.value }))}
+              placeholder="Новый пароль"
+              className="flex-1 bg-frame border border-border rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:border-accent"
+            />
+            <button
+              disabled={!pw.trim() || isPending}
+              onClick={() => changeMut.mutate({ username: u.username, password: pw })}
+              className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium bg-accent text-black rounded-lg hover:opacity-90 transition-opacity disabled:opacity-40 shrink-0"
+            >
+              {isPending ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
+              Сменить
+            </button>
+            {st === 'ok' && <Check size={14} className="text-green-400 shrink-0" />}
+            {st === 'error' && <span className="text-xs text-orange-400 shrink-0">Ошибка</span>}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 export function TemplatesManager() {
   const queryClient = useQueryClient()
   const isDemo = useAuthStore(s => s.user?.role === 'demo')
+  const isAdmin = useAuthStore(s => s.user?.role === 'admin')
   const [search, setSearch] = useState('')
   const [form, setForm] = useState<FormState | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null)
@@ -335,6 +397,15 @@ export function TemplatesManager() {
           })}
         </div>
       </div>
+
+      {isAdmin && (
+        <div className="space-y-3 pt-4 border-t border-border">
+          <h2 className="text-lg font-bold text-white flex items-center gap-2">
+            <KeyRound size={18} className="text-accent" /> Управление паролями
+          </h2>
+          <PasswordManager />
+        </div>
+      )}
 
       {form && <TemplateForm initial={form} onClose={() => setForm(null)} />}
     </div>

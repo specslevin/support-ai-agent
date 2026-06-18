@@ -2,7 +2,11 @@ import { useState, useRef, useEffect } from 'react'
 import { MessageSquare, Send, Sparkles, Loader2 } from 'lucide-react'
 import { api } from '../api/client'
 import { useIssuesStore } from '../store/issuesStore'
+import { useAuthStore } from '../store/authStore'
 import type { ChatIssue } from '../types'
+
+const DEMO_CHAT_LIMIT = 2
+const DEMO_CHAT_KEY = 'demo_chat_count'
 
 interface ChatTurn {
   role: 'user' | 'assistant'
@@ -62,13 +66,20 @@ export function ChatPanel() {
   const [error, setError] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
+  const isDemo = useAuthStore(s => s.user?.role === 'demo')
+  const [demoChatCount, setDemoChatCount] = useState(() => {
+    if (!isDemo) return 0
+    return parseInt(localStorage.getItem(DEMO_CHAT_KEY) ?? '0', 10)
+  })
+  const demoChatExhausted = isDemo && demoChatCount >= DEMO_CHAT_LIMIT
+
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
   }, [turns, loading])
 
   const send = async () => {
     const message = input.trim()
-    if (!message || loading) return
+    if (!message || loading || demoChatExhausted) return
     setInput('')
     setError(null)
     setTurns(t => [...t, { role: 'user', content: message }])
@@ -77,6 +88,11 @@ export function ChatPanel() {
       const res = await api.chat(message)
       setTurns(t => [...t, { role: 'assistant', content: res.reply }])
       setIssues(res.issues)
+      if (isDemo) {
+        const next = demoChatCount + 1
+        localStorage.setItem(DEMO_CHAT_KEY, String(next))
+        setDemoChatCount(next)
+      }
     } catch {
       setError('Не удалось обработать запрос. Попробуйте ещё раз.')
       setTurns(t => [...t, { role: 'assistant', content: 'Произошла ошибка при обработке запроса.' }])
@@ -136,20 +152,26 @@ export function ChatPanel() {
           <div className="px-4 py-2 text-xs text-red-400 border-t border-border">{error}</div>
         )}
 
+        {demoChatExhausted && (
+          <div className="px-4 py-2 text-xs text-warning/80 border-t border-border bg-warning/5">
+            Демо: лимит запросов исчерпан
+          </div>
+        )}
         <div className="border-t border-border p-3 flex items-center gap-2">
           <input
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={onKeyDown}
-            placeholder={loading ? 'ИИ думает…' : 'Опишите, какие заявки нужны...'}
-            disabled={loading}
+            placeholder={demoChatExhausted ? 'Демо: лимит запросов исчерпан' : loading ? 'ИИ думает…' : 'Опишите, какие заявки нужны...'}
+            disabled={loading || demoChatExhausted}
+            title={demoChatExhausted ? 'Демо: лимит запросов исчерпан' : undefined}
             className="flex-1 bg-frame border border-border rounded-lg px-3 py-2 text-sm text-white placeholder:text-muted/60 focus:outline-none focus:border-accent transition-colors disabled:opacity-50"
           />
           <button
             onClick={send}
-            disabled={loading || !input.trim()}
+            disabled={loading || !input.trim() || demoChatExhausted}
             className="shrink-0 flex items-center justify-center w-9 h-9 rounded-lg bg-accent text-base hover:opacity-90 transition-opacity disabled:opacity-40"
-            title={loading ? 'ИИ думает…' : 'Отправить'}
+            title={demoChatExhausted ? 'Демо: лимит запросов исчерпан' : loading ? 'ИИ думает…' : 'Отправить'}
           >
             {loading ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
           </button>
