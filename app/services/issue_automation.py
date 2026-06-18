@@ -278,6 +278,8 @@ class TelemetryFacts:
     teleport_jumps: int = 0  # «прострелы» трека (телепорты координат)
     max_implied_kmh: float | None = None  # макс расчётная скорость между точками
     last_message_date: str | None = None  # ISO: дата последнего выхода объекта на связь
+    last_packet_msk: str | None = None  # HH:MM последнего пакета за дату (МСК)
+    tail_gap_min: float | None = None  # разрыв от последнего пакета до конца суток, мин
     flags: list[str] = field(default_factory=list)
 
 
@@ -534,6 +536,13 @@ class IssueAutomationService:
             times = [p.get("time") or 0 for p in packets]
             gaps = [(times[i] - times[i - 1]) for i in range(1, len(times))]
             facts.max_gap_min = round(max(gaps) / 60000.0, 1) if gaps else 0.0
+            # «Хвостовой» разрыв: данные были, но ОБОРВАЛИСЬ среди дня и не
+            # возобновились до конца суток (признак потери питания/связи в течение
+            # рабочего дня — 64275). Время последнего пакета и разрыв до 24:00 МСК.
+            last_ms = times[-1] if times else 0
+            if last_ms:
+                facts.last_packet_msk = _dt.datetime.fromtimestamp(last_ms / 1000.0, _MSK).strftime("%H:%M")
+                facts.tail_gap_min = round(max(0.0, (till_ms - last_ms) / 60000.0), 1)
 
             # speed spikes (spoofing): implausibly high reported speed
             speeds = [p.get("speed") or 0 for p in packets]
@@ -772,6 +781,14 @@ class IssueAutomationService:
                     else:
                         situation["последнее_сообщение_относительно_даты"] = "в_дату_неисправности"
             facts["ситуация_с_данными"] = situation
+        # Обрыв данных среди дня (64275): данные были, но прекратились рано
+        # (последний пакет до 17:00 МСК) и не возобновились до конца суток.
+        if (f.packets and f.tail_gap_min and f.tail_gap_min > 240
+                and f.last_packet_msk and f.last_packet_msk < "17:00"):
+            facts["данные_оборвались_среди_дня"] = {
+                "последний_пакет_мск": f.last_packet_msk,
+                "хвостовой_разрыв_мин": f.tail_gap_min,
+            }
         system = (
             "Ты — ассистент техподдержки GPSPOS. По данным телеметрии классифицируй причину "
             "расхождения пробега и составь короткий вежливый ответ клиенту на русском. "
@@ -811,6 +828,11 @@ class IssueAutomationService:
             "ответь, что в указанную дату отсутствовало питающее напряжение/связь, данные возобновились (укажи дату_возобновления), "
             "трек за период отсутствия восстановить нельзя; категория «Не было питания», уверенность ≥0.8; "
             "— иначе (последнее сообщение позже даты, но данные так и не возобновились) — рекомендуй ВЫЕЗД бригады специалистов для диагностики на месте. "
+            "(е) если есть «данные_оборвались_среди_дня» (данные за дату БЫЛИ, но прекратились рано и большой хвостовой разрыв) "
+            "И в «проверка_данных_после_даты» данные_возобновились=true с более поздней датой — значит в указанную дату питание "
+            "пропало среди дня (после времени последнего пакета) и было восстановлено позже: ответь, что в указанную дату после "
+            "<последний_пакет_мск> отсутствовало питающее напряжение на входах терминала, питание восстановлено <дата_возобновления>, "
+            "трек за период отсутствия восстановить нельзя; категория «Не было питания». "
             "Будь гибким в формулировках и опирайся на конкретику фактов, но НЕ выходи за рамки категорий каталога и не выдумывай данные. "
             "Держи ответ кратким (2–4 предложения), по делу, без воды. "
             "Не выдумывай данные, которых нет. Верни СТРОГО JSON без пояснений: "
@@ -1202,11 +1224,19 @@ class IssueAutomationService:
         # there are comments (possibly claiming a fix), verify against real data
         # whether anything actually resumed after the fault date. Bounded to one
         # extra daily-stats call; any failure omits the fact (never breaks).
+        # Обрыв данных среди дня (64275): данные за дату БЫЛИ, но прекратились рано
+        # (последний пакет до 17:00 МСК) и не возобновились до конца суток —
+        # признак потери питания/связи в течение рабочего дня.
+        midday_stop = bool(
+            telemetry.packets
+            and telemetry.tail_gap_min and telemetry.tail_gap_min > 240
+            and telemetry.last_packet_msk and telemetry.last_packet_msk < "17:00"
+        )
         verify_resumed: dict[str, Any] | None = None
         if (telemetry.object_id is not None
-                and ("power_off" in telemetry.flags or "no_data" in telemetry.flags)):
+                and ("power_off" in telemetry.flags or "no_data" in telemetry.flags or midday_stop)):
             # Запускаем и без комментариев: это вход в детерминированную ветку
-            # «нет данных за дату → возобновились ли они позже» (алгоритм ниже).
+            # «нет данных/обрыв за дату → возобновились ли они позже» (алгоритм ниже).
             verify_resumed = await self._verify_data_resumed(
                 telemetry.object_id, parsed.date)
 
