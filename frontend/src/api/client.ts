@@ -232,6 +232,21 @@ export const api = {
   chat(message: string): Promise<ChatResponse> {
     return http.post('/chat', { message }).then(r => r.data)
   },
+
+  getTrainingStats(): Promise<{ count: number }> {
+    return http.get('/issues/training/stats').then(r => r.data)
+  },
+
+  backfillTraining(dryRun: boolean, limit: number): Promise<{
+    dry_run: boolean
+    added: number
+    scanned: number
+    skipped_existing: number
+    no_answer: number
+    not_mileage: number
+  }> {
+    return http.post('/issues/training/backfill', null, { params: { dry_run: dryRun, limit } }).then(r => r.data)
+  },
 }
 
 export interface BulkResult {

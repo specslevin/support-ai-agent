@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import {
-  Plus, Search, Star, Trash2, Pencil, X, Check, Sparkles, FileText, Loader2, KeyRound,
+  Plus, Search, Star, Trash2, Pencil, X, Check, Sparkles, FileText, Loader2, KeyRound, Brain, RefreshCw,
 } from 'lucide-react'
 import { api, authApi } from '../api/client'
 import { useAuthStore } from '../store/authStore'
@@ -245,6 +245,126 @@ function PasswordManager() {
   )
 }
 
+type BackfillResult = {
+  dry_run: boolean
+  added: number
+  scanned: number
+  skipped_existing: number
+  no_answer: number
+  not_mileage: number
+}
+
+function KnowledgeBaseManager() {
+  const [limit, setLimit] = useState(200)
+  const [backfilling, setBackfilling] = useState(false)
+  const [result, setResult] = useState<BackfillResult | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const { data: stats, isLoading: statsLoading, refetch: refetchStats } = useQuery({
+    queryKey: ['training-stats'],
+    queryFn: () => api.getTrainingStats(),
+    staleTime: 60_000,
+  })
+
+  const previewMut = useMutation({
+    mutationFn: () => api.backfillTraining(true, limit),
+    onSuccess: (data) => { setResult(data); setError(null) },
+    onError: (err) => {
+      const msg = err instanceof Error ? err.message : 'Ошибка запроса'
+      setError(msg); setResult(null)
+    },
+  })
+
+  const backfillReal = async () => {
+    setBackfilling(true)
+    setResult(null)
+    setError(null)
+    try {
+      const data = await api.backfillTraining(false, limit)
+      setResult(data)
+      refetchStats()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Ошибка запроса')
+    } finally {
+      setBackfilling(false)
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-3 bg-card border border-border rounded-lg px-3 py-2">
+        <span className="text-xs text-muted shrink-0">Образцов в базе:</span>
+        {statsLoading
+          ? <Loader2 size={13} className="animate-spin text-muted" />
+          : <span className="text-sm font-semibold text-white">{stats?.count ?? '—'}</span>
+        }
+        <button
+          onClick={() => refetchStats()}
+          title="Обновить"
+          className="ml-1 text-muted hover:text-white transition-colors"
+        >
+          <RefreshCw size={13} />
+        </button>
+      </div>
+
+      <div className="flex items-center gap-3">
+        <label className="text-xs text-muted shrink-0">Лимит:</label>
+        <input
+          type="number"
+          min={1}
+          max={10000}
+          value={limit}
+          onChange={e => setLimit(Math.max(1, Number(e.target.value)))}
+          className="w-24 bg-frame border border-border rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:border-accent"
+        />
+      </div>
+
+      <div className="flex items-center gap-2 flex-wrap">
+        <button
+          disabled={previewMut.isPending || backfilling}
+          onClick={() => previewMut.mutate()}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-border rounded-lg hover:bg-frame transition-colors disabled:opacity-40"
+        >
+          {previewMut.isPending ? <Loader2 size={13} className="animate-spin" /> : <Search size={13} />}
+          Предпросмотр (dry-run)
+        </button>
+
+        <button
+          disabled={previewMut.isPending || backfilling}
+          onClick={backfillReal}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-accent text-black rounded-lg hover:opacity-90 transition-opacity disabled:opacity-40"
+        >
+          {backfilling ? <Loader2 size={13} className="animate-spin" /> : <Brain size={13} />}
+          Пополнить базу
+        </button>
+
+        {backfilling && (
+          <span className="text-xs text-muted italic">Может занять время…</span>
+        )}
+      </div>
+
+      {error && (
+        <p className="text-xs text-orange-400">{error}</p>
+      )}
+
+      {result && (
+        <div className="bg-frame border border-border rounded-lg px-3 py-2 text-xs space-y-1">
+          <p className="font-medium text-white">
+            {result.dry_run ? 'Предпросмотр (изменения не применены)' : 'Готово'}
+          </p>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-muted">
+            <span>Просканировано:</span><span className="text-white">{result.scanned}</span>
+            <span>Добавлено:</span><span className="text-green-400">{result.added}</span>
+            <span>Уже были:</span><span>{result.skipped_existing}</span>
+            <span>Без ответа:</span><span>{result.no_answer}</span>
+            <span>Не пробег:</span><span>{result.not_mileage}</span>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function TemplatesManager() {
   const queryClient = useQueryClient()
   const isDemo = useAuthStore(s => s.user?.role === 'demo')
@@ -404,6 +524,15 @@ export function TemplatesManager() {
             <KeyRound size={18} className="text-accent" /> Управление паролями
           </h2>
           <PasswordManager />
+        </div>
+      )}
+
+      {isAdmin && (
+        <div className="space-y-3 pt-4 border-t border-border">
+          <h2 className="text-lg font-bold text-white flex items-center gap-2">
+            <Brain size={18} className="text-accent" /> База знаний ИИ
+          </h2>
+          <KnowledgeBaseManager />
         </div>
       )}
 
