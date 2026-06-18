@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import { ChevronDown, ChevronLeft, ChevronRight, Check, X } from 'lucide-react'
+import { ChevronDown, ChevronLeft, ChevronRight, Check, X, List, LayoutGrid } from 'lucide-react'
 import { api } from '../api/client'
 import { useIssuesStore } from '../store/issuesStore'
 import { useAuthStore } from '../store/authStore'
@@ -8,6 +8,18 @@ import { StatusBadge } from './StatusBadge'
 import { TemplatePicker } from './IssueDetail'
 import { EmployeeMenu, TypeMenu } from './pickers'
 import type { Issue } from '../types'
+
+type ViewMode = 'table' | 'cards'
+
+function useViewMode(): [ViewMode, (mode: ViewMode) => void] {
+  const stored = localStorage.getItem('issuesViewMode') as ViewMode | null
+  const [mode, setModeState] = useState<ViewMode>(stored === 'cards' ? 'cards' : 'table')
+  const setMode = (m: ViewMode) => {
+    localStorage.setItem('issuesViewMode', m)
+    setModeState(m)
+  }
+  return [mode, setMode]
+}
 
 function formatDate(iso: string | null) {
   if (!iso) return '—'
@@ -160,8 +172,80 @@ function IssueRow({ issue, highlighted, checked, onToggle, onClick }: { issue: I
   )
 }
 
+function IssueCard({ issue, highlighted, checked, onToggle, onClick }: { issue: Issue; highlighted: boolean; checked: boolean; onToggle: () => void; onClick: () => void }) {
+  return (
+    <div
+      onClick={onClick}
+      className={`relative rounded-xl border cursor-pointer transition-all p-4 flex flex-col gap-2 ${
+        highlighted
+          ? 'border-accent bg-accent/10 ring-2 ring-accent/40'
+          : checked
+          ? 'border-accent/50 bg-white/[0.04] ring-2 ring-accent/30'
+          : 'border-border bg-card hover:border-accent/50 hover:bg-white/[0.03]'
+      }`}
+    >
+      {/* Checkbox in top-right corner */}
+      <div className="absolute top-3 right-3" onClick={e => e.stopPropagation()}>
+        <input type="checkbox" checked={checked} onChange={onToggle} className="ck cursor-pointer" />
+      </div>
+
+      {/* Header: issue number + status */}
+      <div className="flex items-center gap-2 pr-6">
+        <span className="text-xs font-mono text-muted">#{issue.external_id}</span>
+        <StatusBadge status={issue.status} />
+      </div>
+
+      {/* Subject */}
+      <p className="text-sm font-medium leading-snug line-clamp-2 text-white pr-2">
+        {issue.subject ?? '—'}
+      </p>
+
+      {/* Meta row */}
+      <div className="flex flex-col gap-0.5 mt-auto pt-1 border-t border-border/50">
+        {issue.company_name && (
+          <span className="text-xs text-muted line-clamp-1">{issue.company_name}</span>
+        )}
+        <div className="flex items-center justify-between gap-2 mt-0.5">
+          <span className="text-xs text-muted truncate">{issue.assignee_name ?? '—'}</span>
+          <span className="text-xs text-muted whitespace-nowrap shrink-0">{formatDate(issue.created_at)}</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ViewToggle({ mode, onChange }: { mode: ViewMode; onChange: (m: ViewMode) => void }) {
+  return (
+    <div className="flex items-center gap-0.5 p-0.5 rounded-lg border border-border bg-base shrink-0">
+      <button
+        onClick={() => onChange('table')}
+        title="Таблица"
+        className={`flex items-center justify-center p-1.5 rounded transition-colors ${
+          mode === 'table'
+            ? 'bg-accent/20 text-accent border border-accent/40'
+            : 'text-muted hover:text-white'
+        }`}
+      >
+        <List size={14} />
+      </button>
+      <button
+        onClick={() => onChange('cards')}
+        title="Карточки"
+        className={`flex items-center justify-center p-1.5 rounded transition-colors ${
+          mode === 'cards'
+            ? 'bg-accent/20 text-accent border border-accent/40'
+            : 'text-muted hover:text-white'
+        }`}
+      >
+        <LayoutGrid size={14} />
+      </button>
+    </div>
+  )
+}
+
 export function IssuesList() {
   const { status, company, search, assignee, issueId, page, limit, selectedIssueId, highlightId, checkedIds, setPage, setLimit, selectIssue, toggleChecked, setChecked, clearChecked } = useIssuesStore()
+  const [viewMode, setViewMode] = useViewMode()
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ['issues', { status, company, search, assignee, issueId, page, limit }],
@@ -193,30 +277,70 @@ export function IssuesList() {
   return (
     <div className="flex flex-col h-full min-h-0">
       <BulkActionBar />
+
+      {/* View mode toggle bar */}
+      <div className="flex items-center justify-end gap-2 px-3 py-1.5 border-b border-border shrink-0">
+        {viewMode === 'cards' && (
+          <label className="flex items-center gap-1.5 text-xs text-muted cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={allChecked}
+              onChange={() => allChecked ? clearChecked() : setChecked(pageIds)}
+              className="ck cursor-pointer"
+            />
+            Выбрать всё
+          </label>
+        )}
+        <ViewToggle mode={viewMode} onChange={setViewMode} />
+      </div>
+
       <div className="overflow-auto flex-1">
-        <table className="w-full text-left border-collapse">
-          <thead className="sticky top-0 bg-base z-10">
-            <tr className="border-b border-border text-muted text-xs uppercase tracking-wider">
-              <th className="px-3 py-2 w-8">
-                <input
-                  type="checkbox"
-                  checked={allChecked}
-                  onChange={() => allChecked ? clearChecked() : setChecked(pageIds)}
-                  className="ck cursor-pointer"
-                />
-              </th>
-              <th className="px-3 py-2 font-medium">№ заявки</th>
-              <th className="px-3 py-2 font-medium">Дата регистрации</th>
-              <th className="px-3 py-2 font-medium">Тема</th>
-              <th className="px-3 py-2 font-medium">Клиент</th>
-              <th className="px-3 py-2 font-medium">Ответственный</th>
-              <th className="px-3 py-2 font-medium">Дата изменения</th>
-              <th className="px-3 py-2 font-medium">Статус</th>
-            </tr>
-          </thead>
-          <tbody>
+        {viewMode === 'table' ? (
+          <>
+            <table className="w-full text-left border-collapse">
+              <thead className="sticky top-0 bg-base z-10">
+                <tr className="border-b border-border text-muted text-xs uppercase tracking-wider">
+                  <th className="px-3 py-2 w-8">
+                    <input
+                      type="checkbox"
+                      checked={allChecked}
+                      onChange={() => allChecked ? clearChecked() : setChecked(pageIds)}
+                      className="ck cursor-pointer"
+                    />
+                  </th>
+                  <th className="px-3 py-2 font-medium">№ заявки</th>
+                  <th className="px-3 py-2 font-medium">Дата регистрации</th>
+                  <th className="px-3 py-2 font-medium">Тема</th>
+                  <th className="px-3 py-2 font-medium">Клиент</th>
+                  <th className="px-3 py-2 font-medium">Ответственный</th>
+                  <th className="px-3 py-2 font-medium">Дата изменения</th>
+                  <th className="px-3 py-2 font-medium">Статус</th>
+                </tr>
+              </thead>
+              <tbody>
+                {issues.map((issue: Issue) => (
+                  <IssueRow
+                    key={issue.id}
+                    issue={issue}
+                    highlighted={issue.id === highlightId}
+                    checked={checkedIds.includes(issue.id)}
+                    onToggle={() => toggleChecked(issue.id)}
+                    onClick={() => selectIssue(issue.id === selectedIssueId ? null : issue.id)}
+                  />
+                ))}
+              </tbody>
+            </table>
+
+            {issues.length === 0 && (
+              <div className="flex items-center justify-center h-32 text-muted text-sm">
+                Заявок не найдено
+              </div>
+            )}
+          </>
+        ) : (
+          <div className="p-3 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3 content-start">
             {issues.map((issue: Issue) => (
-              <IssueRow
+              <IssueCard
                 key={issue.id}
                 issue={issue}
                 highlighted={issue.id === highlightId}
@@ -225,12 +349,11 @@ export function IssuesList() {
                 onClick={() => selectIssue(issue.id === selectedIssueId ? null : issue.id)}
               />
             ))}
-          </tbody>
-        </table>
-
-        {issues.length === 0 && (
-          <div className="flex items-center justify-center h-32 text-muted text-sm">
-            Заявок не найдено
+            {issues.length === 0 && (
+              <div className="col-span-full flex items-center justify-center h-32 text-muted text-sm">
+                Заявок не найдено
+              </div>
+            )}
           </div>
         )}
       </div>
