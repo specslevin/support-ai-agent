@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
-import { RefreshCw, ClipboardList, MessageSquare, Phone, Truck, BarChart3, Settings, LogOut, type LucideIcon } from 'lucide-react'
+import { RefreshCw, ClipboardList, MessageSquare, Phone, Truck, BarChart3, Settings, LogOut, UserCircle, type LucideIcon } from 'lucide-react'
 import { IssueFilters } from './components/IssueFilters'
 import { IssuesList } from './components/IssuesList'
 import { IssueDetail } from './components/IssueDetail'
@@ -18,6 +18,27 @@ import { api, authApi } from './api/client'
 
 const queryClient = new QueryClient()
 
+
+function UserIndicator() {
+  const user = useAuthStore(s => s.user)
+  if (!user) return null
+
+  const isAdmin = user.role === 'admin'
+  const badgeClass = isAdmin
+    ? 'bg-accent/15 text-accent'
+    : 'bg-warning/15 text-warning'
+  const badgeLabel = isAdmin ? 'админ' : 'просмотр'
+
+  return (
+    <div className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-border bg-card text-white">
+      <UserCircle size={14} className="text-muted shrink-0" />
+      <span className="font-medium">{user.username}</span>
+      <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold leading-none ${badgeClass}`}>
+        {badgeLabel}
+      </span>
+    </div>
+  )
+}
 
 function LogoutButton() {
   const logout = useAuthStore(s => s.logout)
@@ -106,6 +127,7 @@ function Dashboard() {
                 {refreshing ? 'Синхронизация...' : 'Обновить кэш'}
               </button>
             )}
+            <UserIndicator />
             <LogoutButton />
           </div>
         </header>
