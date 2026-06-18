@@ -1203,8 +1203,25 @@ async def assign_issue(
         raise HTTPException(status_code=500, detail="Failed to assign issue")
 
 
+# Автоматические системные комментарии Okdesk (смена статуса и т.п.) — НЕ ответ
+# оператора, их нельзя класть в базу эталонов.
+_SYSTEM_COMMENT_RE = re.compile(
+    r"перешл\w*\s+в\s+статус|изменил\w*\s+статус|статус\w*\s+заявки\s+измен"
+    r"|если\s+остал\w*\s+вопрос\w*\s+можете\s+повторно",
+    re.I,
+)
+
+
+def _is_system_comment(text: str) -> bool:
+    return bool(_SYSTEM_COMMENT_RE.search(text))
+
+
 async def _operator_answer_from_comments(external_id: int, okdesk: OkdeskService) -> str | None:
-    """Последний ПУБЛИЧНЫЙ комментарий сотрудника = итоговый ответ оператора."""
+    """Последний ПУБЛИЧНЫЙ СОДЕРЖАТЕЛЬНЫЙ комментарий сотрудника = ответ оператора.
+
+    Пропускаем приватные заметки, комментарии клиента и АВТО-сообщения Okdesk
+    (смена статуса «Заявка перешла в статус …»), чтобы в базу эталонов попадал
+    реальный ответ, а не системный шум."""
     try:
         raw = await okdesk._client.get_issue_comments(external_id)
     except Exception:
@@ -1222,8 +1239,8 @@ async def _operator_answer_from_comments(external_id: int, okdesk: OkdeskService
         if atype in ("contact", "client", "clientuser"):
             continue  # комментарий клиента, а не оператора
         text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", str(r.get("content") or ""))).strip()
-        if not text:
-            continue
+        if not text or len(text) < 15 or _is_system_comment(text):
+            continue  # пусто / слишком коротко / системное авто-сообщение
         ts = str(r.get("published_at") or r.get("created_at") or "")
         if ts >= best_ts:
             best_ts, best_text = ts, text
