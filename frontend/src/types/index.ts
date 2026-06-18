@@ -166,6 +166,7 @@ export interface BatchObject {
   flags: string[]
   teleport_jumps: number
   verdict: string
+  verdict_edited?: boolean
 }
 
 export interface BatchResult {

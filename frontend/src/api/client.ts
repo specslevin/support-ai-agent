@@ -136,6 +136,10 @@ export const api = {
     return http.post(`/issues/${id}/create_children`, { objects: payload }).then(r => r.data)
   },
 
+  updateBatchVerdict(id: number, plate: string, verdict: string, file?: string): Promise<BatchResult> {
+    return http.post(`/issues/${id}/batch/verdict`, { plate, verdict, ...(file ? { file } : {}) }).then(r => r.data)
+  },
+
   composeAnswer(id: number): Promise<{ answer: string }> {
     return http.post(`/issues/${id}/compose_answer`).then(r => r.data)
   },

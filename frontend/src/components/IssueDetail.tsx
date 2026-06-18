@@ -909,6 +909,9 @@ function BatchAnalysis({ issueId, onUseDraft, onOpenExternal }: { issueId: numbe
   const lastBatchTemplate = useIssuesStore(s => s.lastBatchTemplate)
   const setLastBatchTemplate = useIssuesStore(s => s.setLastBatchTemplate)
   const [loadingPlates, setLoadingPlates] = useState<Set<string>>(new Set())
+  const [verdictLoading, setVerdictLoading] = useState<Set<string>>(new Set())
+  const [verdictError, setVerdictError] = useState<string | null>(null)
+  const [localBatch, setLocalBatch] = useState<import('../types').BatchResult | null>(null)
 
   // Per-issue child creation map — survives panel close/reopen (global store, not local state)
   const rowCreated = batchChildren[issueId] ?? {}
@@ -933,6 +936,8 @@ function BatchAnalysis({ issueId, onUseDraft, onOpenExternal }: { issueId: numbe
   const run = useMutation({
     mutationFn: () => api.automateBatch(issueId),
     onSuccess: () => {
+      setLocalBatch(null)
+      setVerdictError(null)
       queryClient.invalidateQueries({ queryKey: ['batch-cached', issueId] })
       clearBatchChildren(issueId)
     },
@@ -977,9 +982,26 @@ function BatchAnalysis({ issueId, onUseDraft, onOpenExternal }: { issueId: numbe
   // OCR не делаем; таблица рисуется из результата run/кеша (>=2 объекта → мультиобъект).
   if (extractable.length < 1) return null
 
-  const res = run.data ?? (cached as BatchResult | null)
-  const isCached = !run.data && !!cached
+  const res = localBatch ?? run.data ?? (cached as BatchResult | null)
+  const isCached = !localBatch && !run.data && !!cached
   const isAggregate = !!res?.is_aggregate
+
+  const ALLOWED_VERDICTS = ['Глушение', 'Данные верны', 'Не было питания', 'Нет данных', 'Терминал подключился', 'Проверить'] as const
+
+  const handleVerdictChange = async (o: import('../types').BatchObject, newVerdict: string) => {
+    if (!o.plate) return
+    const key = o.plate
+    setVerdictLoading(prev => new Set([...prev, key]))
+    setVerdictError(null)
+    try {
+      const updated = await api.updateBatchVerdict(issueId, o.plate, newVerdict, o.file || undefined)
+      setLocalBatch(updated)
+    } catch {
+      setVerdictError(`Не удалось сохранить вердикт для ${o.plate}`)
+    } finally {
+      setVerdictLoading(prev => { const s = new Set(prev); s.delete(key); return s })
+    }
+  }
 
   // All plates with a successfully created child issue (per-row or bulk)
   const allCreatedPlates = Object.entries(rowCreated).filter(([, v]) => v.ok).map(([plate]) => plate)
@@ -1038,13 +1060,41 @@ function BatchAnalysis({ issueId, onUseDraft, onOpenExternal }: { issueId: numbe
                 {res.objects.map((o, idx) => {
                   const rc = o.plate ? rowCreated[o.plate] : null
                   const isLoading = !!o.plate && loadingPlates.has(o.plate)
+                  const isVerdictLoading = !!o.plate && verdictLoading.has(o.plate)
                   return (
                     <tr key={idx} className="border-t border-border/50">
                       <td className="py-1 pr-2 font-mono">{o.plate ?? '—'}</td>
                       <td className="pr-2">{o.date ?? '—'}</td>
                       <td className="pr-2">{o.sheet_mileage_km ?? '—'}</td>
                       <td className="pr-2">{o.system_mileage_km ?? '—'}</td>
-                      <td className={`pr-2 ${VERDICT_STYLE[o.verdict] ?? 'text-white'}`}>{o.verdict}</td>
+                      <td className="pr-2">
+                        {isDemo ? (
+                          <span className={VERDICT_STYLE[o.verdict] ?? 'text-white'}>{o.verdict}</span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1">
+                            <select
+                              value={o.verdict}
+                              disabled={isVerdictLoading}
+                              onChange={e => handleVerdictChange(o, e.target.value)}
+                              title={o.verdict_edited ? 'Изменено оператором' : undefined}
+                              className={`bg-transparent border-0 outline-none cursor-pointer text-[11px] font-medium appearance-none pr-1 disabled:opacity-50 disabled:cursor-wait ${VERDICT_STYLE[o.verdict] ?? 'text-white'}`}
+                            >
+                              {ALLOWED_VERDICTS.map(v => (
+                                <option key={v} value={v} className="bg-card text-primary">{v}</option>
+                              ))}
+                              {!ALLOWED_VERDICTS.includes(o.verdict as typeof ALLOWED_VERDICTS[number]) && (
+                                <option value={o.verdict} className="bg-card text-primary">{o.verdict}</option>
+                              )}
+                            </select>
+                            {o.verdict_edited && (
+                              <span title="Изменено оператором" className="text-info shrink-0">●</span>
+                            )}
+                            {isVerdictLoading && (
+                              <span className="animate-spin text-muted shrink-0">↻</span>
+                            )}
+                          </span>
+                        )}
+                      </td>
                       <td className="pr-1 text-center">
                         {o.plate && o.date && (
                           <button
@@ -1153,6 +1203,7 @@ function BatchAnalysis({ issueId, onUseDraft, onOpenExternal }: { issueId: numbe
         </div>
       )}
       {run.isError && <p className="text-xs text-orange-400">Ошибка разбора. Попробуйте снова.</p>}
+      {verdictError && <p className="text-xs text-orange-400">{verdictError}</p>}
     </div>
   )
 }

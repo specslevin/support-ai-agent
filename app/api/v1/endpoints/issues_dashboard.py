@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import re
 import urllib.parse
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
+from pydantic import BaseModel
 
 from app.services import attachment_reader
 
@@ -714,6 +716,63 @@ async def get_cached_batch(
     except Exception:
         log.exception("get_cached_batch_failed", issue_id=issue_id)
         raise HTTPException(status_code=500, detail="Failed to read cached batch")
+
+
+class VerdictUpdate(BaseModel):
+    plate: str
+    verdict: str
+    file: str | None = None
+
+
+# Вердикты, которые оператор может выставить вручную в таблице разбора.
+_EDITABLE_VERDICTS = {
+    "Глушение", "Данные верны", "Не было питания",
+    "Нет данных", "Терминал подключился", "Проверить",
+}
+
+
+def _norm_plate(p: object) -> str:
+    return re.sub(r"[\s\-]", "", str(p or "")).upper()
+
+
+@router.post("/{issue_id}/batch/verdict")
+async def update_batch_verdict(
+    issue_id: int,
+    body: VerdictUpdate,
+    cache: CacheService = Depends(get_cache_service),
+) -> dict[str, object]:
+    """Оператор корректирует вердикт по ТС в сохранённом разборе.
+
+    Изменение пишется в кэш batch и используется при составлении общего ответа.
+    Доступно только не-demo (POST блокируется middleware для demo)."""
+    if body.verdict not in _EDITABLE_VERDICTS:
+        raise HTTPException(status_code=400, detail="Недопустимый вердикт")
+    issue_data = await cache.get_issue_with_analysis(issue_id)
+    if not issue_data:
+        raise HTTPException(status_code=404, detail="Issue not found")
+    external_id = issue_data["issue"].external_id
+    cached = await cache.get_result_cache(external_id, "batch")
+    if not cached or not cached.get("data", {}).get("objects"):
+        raise HTTPException(status_code=400, detail="Сначала выполните разбор по вложениям")
+    data = cached["data"]
+    objects = data.get("objects") or []
+    target = _norm_plate(body.plate)
+    updated = 0
+    for o in objects:
+        if _norm_plate(o.get("plate")) == target and (not body.file or o.get("file") == body.file):
+            o["verdict"] = body.verdict
+            o["verdict_edited"] = True
+            updated += 1
+    if not updated:
+        raise HTTPException(status_code=404, detail="ТС не найдено в разборе")
+    data["jamming_count"] = sum(1 for o in objects if o.get("verdict") == "Глушение")
+    data["ok_count"] = sum(1 for o in objects if o.get("verdict") == "Данные верны")
+    try:
+        await cache.save_result_cache(external_id, "batch", json.dumps(data, ensure_ascii=False))
+    except Exception:
+        log.warning("batch_verdict_save_failed", issue_id=issue_id)
+        raise HTTPException(status_code=500, detail="Не удалось сохранить вердикт")
+    return {"ok": True, "updated": updated, **data}
 
 
 @router.post("/{issue_id}/compose_answer")
