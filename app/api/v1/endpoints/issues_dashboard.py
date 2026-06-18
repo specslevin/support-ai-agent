@@ -7,7 +7,7 @@ import re
 import urllib.parse
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel
 
@@ -1201,6 +1201,112 @@ async def assign_issue(
     except Exception:
         log.exception("assign_issue_failed", issue_id=issue_id)
         raise HTTPException(status_code=500, detail="Failed to assign issue")
+
+
+async def _operator_answer_from_comments(external_id: int, okdesk: OkdeskService) -> str | None:
+    """Последний ПУБЛИЧНЫЙ комментарий сотрудника = итоговый ответ оператора."""
+    try:
+        raw = await okdesk._client.get_issue_comments(external_id)
+    except Exception:
+        return None
+    rows = raw if isinstance(raw, list) else (raw.get("data") if isinstance(raw, dict) else [])
+    best_ts = ""
+    best_text: str | None = None
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        if r.get("public") is False:
+            continue  # приватная заметка — не ответ клиенту
+        author = r.get("author")
+        atype = str((author.get("type") if isinstance(author, dict) else "") or "").lower()
+        if atype in ("contact", "client", "clientuser"):
+            continue  # комментарий клиента, а не оператора
+        text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", str(r.get("content") or ""))).strip()
+        if not text:
+            continue
+        ts = str(r.get("published_at") or r.get("created_at") or "")
+        if ts >= best_ts:
+            best_ts, best_text = ts, text
+    return best_text
+
+
+@router.post("/training/backfill")
+async def backfill_training(
+    request: Request,
+    limit: int = Query(200, ge=1, le=2000),
+    dry_run: bool = Query(False),
+    cache: CacheService = Depends(get_cache_service),
+    okdesk: OkdeskService = Depends(get_okdesk_service),
+    automation: IssueAutomationService = Depends(get_issue_automation_service),
+) -> dict[str, object]:
+    """Наполнить базу эталонов (few-shot) из УЖЕ решённых заявок (только admin).
+
+    Большинство заявок закрывают прямо в Okdesk, минуя кнопку «Решить» в дашборде,
+    поэтому их (факты телеметрии → ответ оператора) нет в few-shot. Эндпоинт
+    сканирует решённые заявки, берёт итоговый публичный ответ оператора и сохраняет
+    эталон для распознаваемых заявок «расхождение пробега» (с номером+датой),
+    пропуская уже сохранённые. ``dry_run=true`` только считает, ничего не пишет."""
+    user = getattr(request.state, "user", None)
+    if not user or user.get("r") != "admin":
+        raise HTTPException(status_code=403, detail="Только для администратора")
+    existing = await cache.existing_training_sample_ids()
+    resolved: list = []
+    for st in ("completed", "closed"):
+        try:
+            resolved += await cache.get_issues_from_cache(status=st)
+        except Exception:
+            log.warning("backfill_list_failed", status=st)
+    added = scanned = skipped_existing = no_answer = not_mileage = 0
+    for iss in resolved:
+        if added >= limit:
+            break
+        ext = getattr(iss, "external_id", None)
+        if ext is None:
+            continue
+        if ext in existing:
+            skipped_existing += 1
+            continue
+        scanned += 1
+        try:
+            live = await okdesk.get_issue(ext)
+            # Дёшево отсеиваем не-пробеговые: нужен распознаваемый номер+дата.
+            parsed = automation.parse_issue(live.title, live.description, None)
+            if not parsed.plate or not parsed.date:
+                not_mileage += 1
+                continue
+            answer = await _operator_answer_from_comments(ext, okdesk)
+            if not answer:
+                no_answer += 1
+                continue
+            if dry_run:
+                added += 1
+                continue
+            sample = await automation.build_training_sample(
+                live.title, live.description, answer,
+                getattr(iss, "status", None) or "completed",
+            )
+            if not sample:
+                not_mileage += 1
+                continue
+            await cache.save_training_sample(ext, sample)
+            existing.add(ext)
+            added += 1
+        except Exception:
+            log.warning("backfill_issue_failed", external_id=ext)
+    return {
+        "dry_run": dry_run, "added": added, "scanned": scanned,
+        "skipped_existing": skipped_existing, "no_answer": no_answer,
+        "not_mileage": not_mileage,
+    }
+
+
+@router.get("/training/stats")
+async def training_stats(
+    cache: CacheService = Depends(get_cache_service),
+) -> dict[str, object]:
+    """Сколько эталонов в базе few-shot."""
+    ids = await cache.existing_training_sample_ids()
+    return {"count": len(ids)}
 
 
 @router.post("/{issue_id}/resolve")

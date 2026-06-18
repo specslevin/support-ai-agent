@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Any
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db.models import AnalysisCache, IssueCache, Object, Company, TrainingSample, ResultCache
@@ -503,7 +503,13 @@ class CacheService:
         self, issue_external_id: int, payload: dict[str, Any],
         ai_category: str | None = None, ai_was_used: bool = False,
     ) -> None:
-        """Persist an operator decision + telemetry as a future training example."""
+        """Persist an operator decision + telemetry as a future training example.
+
+        Upsert by issue: one sample per ``issue_external_id`` (re-resolving or
+        backfilling the same issue replaces the old sample, no duplicates)."""
+        await self.db.execute(
+            delete(TrainingSample).where(TrainingSample.issue_external_id == issue_external_id)
+        )
         row = TrainingSample(
             issue_external_id=issue_external_id,
             issue_title=payload.get("issue_title"),
@@ -520,6 +526,15 @@ class CacheService:
         )
         self.db.add(row)
         await self.db.commit()
+
+    async def existing_training_sample_ids(self) -> set[int]:
+        """External ids that already have a training sample (for backfill dedup)."""
+        try:
+            result = await self.db.execute(select(TrainingSample.issue_external_id))
+            return {row[0] for row in result.all() if row[0] is not None}
+        except Exception:
+            log.warning("existing_training_sample_ids_failed")
+            return set()
 
     # ------------------------------------------------------------------
     # Helpers
