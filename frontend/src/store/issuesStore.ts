@@ -96,8 +96,21 @@ export const useIssuesStore = create<FiltersState>()(
     }),
     {
       name: 'issues-prefs',
-      // Persist pagination size + last-used template across sessions.
-      partialize: state => ({ limit: state.limit, lastTemplate: state.lastTemplate, batchChildren: state.batchChildren, lastBatchTemplate: state.lastBatchTemplate }),
+      // Persist pagination size + last-used template + filter combo across sessions.
+      // Filters (status/company/assignee/search/issueId) are remembered so a
+      // frequently-used combo survives reloads. `page` is intentionally NOT
+      // persisted (always start on page 1); transient UI state is excluded too.
+      partialize: state => ({
+        status: state.status,
+        company: state.company,
+        assignee: state.assignee,
+        search: state.search,
+        issueId: state.issueId,
+        limit: state.limit,
+        lastTemplate: state.lastTemplate,
+        batchChildren: state.batchChildren,
+        lastBatchTemplate: state.lastBatchTemplate,
+      }),
     },
   ),
 )

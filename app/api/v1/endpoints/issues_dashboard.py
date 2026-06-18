@@ -212,6 +212,57 @@ def _extract_phone_from_contact(contact_value: str | None) -> str | None:
     return None
 
 
+async def _build_comments_digest(external_id: int, okdesk: OkdeskService,
+                                 max_chars: int = 2000) -> str:
+    """Compact chronological digest of issue comments for the AI analyzer.
+
+    Each line: «author • date • text» (html stripped). Bounded to ~max_chars.
+    Best-effort: any failure returns "" so the analysis still proceeds.
+    """
+    from app.services.issue_automation import _strip_html
+
+    try:
+        comments = await okdesk.get_issue_comments(external_id)
+    except Exception:
+        log.warning("automate_comments_fetch_failed", external_id=external_id)
+        return ""
+    if not comments:
+        return ""
+    # Recover timestamps from the raw payload (the parsed model drops them, same
+    # as the /comments endpoint).
+    raw_dates: dict[int, str] = {}
+    try:
+        raw = await okdesk._client.get_issue_comments(external_id)
+        raw_rows = raw if isinstance(raw, list) else (
+            raw.get("data") if isinstance(raw, dict) else None)
+        for r in raw_rows or []:
+            if isinstance(r, dict) and r.get("id") is not None:
+                ts = r.get("published_at") or r.get("created_at")
+                if ts:
+                    raw_dates[r["id"]] = ts
+    except Exception:
+        log.warning("automate_comments_meta_failed", external_id=external_id)
+
+    rows: list[tuple[str, str]] = []
+    for c in comments:
+        text = _strip_html(getattr(c, "content", None))
+        if not text:
+            continue
+        author = (c.author.name if getattr(c, "author", None) else None) or "—"
+        date = (getattr(c, "created_at", None) or raw_dates.get(getattr(c, "id", None)) or "")
+        date = str(date)[:16].replace("T", " ")
+        rows.append((date, f"{author} • {date} • {text}"))
+    if not rows:
+        return ""
+    # Chronological order (empty dates sort first, then ascending by timestamp).
+    rows.sort(key=lambda r: r[0])
+    lines = [line for _, line in rows]
+    digest = "\n".join(lines)
+    if len(digest) > max_chars:
+        digest = digest[:max_chars].rstrip() + "…"
+    return digest
+
+
 def _build_parameters(params: list) -> list[dict[str, str]]:
     from app.core.okdesk.models import IssueParameter
     result: list[dict[str, str]] = []
@@ -332,6 +383,11 @@ async def automate_issue(
         attachments_text = ""
         if live.attachments:
             attachments_text = await automation.read_attachments(external_id, live.attachments)
+        # Комментарии по заявке — свежие факты «с места» (оператор/клиент). ИИ
+        # учитывает их: восстановленное питание → ответ о восстановлении (не
+        # диагностика); ранее выданная диагностика без данных → выезд бригады.
+        # Best-effort: любой сбой получения комментариев не должен ломать разбор.
+        comments_digest = await _build_comments_digest(external_id, okdesk)
         # Отправитель: даёт LLM контекст формата письма (разные дочерние Россети
         # оформляют акты по-разному).
         cached_issue = issue_data["issue"]
@@ -387,6 +443,7 @@ async def automate_issue(
             issue_type=live.type.name if live.type else None,
             attachments_text=attachments_text or None,
             sender=sender,
+            comments=comments_digest or None,
             example_provider=_example_provider,
         )
 
@@ -412,8 +469,29 @@ async def automate_issue(
     except HTTPException:
         raise
     except Exception:
+        # Не валим запрос в 500 (фронт показывает «Ошибка анализа. Попробуйте
+        # снова.» и теряет результат). Вместо этого отдаём валидный результат
+        # разбора с needs_review=True и понятным reasoning, чтобы оператор увидел,
+        # что произошло, и мог разобрать заявку вручную. Кейс 64196: непредвиденный
+        # сбой в одном из вызовов (Okdesk/LLM/инструмент) ронял весь разбор.
         log.exception("automate_issue_failed", issue_id=issue_id)
-        raise HTTPException(status_code=500, detail="Automation failed")
+        return {
+            "parsed": {
+                "plate": None, "date": None, "sheet_mileage_km": None,
+                "declared_system_km": None, "llm_extracted": False,
+            },
+            "telemetry": {},
+            "category": "Общий разбор",
+            "confidence": 0.0,
+            "draft_answer": "",
+            "reasoning": (
+                "Не удалось выполнить автоматический разбор заявки из-за "
+                "внутренней ошибки (сбой обращения к Okdesk/телеметрии/ИИ). "
+                "Разберите заявку вручную или повторите попытку позже."
+            ),
+            "needs_review": True,
+            "error": "automation_failed",
+        }
 
 
 @router.get("/{issue_id}/automate")

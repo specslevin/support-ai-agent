@@ -490,7 +490,8 @@ class IssueAutomationService:
     async def _draft_with_llm(self, parsed: ParsedIssue, f: TelemetryFacts, hint: str,
                               attachments_text: str | None = None,
                               sender: dict[str, Any] | None = None,
-                              examples: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+                              examples: list[dict[str, Any]] | None = None,
+                              comments: str | None = None) -> dict[str, Any]:
         catalog = "\n".join(
             f"- {c['key']}: {c['when']}\n  Шаблон: {c['template']}" for c in _CATEGORY_CATALOG
         )
@@ -529,17 +530,34 @@ class IssueAutomationService:
             "по-разному — Оренбургэнерго (Восточное/Центральное ПО) обычно указывают гос.номер и дату в теме; "
             "Волжское ПО присылает табличный «Акт» с полем «Дата неисправности»; Самарские РС (Чапаевское ПО) — "
             "общие заявки с вложением-актом по каждому ТС. Текст вложений — первоисточник, верь ему больше темы. "
+            "Учитывай комментарии оператора и клиента по заявке (если они даны) — это свежие факты «с места». "
+            "Правила по комментариям: "
+            "(а) если в комментариях ПОДТВЕРЖДЕНО, что питание восстановлено / масса включена / проводка исправна / "
+            "индикация активна / неисправность устранена — НЕ предлагай диагностику; дай ответ о том, что в указанную "
+            "дату отсутствовало питающее напряжение на входах терминала, а позже питание было восстановлено силами "
+            "заказчика (укажи дату восстановления, взяв её из комментария или трека), и что нет возможности восстановить "
+            "трек за период, когда питание было отключено; категория «Не было питания», уверенность ≥0.8. "
+            "(б) если ранее по заявке УЖЕ выдавалась удалённая диагностика (есть комментарий с инструкцией: включить "
+            "питание/массу, проверить провода питания, проверить светодиодную индикацию), а данные так и не появились — "
+            "НЕ повторяй удалённую диагностику, а рекомендуй ВЫЕЗД бригады специалистов для диагностики на месте. "
             "Не выдумывай данные, которых нет. Верни СТРОГО JSON без пояснений: "
             '{"category": "...", "answer": "...", "confidence": 0.0-1.0, "reasoning": "..."}'
         )
         att_block = ""
         if attachments_text and attachments_text.strip():
             att_block = f"\nТекст из вложений заявки (путевые листы и т.п.):\n{attachments_text[:4000]}\n"
+        comments_block = ""
+        if comments and comments.strip():
+            comments_block = (
+                "\nКомментарии по заявке (хронологически, автор • дата • текст):\n"
+                f"{comments.strip()[:2000]}\n"
+            )
         examples_block = self._format_examples(examples)
         user = (
             f"Каталог категорий ответов:\n{catalog}\n\n"
             f"Факты по заявке (JSON):\n{json.dumps(facts, ensure_ascii=False)}\n"
-            f"{att_block}\n"
+            f"{att_block}"
+            f"{comments_block}\n"
             f"{examples_block}"
             f"Подсказка эвристики (вероятная категория): {hint}\n\n"
             "Ответ строго в JSON."
@@ -549,7 +567,8 @@ class IssueAutomationService:
 
     async def _draft_general(self, title: str | None, description: str | None,
                              attachments_text: str | None = None,
-                             sender: dict[str, Any] | None = None) -> AutomationResult:
+                             sender: dict[str, Any] | None = None,
+                             comments: str | None = None) -> AutomationResult:
         """Intent-routed, tool-using analyzer (bounded ReAct «control center»).
 
         Replaces the old single-shot fallback. Strictly bounded:
@@ -565,11 +584,23 @@ class IssueAutomationService:
         sender_block = (
             f"Отправитель: {json.dumps(sender, ensure_ascii=False)}\n\n" if sender else ""
         )
+        comments_block = ""
+        if comments and comments.strip():
+            comments_block = (
+                "\n\nКомментарии по заявке (хронологически, автор • дата • текст). "
+                "Учитывай их: если в них подтверждено, что питание восстановлено / масса "
+                "включена / неисправность устранена — не предлагай диагностику, а сообщи о "
+                "восстановлении питания с датой и невозможности восстановить трек за период "
+                "отключения; если ранее уже выдавалась удалённая диагностика, а данные так и "
+                "не появились — рекомендуй выезд бригады для диагностики на месте:\n"
+                f"{comments.strip()[:2000]}"
+            )
         question = (
             sender_block
             + f"Тема заявки: {title or ''}\n\n"
             + f"Описание: {body or ''}"
             + att_block
+            + comments_block
         )
 
         # ---- PASS 1: intent + data needs --------------------------------
@@ -823,6 +854,7 @@ class IssueAutomationService:
                        issue_type: str | None = None,
                        attachments_text: str | None = None,
                        sender: dict[str, Any] | None = None,
+                       comments: str | None = None,
                        examples: list[dict[str, Any]] | None = None,
                        example_provider: Callable[
                            [str, str | None, list[str]],
@@ -846,22 +878,22 @@ class IssueAutomationService:
         if not parsed.plate or not parsed.date:
             # If the type is explicitly non-mileage, the general path is the right
             # home regardless; if it's mileage but unparseable, still go general.
-            return await self._draft_general(title, description, attachments_text, sender)
+            return await self._draft_general(title, description, attachments_text, sender, comments)
         # A non-mileage issue type that happens to carry a plate still belongs to
         # the general path — the mileage analysis below would be meaningless.
         if issue_type and not is_mileage:
-            return await self._draft_general(title, description, attachments_text, sender)
+            return await self._draft_general(title, description, attachments_text, sender, comments)
         try:
             telemetry = await self.gather_telemetry(parsed.plate, parsed.date)
         except Exception:  # pragma: no cover - network errors
             # Telemetry/object lookup failed — fall through to the general path
             # rather than a hard error, so the operator still gets a draft.
             log.exception("gather_telemetry_failed", plate=parsed.plate)
-            return await self._draft_general(title, description, attachments_text, sender)
+            return await self._draft_general(title, description, attachments_text, sender, comments)
         if "object_not_found" in telemetry.flags:
             # Plate parsed but no matching object in Geo: general path can still
             # understand the request and tell the operator what to verify.
-            return await self._draft_general(title, description, attachments_text, sender)
+            return await self._draft_general(title, description, attachments_text, sender, comments)
 
         hint = self._heuristic_category(parsed, telemetry)
         # RAG: fetch similar past resolved cases as few-shot examples. The
@@ -876,6 +908,7 @@ class IssueAutomationService:
         llm = await self._draft_with_llm(
             parsed, telemetry, hint,
             attachments_text=attachments_text, sender=sender, examples=examples,
+            comments=comments,
         )
         category = llm.get("category") or hint
         draft = (llm.get("answer") or "").strip()
