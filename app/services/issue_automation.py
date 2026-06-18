@@ -556,11 +556,17 @@ class IssueAutomationService:
         # terminal can report a bogus 138 km/h on a single noisy fix while the
         # track stays clean (e.g. 64070). Real jamming (64051) shows many
         # teleports with impossible implied speeds and/or satellite dropouts.
+        # Спутниковые/нулевые сигналы считаем глушением ТОЛЬКО если ТС реально
+        # двигалось: у СТОЯЩЕГО терминала мало спутников — норма (плохой обзор неба
+        # на стоянке), а не глушение. Иначе припаркованное авто с потерей питания
+        # среди дня ложно помечалось «Глушение» (64275). Телепорты (явный спуфинг)
+        # остаются признаком глушения независимо от движения.
+        moving = bool((f.system_mileage_km or 0) > 0.5 or (f.move_time_min or 0) > 1)
         jamming = (
             f.teleport_jumps >= 5
             or (f.max_implied_kmh is not None and f.max_implied_kmh > 500 and f.teleport_jumps >= 2)
-            or (f.low_sat_ratio is not None and f.low_sat_ratio > 0.08)
-            or (f.zero_coord_moving_ratio is not None and f.zero_coord_moving_ratio > 0.15)
+            or (moving and f.low_sat_ratio is not None and f.low_sat_ratio > 0.08)
+            or (moving and f.zero_coord_moving_ratio is not None and f.zero_coord_moving_ratio > 0.15)
         )
         if jamming:
             f.flags.append("jamming")
