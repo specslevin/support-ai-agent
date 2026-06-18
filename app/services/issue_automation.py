@@ -79,6 +79,44 @@ def extract_all_plates(text: str, limit: int = 40) -> list[str]:
                 break
     return out
 _DATE_RE = re.compile(r"(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{4})")
+# Mileage figure inside a comment («пробег … 49 км по ССМ ГЛОНАСС 0 км»):
+# a number immediately followed by км/м. Used only to confirm a comment is
+# actually about a mileage discrepancy before we treat its date as analyzable.
+_COMMENT_MILEAGE_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(км|м)\b", re.I)
+
+
+def _scan_comment_for_new_date(comments: str | None, base_date: str | None,
+                               ) -> str | None:
+    """If a comment names a date DIFFERENT from ``base_date`` together with a
+    mileage figure (км/м), return that comment's date in ISO form.
+
+    Case 63301 (Нижнеломовское ПО): body fault is date A (already answered);
+    later a client comment introduces date B («За 27.05.2026 пробег по путевому
+    листу 49 км по ССМ ГЛОНАСС 0 км») — a NEW date to analyze. We pick the most
+    recent such date so the analysis follows the freshest comment.
+    Bounded: returns at most one extra date. Never raises.
+    """
+    if not comments or not comments.strip():
+        return None
+    try:
+        candidates: list[str] = []
+        for line in comments.splitlines():
+            if not _COMMENT_MILEAGE_RE.search(line):
+                continue
+            for dm in _DATE_RE.finditer(line):
+                try:
+                    iso = _dt.date(int(dm.group(3)), int(dm.group(2)),
+                                   int(dm.group(1))).isoformat()
+                except (ValueError, IndexError):
+                    continue
+                if iso != base_date:
+                    candidates.append(iso)
+        if not candidates:
+            return None
+        # Freshest date among the comment-introduced ones.
+        return max(candidates)
+    except Exception:  # pragma: no cover - never break automate
+        return None
 
 
 def _strip_html(text: str | None) -> str:
@@ -411,6 +449,51 @@ class IssueAutomationService:
         self._derive_flags(facts)
         return facts
 
+    async def _verify_data_resumed(self, object_id: int, fault_date: str,
+                                   max_days: int = 14) -> dict[str, Any] | None:
+        """Did real data RESUME after the fault date? (case 64201)
+
+        When telemetry shows power-off/no-data on the fault date and a comment
+        claims the issue is fixed (масса включена / питание восстановлено), we
+        must NOT trust the comment blindly — we check whether any day AFTER the
+        fault date (up to min(today, fault_date+max_days)) actually has packets
+        or mileage > 0. Returns
+        ``{"данные_возобновились": bool, "дата_возобновления": ISO|None}`` or
+        ``None`` if the check couldn't run (caller then omits the fact).
+        Bounded to ONE daily-stats call. Never raises.
+        """
+        try:
+            start_day = _dt.date.fromisoformat(fault_date) + _dt.timedelta(days=1)
+            today = _dt.date.today()
+            end_day = min(today, _dt.date.fromisoformat(fault_date)
+                          + _dt.timedelta(days=max_days))
+            if end_day < start_day:
+                return None
+            start = _dt.datetime.combine(start_day, _dt.time.min)
+            end = _dt.datetime.combine(end_day, _dt.time.min) + _dt.timedelta(days=1)
+            from_ms = int(start.timestamp() * 1000)
+            till_ms = int(end.timestamp() * 1000)
+            stats = await self._geo.get_daily_stats(object_id, from_ms, till_ms)
+            resumed_on: str | None = None
+            for r in sorted(stats, key=lambda x: x.get("day") or 0):
+                length = float(r.get("length") or 0)
+                packets = r.get("packets") or r.get("count") or 0
+                if length > 0 or (isinstance(packets, (int, float)) and packets > 0):
+                    ymd = r.get("day")
+                    if ymd:
+                        try:
+                            resumed_on = _dt.datetime.strptime(
+                                str(ymd), "%Y%m%d").date().isoformat()
+                        except ValueError:
+                            resumed_on = None
+                    break
+            return {
+                "данные_возобновились": resumed_on is not None,
+                "дата_возобновления": resumed_on,
+            }
+        except Exception:  # pragma: no cover - never break automate
+            return None
+
     @staticmethod
     def _derive_flags(f: TelemetryFacts) -> None:
         if f.power_off_ratio and f.power_off_ratio > 0.2:
@@ -491,7 +574,10 @@ class IssueAutomationService:
                               attachments_text: str | None = None,
                               sender: dict[str, Any] | None = None,
                               examples: list[dict[str, Any]] | None = None,
-                              comments: str | None = None) -> dict[str, Any]:
+                              comments: str | None = None,
+                              verify_resumed: dict[str, Any] | None = None,
+                              comment_date_facts: dict[str, Any] | None = None,
+                              ) -> dict[str, Any]:
         catalog = "\n".join(
             f"- {c['key']}: {c['when']}\n  Шаблон: {c['template']}" for c in _CATEGORY_CATALOG
         )
@@ -516,6 +602,14 @@ class IssueAutomationService:
             "макс_расчётная_скорость_между_точками": f.max_implied_kmh,
             "признаки": f.flags,
         }
+        # IMPROVEMENT 1 (64201): verification of whether data actually resumed
+        # after the fault date — used to NOT trust a «восстановлено» comment blindly.
+        if verify_resumed is not None:
+            facts["проверка_данных_после_даты"] = verify_resumed
+        # IMPROVEMENT 2 (63301): a comment introduced a NEW date with mileage —
+        # telemetry gathered for that date too; analyze the freshest date.
+        if comment_date_facts is not None:
+            facts["данные_за_дату_из_комментария"] = comment_date_facts
         system = (
             "Ты — ассистент техподдержки GPSPOS. По данным телеметрии классифицируй причину "
             "расхождения пробега и составь короткий вежливый ответ клиенту на русском. "
@@ -540,6 +634,14 @@ class IssueAutomationService:
             "(б) если ранее по заявке УЖЕ выдавалась удалённая диагностика (есть комментарий с инструкцией: включить "
             "питание/массу, проверить провода питания, проверить светодиодную индикацию), а данные так и не появились — "
             "НЕ повторяй удалённую диагностику, а рекомендуй ВЫЕЗД бригады специалистов для диагностики на месте. "
+            "(в) ВАЖНО — НЕ верь комментарию о восстановлении напрямую, сверяй с данными. Если в фактах есть "
+            "«проверка_данных_после_даты»: когда клиент сообщил о включении питания/массы И данные ДЕЙСТВИТЕЛЬНО "
+            "возобновились (данные_возобновились=true) — подтверди восстановление, укажи дату_возобновления как дату, "
+            "когда данные снова пошли. Если клиент сообщил о восстановлении, НО данные по-прежнему отсутствуют "
+            "(данные_возобновились=false) — так и напиши: по данным системы мониторинга питание/данные не появились, "
+            "и рекомендуй ВЫЕЗД бригады специалистов для диагностики на месте (а не повторную удалённую диагностику). "
+            "(г) если в фактах есть «данные_за_дату_из_комментария» — клиент в комментарии указал НОВУЮ дату "
+            "расхождения; анализируй именно её (самую свежую) и отвечай по данным за эту дату, подставляя её число и пробег. "
             "Не выдумывай данные, которых нет. Верни СТРОГО JSON без пояснений: "
             '{"category": "...", "answer": "...", "confidence": 0.0-1.0, "reasoning": "..."}'
         )
@@ -905,10 +1007,44 @@ class IssueAutomationService:
             except Exception:  # pragma: no cover - best effort, never break automate
                 log.warning("example_provider_failed", plate=parsed.plate)
                 examples = None
+        # IMPROVEMENT 1 (64201): if the fault date shows power-off/no-data AND
+        # there are comments (possibly claiming a fix), verify against real data
+        # whether anything actually resumed after the fault date. Bounded to one
+        # extra daily-stats call; any failure omits the fact (never breaks).
+        verify_resumed: dict[str, Any] | None = None
+        if (comments and comments.strip()
+                and telemetry.object_id is not None
+                and ("power_off" in telemetry.flags or "no_data" in telemetry.flags)):
+            verify_resumed = await self._verify_data_resumed(
+                telemetry.object_id, parsed.date)
+
+        # IMPROVEMENT 2 (63301): if a comment introduces a NEW date+mileage that
+        # differs from the body's fault date, gather telemetry for that date too
+        # and pass it as a fact so the LLM answers by the freshest comment date.
+        comment_date_facts: dict[str, Any] | None = None
+        comment_date = _scan_comment_for_new_date(comments, parsed.date)
+        if comment_date:
+            try:
+                ct = await self.gather_telemetry(parsed.plate, comment_date)
+                comment_date_facts = {
+                    "дата": comment_date,
+                    "реальный_пробег_системы_км": ct.system_mileage_km,
+                    "пакетов_телеметрии": ct.packets,
+                    "признаки": ct.flags,
+                    "телепортов_трека": ct.teleport_jumps,
+                    "доля_слабого_сигнала": ct.low_sat_ratio,
+                    "доля_без_питания": ct.power_off_ratio,
+                }
+            except Exception:  # pragma: no cover - never break automate
+                log.warning("comment_date_telemetry_failed",
+                            plate=parsed.plate, date=comment_date)
+
         llm = await self._draft_with_llm(
             parsed, telemetry, hint,
             attachments_text=attachments_text, sender=sender, examples=examples,
             comments=comments,
+            verify_resumed=verify_resumed,
+            comment_date_facts=comment_date_facts,
         )
         category = llm.get("category") or hint
         draft = (llm.get("answer") or "").strip()

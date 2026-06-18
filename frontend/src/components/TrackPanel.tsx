@@ -239,7 +239,14 @@ function TelemetryCharts({ data, apiRef, onRange }: { data: TrackData; apiRef: R
         { scale: 'pwr', stroke: '#ef4444', side: 1 },
       ],
       series: [
-        {},
+        {
+          // Значение времени в легенде/курсоре: русский формат ДД.ММ.ГГГГ ЧЧ:ММ (24ч).
+          value: (_u, v) => {
+            if (v == null) return '—'
+            const d = new Date(v * 1000)
+            return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+          },
+        },
         { label: 'Скорость, км/ч', stroke: '#22c55e', width: 1.2, scale: 'spd' },
         { label: 'Напряжение, В', stroke: '#ef4444', width: 1.2, scale: 'pwr' },
         { label: 'Спутники', stroke: '#3b82f6', width: 1.2, scale: 'sat' },
@@ -295,6 +302,9 @@ function DateRangePicker({ from, to, onChange }: { from: string; to: string; onC
   const cells: (string | null)[] = Array(startWd).fill(null)
   for (let d = 1; d <= daysIn; d++) cells.push(isoOf(vy, vm, d))
 
+  const now = new Date()
+  const todayIso = isoOf(now.getFullYear(), now.getMonth(), now.getDate())
+
   const click = (iso: string) => {
     if (!pend) { setPend(iso); return }
     const [lo, hi] = pend <= iso ? [pend, iso] : [iso, pend]
@@ -325,11 +335,12 @@ function DateRangePicker({ from, to, onChange }: { from: string; to: string; onC
                 if (!iso) return <div key={i} />
                 const inRange = !pend && iso >= from && iso <= to
                 const isPend = iso === pend
+                const isToday = iso === todayIso
                 return (
                   <button
                     key={i}
                     onClick={() => click(iso)}
-                    className={`text-center py-0.5 rounded transition-colors ${isPend ? 'bg-accent text-black' : inRange ? 'bg-accent/25 text-white' : 'text-white hover:bg-white/10'}`}
+                    className={`text-center py-0.5 rounded transition-colors ${isPend ? 'bg-accent text-black' : inRange ? 'bg-accent/25 text-white' : 'text-white hover:bg-white/10'} ${isToday ? 'ring-1 ring-accent/60' : ''}`}
                   >
                     {Number(iso.slice(8))}
                   </button>

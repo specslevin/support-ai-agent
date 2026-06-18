@@ -3,7 +3,8 @@ import type { IssuesListResponse, IssueDetail, Comment, Analysis, Template, Temp
 
 const http = axios.create({
   baseURL: '/api/v1',
-  timeout: 30_000,
+  // ИИ-анализ (OCR + LLM + телеметрия) бывает 20-40с — иначе фронт рвал запрос
+  timeout: 90_000,
 })
 
 export interface IssuesQuery {

@@ -648,11 +648,17 @@ function AutoAnalysis({ issueId, onUseDraft, latestAnalysis, issueTitle, company
     staleTime: 5 * 60_000,
   })
   const looksAggregate = /одкр/i.test(companyName ?? '') || /общ|одкр/i.test(issueTitle ?? '')
+  // Сохранённый разбор по объектам (дешёвый GET; данные есть только если он уже делался).
+  const cachedBatch = cachedBatchQ.data?.cached ? cachedBatchQ.data : null
+  const cachedBatchObjects = cachedBatch?.objects?.length ?? 0
   // Batch = несколько вложений; ИЛИ одно вложение агрегатной/«общей» заявки;
-  // ИЛИ сохранённый разбор пометил заявку как агрегатную.
+  // ИЛИ сохранённый разбор пометил заявку как агрегатную;
+  // ИЛИ сохранённый разбор вернул >=2 объекта — мультиобъектная заявка даже с 1 вложением
+  // (напр. 63317: один файл, ~40 ТС). Тогда одиночный автоанализ вводит в заблуждение.
   const isBatch = extractCount >= 2
     || (extractCount >= 1 && looksAggregate)
-    || !!(cachedBatchQ.data?.cached && cachedBatchQ.data.is_aggregate)
+    || !!(cachedBatch && cachedBatch.is_aggregate)
+    || cachedBatchObjects >= 2
 
   // Cached result — show last analysis without re-running the AI (saves tokens).
   const cachedQ = useQuery({
@@ -885,7 +891,7 @@ const VERDICT_STYLE: Record<string, string> = {
 }
 
 
-function BatchAnalysis({ issueId, onUseDraft, issueTitle, companyName, onOpenExternal }: { issueId: number; onUseDraft: (text: string) => void; issueTitle?: string | null; companyName?: string | null; onOpenExternal: (extId: number) => void }) {
+function BatchAnalysis({ issueId, onUseDraft, onOpenExternal }: { issueId: number; onUseDraft: (text: string) => void; issueTitle?: string | null; companyName?: string | null; onOpenExternal: (extId: number) => void }) {
   const queryClient = useQueryClient()
   const openTrack = useIssuesStore(s => s.openTrack)
   const batchChildren = useIssuesStore(s => s.batchChildren)
@@ -904,10 +910,6 @@ function BatchAnalysis({ issueId, onUseDraft, issueTitle, companyName, onOpenExt
     staleTime: 5 * 60_000,
   })
   const extractable = attachments.filter(a => a.extractable)
-  // Агрегатная (ОДКР) заявка: компания «ОДКР» ИЛИ в теме «общ»/«одкр».
-  // Такие заявки разбираем по объектам всегда, даже если ТС в файле всего один —
-  // оператор должен видеть, что именно распарсил ИИ.
-  const looksAggregate = /одкр/i.test(companyName ?? '') || /общ|одкр/i.test(issueTitle ?? '')
   // Подтягиваем сохранённый разбор при наличии хотя бы одного извлекаемого вложения
   // (дешёвый GET — вернёт данные только если разбор уже делали). Нужно, чтобы
   // распознать агрегатность по кешу даже без подсказки в теме/компании.
@@ -918,11 +920,6 @@ function BatchAnalysis({ issueId, onUseDraft, issueTitle, companyName, onOpenExt
     staleTime: 5 * 60_000,
   })
   const cached = cachedQ.data?.cached ? cachedQ.data : null
-  // Batch = несколько вложений; ИЛИ одно вложение агрегатной/«общей» заявки;
-  // ИЛИ сохранённый разбор уже пометил заявку как агрегатную.
-  const isBatch = extractable.length >= 2
-    || (extractable.length >= 1 && looksAggregate)
-    || !!cached?.is_aggregate
 
   const run = useMutation({
     mutationFn: () => api.automateBatch(issueId),
@@ -966,8 +963,10 @@ function BatchAnalysis({ issueId, onUseDraft, issueTitle, companyName, onOpenExt
     }
   }
 
-  // Show only for batch issues (several extractable attachments / vehicles)
-  if (!isBatch) return null
+  // Кнопка «Разбор по объектам» доступна для любой заявки с >=1 извлекаемым вложением —
+  // оператор может вручную запустить разбор (напр. 63317: 1 файл, ~40 ТС). Авто-запуск
+  // OCR не делаем; таблица рисуется из результата run/кеша (>=2 объекта → мультиобъект).
+  if (extractable.length < 1) return null
 
   const res = run.data ?? (cached as BatchResult | null)
   const isCached = !run.data && !!cached
