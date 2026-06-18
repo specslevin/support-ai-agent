@@ -455,12 +455,20 @@ class IssueAutomationService:
 
         When telemetry shows power-off/no-data on the fault date and a comment
         claims the issue is fixed (масса включена / питание восстановлено), we
-        must NOT trust the comment blindly — we check whether any day AFTER the
-        fault date (up to min(today, fault_date+max_days)) actually has packets
-        or mileage > 0. Returns
+        must NOT trust the comment blindly — we check whether anything AFTER the
+        fault date (up to min(today, fault_date+max_days)) actually has packets.
+        Returns
         ``{"данные_возобновились": bool, "дата_возобновления": ISO|None}`` or
         ``None`` if the check couldn't run (caller then omits the fact).
-        Bounded to ONE daily-stats call. Never raises.
+
+        IMPLEMENTATION: we use ``get_packets`` over the window — the SAME live
+        source that ``gather_telemetry``/``build_track`` already trust. The
+        precomputed DailyStat.length lags badly: for 64201 (object 8789, fault
+        10.06) every DailyStat row 11.06..18.06 reports ``length=0`` while
+        ``get_packets`` returns 995 real packets on 17.06. Trusting the stale
+        DailyStat produced a FALSE NEGATIVE (recommend a brigade visit instead
+        of confirming power restoration). The resume date is the date of the
+        first real packet. Bounded to ONE packets call. Never raises.
         """
         try:
             start_day = _dt.date.fromisoformat(fault_date) + _dt.timedelta(days=1)
@@ -473,20 +481,15 @@ class IssueAutomationService:
             end = _dt.datetime.combine(end_day, _dt.time.min) + _dt.timedelta(days=1)
             from_ms = int(start.timestamp() * 1000)
             till_ms = int(end.timestamp() * 1000)
-            stats = await self._geo.get_daily_stats(object_id, from_ms, till_ms)
+            packets = await self._geo.get_packets(object_id, from_ms, till_ms)
             resumed_on: str | None = None
-            for r in sorted(stats, key=lambda x: x.get("day") or 0):
-                length = float(r.get("length") or 0)
-                packets = r.get("packets") or r.get("count") or 0
-                if length > 0 or (isinstance(packets, (int, float)) and packets > 0):
-                    ymd = r.get("day")
-                    if ymd:
-                        try:
-                            resumed_on = _dt.datetime.strptime(
-                                str(ymd), "%Y%m%d").date().isoformat()
-                        except ValueError:
-                            resumed_on = None
-                    break
+            first_ts = min(
+                (p.get("time") for p in packets
+                 if isinstance(p.get("time"), (int, float)) and p.get("time")),
+                default=None,
+            )
+            if first_ts is not None:
+                resumed_on = _dt.date.fromtimestamp(first_ts / 1000.0).isoformat()
             return {
                 "данные_возобновились": resumed_on is not None,
                 "дата_возобновления": resumed_on,
