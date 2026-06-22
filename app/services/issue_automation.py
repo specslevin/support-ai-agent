@@ -321,6 +321,7 @@ class TelemetryFacts:
     last_packet_msk: str | None = None  # HH:MM последнего пакета за дату (МСК)
     tail_gap_min: float | None = None  # разрыв от последнего пакета до конца суток, мин
     day_profile: list[dict[str, Any]] | None = None  # профиль суток по 4-ч отрезкам
+    graph_events: dict[str, Any] | None = None  # структурный анализ графика (события)
     flags: list[str] = field(default_factory=list)
 
 
@@ -633,6 +634,32 @@ class IssueAutomationService:
                 })
             facts.day_profile = profile
 
+            # Структурный «разбор графика» для ИИ: конкретные моменты (окно
+            # движения, время падения напряжения, крупные разрывы) — чтобы ответ
+            # опирался на факты с графика, а не на общие фразы.
+            def _hm(ms: float) -> str:
+                return _dt.datetime.fromtimestamp(ms / 1000.0, _MSK).strftime("%H:%M")
+
+            ev: dict[str, Any] = {}
+            move_times = [p.get("time") for p in packets if (p.get("speed") or 0) > 0 and p.get("time")]
+            if move_times:
+                ev["движение_с"] = _hm(min(move_times))
+                ev["движение_по"] = _hm(max(move_times))
+            else:
+                ev["движение"] = "не зафиксировано"
+            drop = next(
+                (p.get("time") for p in packets
+                 if isinstance(p.get("tags"), dict)
+                 and (p.get("tags") or {}).get("pwr_ext") is not None
+                 and _GLITCH_V <= (p["tags"]["pwr_ext"]) < _POWER_OFF_V and p.get("time")),
+                None,
+            )
+            if drop:
+                ev["напряжение_упало_в"] = _hm(drop)
+            if facts.max_gap_min and facts.max_gap_min > _TRACK_GAP_MIN:
+                ev["макс_разрыв_трека_мин"] = facts.max_gap_min
+            facts.graph_events = ev
+
             # speed spikes (spoofing): implausibly high reported speed
             speeds = [p.get("speed") or 0 for p in packets]
             facts.max_speed_packet = max(speeds) if speeds else 0
@@ -880,6 +907,8 @@ class IssueAutomationService:
             }
         if f.day_profile:
             facts["профиль_дня_по_4ч"] = f.day_profile
+        if f.graph_events:
+            facts["анализ_графика"] = f.graph_events
         if parsed.date_to and parsed.date_to != parsed.date:
             facts["период_анализа"] = f"{parsed.date} — {parsed.date_to}"
         system = (
@@ -938,6 +967,8 @@ class IssueAutomationService:
             "Поле «профиль_дня_по_4ч» — это «график» суток по 4-часовым отрезкам (напряжение, макс.скорость, число пакетов): "
             "читай его как телеметрический график — если в отрезках есть движение (макс_скорость>0) и нормальное напряжение (≈12–30 В), "
             "значит питание БЫЛО (не пиши «нет питания»); «нет данных» в отрезке = в это время пакеты не поступали. "
+            "Поле «анализ_графика» — конкретные моменты с графика (окно движения, время падения напряжения, крупные разрывы): "
+            "ПРОАНАЛИЗИРУЙ их перед ответом и опирайся на конкретные времена/значения, а не на общие фразы. "
             "Будь гибким в формулировках и опирайся на конкретику фактов, но НЕ выходи за рамки категорий каталога и не выдумывай данные. "
             "Держи ответ кратким (2–4 предложения), по делу, без воды. "
             "Не выдумывай данные, которых нет. Верни СТРОГО JSON без пояснений: "
