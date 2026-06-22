@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import { ChevronDown, ChevronLeft, ChevronRight, Check, X, List, LayoutGrid } from 'lucide-react'
+import { ChevronDown, ChevronLeft, ChevronRight, Check, X } from 'lucide-react'
 import { api } from '../api/client'
 import { useIssuesStore } from '../store/issuesStore'
 import { useAuthStore } from '../store/authStore'
@@ -9,9 +9,9 @@ import { TemplatePicker } from './IssueDetail'
 import { EmployeeMenu, TypeMenu } from './pickers'
 import type { Issue } from '../types'
 
-type ViewMode = 'table' | 'cards'
+export type ViewMode = 'table' | 'cards'
 
-function useViewMode(): [ViewMode, (mode: ViewMode) => void] {
+export function useViewMode(): [ViewMode, (mode: ViewMode) => void] {
   const stored = localStorage.getItem('issuesViewMode') as ViewMode | null
   const [mode, setModeState] = useState<ViewMode>(stored === 'cards' ? 'cards' : 'table')
   const setMode = (m: ViewMode) => {
@@ -214,38 +214,13 @@ function IssueCard({ issue, highlighted, checked, onToggle, onClick }: { issue: 
   )
 }
 
-function ViewToggle({ mode, onChange }: { mode: ViewMode; onChange: (m: ViewMode) => void }) {
-  return (
-    <div className="flex items-center gap-0.5 p-0.5 rounded-lg border border-border bg-base shrink-0">
-      <button
-        onClick={() => onChange('table')}
-        title="Таблица"
-        className={`flex items-center justify-center p-1.5 rounded transition-colors ${
-          mode === 'table'
-            ? 'bg-accent/20 text-accent border border-accent/40'
-            : 'text-muted hover:text-white'
-        }`}
-      >
-        <List size={14} />
-      </button>
-      <button
-        onClick={() => onChange('cards')}
-        title="Карточки"
-        className={`flex items-center justify-center p-1.5 rounded transition-colors ${
-          mode === 'cards'
-            ? 'bg-accent/20 text-accent border border-accent/40'
-            : 'text-muted hover:text-white'
-        }`}
-      >
-        <LayoutGrid size={14} />
-      </button>
-    </div>
-  )
+interface IssuesListProps {
+  viewMode: ViewMode
+  onViewModeChange: (m: ViewMode) => void
 }
 
-export function IssuesList() {
+export function IssuesList({ viewMode }: IssuesListProps) {
   const { status, company, search, assignee, issueId, page, limit, selectedIssueId, highlightId, checkedIds, setPage, setLimit, selectIssue, toggleChecked, setChecked, clearChecked } = useIssuesStore()
-  const [viewMode, setViewMode] = useViewMode()
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ['issues', { status, company, search, assignee, issueId, page, limit }],
@@ -277,22 +252,6 @@ export function IssuesList() {
   return (
     <div className="flex flex-col h-full min-h-0">
       <BulkActionBar />
-
-      {/* View mode toggle bar */}
-      <div className="flex items-center justify-end gap-2 px-3 py-1.5 border-b border-border shrink-0">
-        {viewMode === 'cards' && (
-          <label className="flex items-center gap-1.5 text-xs text-muted cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={allChecked}
-              onChange={() => allChecked ? clearChecked() : setChecked(pageIds)}
-              className="ck cursor-pointer"
-            />
-            Выбрать всё
-          </label>
-        )}
-        <ViewToggle mode={viewMode} onChange={setViewMode} />
-      </div>
 
       <div className="overflow-auto flex-1">
         {viewMode === 'table' ? (
@@ -338,23 +297,36 @@ export function IssuesList() {
             )}
           </>
         ) : (
-          <div className="p-3 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3 content-start">
-            {issues.map((issue: Issue) => (
-              <IssueCard
-                key={issue.id}
-                issue={issue}
-                highlighted={issue.id === highlightId}
-                checked={checkedIds.includes(issue.id)}
-                onToggle={() => toggleChecked(issue.id)}
-                onClick={() => selectIssue(issue.id === selectedIssueId ? null : issue.id)}
-              />
-            ))}
-            {issues.length === 0 && (
-              <div className="col-span-full flex items-center justify-center h-32 text-muted text-sm">
-                Заявок не найдено
-              </div>
-            )}
-          </div>
+          <>
+            <div className="flex items-center px-3 py-2 border-b border-border shrink-0">
+              <label className="flex items-center gap-1.5 text-xs text-muted cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={allChecked}
+                  onChange={() => allChecked ? clearChecked() : setChecked(pageIds)}
+                  className="ck cursor-pointer"
+                />
+                Выбрать всё
+              </label>
+            </div>
+            <div className="p-3 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3 content-start">
+              {issues.map((issue: Issue) => (
+                <IssueCard
+                  key={issue.id}
+                  issue={issue}
+                  highlighted={issue.id === highlightId}
+                  checked={checkedIds.includes(issue.id)}
+                  onToggle={() => toggleChecked(issue.id)}
+                  onClick={() => selectIssue(issue.id === selectedIssueId ? null : issue.id)}
+                />
+              ))}
+              {issues.length === 0 && (
+                <div className="col-span-full flex items-center justify-center h-32 text-muted text-sm">
+                  Заявок не найдено
+                </div>
+              )}
+            </div>
+          </>
         )}
       </div>
 

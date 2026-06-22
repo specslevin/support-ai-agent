@@ -1,5 +1,6 @@
 import { useIssuesStore } from '../store/issuesStore'
 import { EMPLOYEES } from '../store/userStore'
+import type { ViewMode } from './IssuesList'
 
 const STATUSES = [
   { value: '', label: 'Все статусы' },
@@ -11,7 +12,12 @@ const STATUSES = [
   { value: 'closed', label: 'Закрыта' },
 ]
 
-export function IssueFilters() {
+interface IssueFiltersProps {
+  viewMode: ViewMode
+  onViewModeChange: (m: ViewMode) => void
+}
+
+export function IssueFilters({ viewMode, onViewModeChange }: IssueFiltersProps) {
   const { status, company, search, assignee, issueId, setFilter, resetFilters } = useIssuesStore()
   const hasAny = status || company || search || assignee || issueId
 
@@ -74,6 +80,52 @@ export function IssueFilters() {
           Сбросить
         </button>
       )}
+
+      {/* View mode toggle — right-aligned in the filter bar */}
+      <div className="ml-auto flex items-center gap-0.5 p-0.5 rounded-lg border border-border bg-base shrink-0">
+        <button
+          onClick={() => onViewModeChange('table')}
+          title="Таблица"
+          className={`flex items-center justify-center p-1.5 rounded transition-colors ${
+            viewMode === 'table'
+              ? 'bg-accent/20 text-accent border border-accent/40'
+              : 'text-muted hover:text-white'
+          }`}
+        >
+          <ListIcon />
+        </button>
+        <button
+          onClick={() => onViewModeChange('cards')}
+          title="Карточки"
+          className={`flex items-center justify-center p-1.5 rounded transition-colors ${
+            viewMode === 'cards'
+              ? 'bg-accent/20 text-accent border border-accent/40'
+              : 'text-muted hover:text-white'
+          }`}
+        >
+          <LayoutGridIcon />
+        </button>
+      </div>
     </div>
+  )
+}
+
+// Inline icon helpers to avoid adding lucide import dependency here
+// (IssuesList already imports these from lucide-react)
+function ListIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" />
+      <line x1="3" y1="6" x2="3.01" y2="6" /><line x1="3" y1="12" x2="3.01" y2="12" /><line x1="3" y1="18" x2="3.01" y2="18" />
+    </svg>
+  )
+}
+
+function LayoutGridIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" />
+      <rect x="14" y="14" width="7" height="7" /><rect x="3" y="14" width="7" height="7" />
+    </svg>
   )
 }

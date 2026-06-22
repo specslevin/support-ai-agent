@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { RefreshCw, ClipboardList, MessageSquare, Phone, Truck, BarChart3, Settings, LogOut, UserCircle, type LucideIcon } from 'lucide-react'
 import { IssueFilters } from './components/IssueFilters'
-import { IssuesList } from './components/IssuesList'
+import { IssuesList, useViewMode } from './components/IssuesList'
 import { IssueDetail } from './components/IssueDetail'
 import { TrackPanel } from './components/TrackPanel'
 import { ChatPanel } from './components/ChatPanel'
@@ -84,6 +84,7 @@ function Dashboard() {
   const [lastSynced, setLastSynced] = useState<number | null>(null)
   const user = useAuthStore(s => s.user)
   const isDemo = user?.role === 'demo'
+  const [viewMode, setViewMode] = useViewMode()
 
   const handleRefresh = async () => {
     setRefreshing(true)
@@ -158,13 +159,13 @@ function Dashboard() {
           <>
             {/* Filters */}
             <div className="px-6 py-3 border-b border-border shrink-0">
-              <IssueFilters />
+              <IssueFilters viewMode={viewMode} onViewModeChange={setViewMode} />
             </div>
 
             {/* Content */}
             <div className="flex flex-1 min-h-0 relative">
               <div className={`flex flex-col transition-all ${selectedIssueId ? 'w-3/5' : 'w-full'} border-r border-border min-h-0`}>
-                <IssuesList />
+                <IssuesList viewMode={viewMode} onViewModeChange={setViewMode} />
               </div>
               {selectedIssueId && (
                 <div className="w-2/5 flex flex-col min-h-0 overflow-hidden">
