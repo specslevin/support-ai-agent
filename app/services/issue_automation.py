@@ -198,6 +198,40 @@ def _parse_summary_table(text: str) -> list[tuple[str, str | None]]:
 
 
 _DATE_RE = re.compile(r"(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{4})")
+# Интервал дат неисправности: «15.06-16.06», «15.06.2026 - 16.06.2026», «15.06 по 16.06».
+_RANGE_RE = re.compile(
+    r"(\d{1,2})[.\-/](\d{1,2})(?:[.\-/](\d{2,4}))?"
+    r"\s*(?:[–—-]|\bпо\b|\bдо\b)\s*"
+    r"(\d{1,2})[.\-/](\d{1,2})(?:[.\-/](\d{2,4}))?"
+)
+
+
+def _norm_year(y: str | None, fallback: int) -> int:
+    if not y:
+        return fallback
+    yi = int(y)
+    return yi + 2000 if yi < 100 else yi
+
+
+def _detect_date_range(text: str) -> tuple[str, str] | None:
+    """Найти интервал дат «start-end» → (start_iso, end_iso) или None.
+
+    Год берётся из явного (любого из двух), иначе текущий (МСК). Возвращаем только
+    валидный интервал: start<=end и длиной до 31 дня (иначе это не «дата неисправности»)."""
+    cur = _msk_today().year
+    for m in _RANGE_RE.finditer(text or ""):
+        d1, mo1, y1, d2, mo2, y2 = m.groups()
+        try:
+            start = _dt.date(_norm_year(y1 or y2, cur), int(mo1), int(d1))
+            end = _dt.date(_norm_year(y2 or y1, cur), int(mo2), int(d2))
+        except (ValueError, TypeError):
+            continue
+        if end < start or (end - start).days > 31:
+            continue
+        return start.isoformat(), end.isoformat()
+    return None
+
+
 # Mileage figure inside a comment («пробег … 49 км по ССМ ГЛОНАСС 0 км»):
 # a number immediately followed by км/м. Used only to confirm a comment is
 # actually about a mileage discrepancy before we treat its date as analyzable.
@@ -257,7 +291,8 @@ def _parse_number(raw: str) -> float:
 @dataclass
 class ParsedIssue:
     plate: str | None = None
-    date: str | None = None  # ISO date YYYY-MM-DD
+    date: str | None = None  # ISO date YYYY-MM-DD (начало интервала, если он есть)
+    date_to: str | None = None  # ISO: конец интервала неисправности (15.06-16.06)
     sheet_mileage_km: float | None = None  # по путевому листу
     declared_system_km: float | None = None  # «в ПК», то что увидел клиент
     llm_extracted: bool = False  # часть полей восстановлена ИИ (regex не справился)
@@ -456,6 +491,12 @@ class IssueAutomationService:
             or _from_iso(re.search(iso, text))
         )
 
+        # Интервал неисправности («15.06-16.06») — пробег анализируем за ВЕСЬ
+        # интервал. Явный диапазон приоритетнее одиночной даты.
+        rng = _detect_date_range(text)
+        if rng:
+            parsed.date, parsed.date_to = rng
+
         # по путевому листу / по ПЛ / по одометру <num> <unit>.
         # Единица (км/м) ОБЯЗАТЕЛЬНА — иначе регулярка цепляет даты (10.05.2026)
         # и прочие числа. Допускаем «составил – », «равен» между словом и числом.
@@ -491,7 +532,8 @@ class IssueAutomationService:
         return parsed
 
     # ----- telemetry -----------------------------------------------------
-    async def gather_telemetry(self, plate: str, iso_date: str) -> TelemetryFacts:
+    async def gather_telemetry(self, plate: str, iso_date: str,
+                               iso_date_to: str | None = None) -> TelemetryFacts:
         facts = TelemetryFacts()
         obj = await self._geo.find_object_by_plate(plate)
         if not obj:
@@ -502,17 +544,31 @@ class IssueAutomationService:
         facts.object_name = obj.get("name")
 
         day = _dt.date.fromisoformat(iso_date)
-        from_ms, till_ms = _msk_day_window_ms(day)
+        # Интервал неисправности (1.6): окно от начала до конца интервала (МСК),
+        # пробег/трек считаем за ВЕСЬ период, а не один день.
+        day_to = day
+        if iso_date_to:
+            try:
+                dt2 = _dt.date.fromisoformat(iso_date_to)
+                if dt2 >= day:
+                    day_to = dt2
+            except ValueError:
+                pass
+        from_ms, _ = _msk_day_window_ms(day)
+        _, till_ms = _msk_day_window_ms(day_to)
 
         stats = await self._geo.get_daily_stats(oid, from_ms, till_ms)
-        ymd = int(day.strftime("%Y%m%d"))
-        # No stats[0] fallback: borrowing a neighbouring day's row reports the
-        # wrong day's mileage (64284). If the exact day is absent, treat as none.
-        row = next((r for r in stats if r.get("day") == ymd), None)
-        if row:
-            facts.system_mileage_km = round(float(row.get("length") or 0) / 1000.0, 2)
-            facts.max_speed = row.get("maxSpeed")
-            facts.move_time_min = round(float(row.get("moveTime") or 0) / 60000.0, 1)
+        ymd0 = int(day.strftime("%Y%m%d"))
+        ymd1 = int(day_to.strftime("%Y%m%d"))
+        # За интервал суммируем все суточные строки в диапазоне; для одного дня —
+        # это ровно та же строка (без stats[0]-фоллбэка, чтобы не взять чужой день).
+        rng_rows = [r for r in stats if ymd0 <= (r.get("day") or 0) <= ymd1]
+        if rng_rows:
+            facts.system_mileage_km = round(
+                sum(float(r.get("length") or 0) for r in rng_rows) / 1000.0, 2)
+            facts.max_speed = max((r.get("maxSpeed") or 0) for r in rng_rows)
+            facts.move_time_min = round(
+                sum(float(r.get("moveTime") or 0) for r in rng_rows) / 60000.0, 1)
 
         packets = await self._geo.get_packets(oid, from_ms, till_ms)
         facts.packets = len(packets)
@@ -824,11 +880,15 @@ class IssueAutomationService:
             }
         if f.day_profile:
             facts["профиль_дня_по_4ч"] = f.day_profile
+        if parsed.date_to and parsed.date_to != parsed.date:
+            facts["период_анализа"] = f"{parsed.date} — {parsed.date_to}"
         system = (
             "Ты — ассистент техподдержки GPSPOS. По данным телеметрии классифицируй причину "
             "расхождения пробега и составь короткий вежливый ответ клиенту на русском. "
             "Начинай ответ с приветствия («Здравствуйте!»). "
             "Выбери одну категорию из каталога. Подставь реальные числа (дату, пробег) в ответ. "
+            "Если есть «период_анализа» — пробег и данные посчитаны за ВЕСЬ интервал дат; "
+            "отвечай по интервалу (укажи его), а не по одному дню. "
             "ЗНАНИЯ о данных, питании и напряжении (применяй при выводе): "
             "(1) если за дату ЕСТЬ данные/пакеты — значит питание на терминале БЫЛО; "
             "(2) если данных НЕТ — либо не было питания на терминале, либо проблема со связью (напр. не работает SIM-карта); "
@@ -1244,7 +1304,7 @@ class IssueAutomationService:
         if issue_type and not is_mileage:
             return await self._draft_general(title, description, attachments_text, sender, comments)
         try:
-            telemetry = await self.gather_telemetry(parsed.plate, parsed.date)
+            telemetry = await self.gather_telemetry(parsed.plate, parsed.date, parsed.date_to)
         except Exception:  # pragma: no cover - network errors
             # Telemetry/object lookup failed — fall through to the general path
             # rather than a hard error, so the operator still gets a draft.
@@ -1707,7 +1767,7 @@ class IssueAutomationService:
             return None
         telemetry = TelemetryFacts()
         try:
-            telemetry = await self.gather_telemetry(parsed.plate, parsed.date)
+            telemetry = await self.gather_telemetry(parsed.plate, parsed.date, parsed.date_to)
         except Exception:  # pragma: no cover - best effort
             log.warning("training_sample_telemetry_failed", plate=parsed.plate)
         return {
