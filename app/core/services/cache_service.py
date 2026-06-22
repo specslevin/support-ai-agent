@@ -364,6 +364,18 @@ class CacheService:
         await self.db.refresh(row)
         return row
 
+    async def delete_result_cache(self, external_id: int, kind: str | None = None) -> None:
+        """Инвалидация кэша анализа (1.4): после нового комментария/решения старый
+        результат может устареть — удаляем, чтобы следующий анализ был свежим."""
+        stmt = delete(ResultCache).where(ResultCache.issue_external_id == external_id)
+        if kind:
+            stmt = stmt.where(ResultCache.kind == kind)
+        try:
+            await self.db.execute(stmt)
+            await self.db.commit()
+        except Exception:
+            log.warning("delete_result_cache_failed", external_id=external_id, kind=kind)
+
     async def save_result_cache(self, external_id: int, kind: str, result_json: str) -> None:
         """Upsert a cached analysis result for (issue, kind)."""
         existing = await self.db.execute(

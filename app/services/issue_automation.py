@@ -12,6 +12,7 @@ import asyncio
 import datetime as _dt
 import json
 import math
+import os
 import re
 from dataclasses import asdict, dataclass, field
 from typing import Any, Awaitable, Callable
@@ -23,25 +24,41 @@ from app.core.okdesk.service import OkdeskService
 
 log = structlog.get_logger(__name__)
 
+# Пороги телеметрии параметризуются через env (1.4) — дефолты прежние, можно
+# подстраивать под типы терминалов без правки кода.
+def _envf(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _envi(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return int(default)
+
+
 # Voltage below this on the external power input is treated as "power off".
-_POWER_OFF_V = 7.0
+_POWER_OFF_V = _envf("TELEMETRY_POWER_OFF_V", 7.0)
 # Readings below this are implausible glitches (sensor noise / dropped frame),
 # NOT a real "0 volts" — excluded from min/avg voltage so the answer doesn't
 # claim «0 В» while the terminal actually reported 27 В (see 64281).
-_GLITCH_V = 2.0
+_GLITCH_V = _envf("TELEMETRY_GLITCH_V", 2.0)
 # Satellites below this means effectively no reliable GPS fix.
-_MIN_SAT = 4
+_MIN_SAT = _envi("TELEMETRY_MIN_SAT", 4)
 # A gap in telemetry longer than this (minutes) during the day is a track break.
-_TRACK_GAP_MIN = 30
+_TRACK_GAP_MIN = _envi("TELEMETRY_TRACK_GAP_MIN", 30)
 # Implied speed (km/h) between two consecutive points above this = a "teleport"
 # (track shot / прострел) — a strong GPS jamming/spoofing signature.
-_TELEPORT_KMH = 150
+_TELEPORT_KMH = _envf("TELEMETRY_TELEPORT_KMH", 150)
 # Plausible top speed (km/h) for the tracked vehicles; spikes above = spoofing.
-_SPEED_SPIKE_KMH = 110
+_SPEED_SPIKE_KMH = _envf("TELEMETRY_SPEED_SPIKE_KMH", 110)
 # Параллелизм разбора объектов в пакетной заявке (сводные письма с десятками ТС).
 # Последовательно сотни запросов телеметрии давали таймаут (63317, 187 записей,
 # ~270с). Ограниченная конкуренция держит нагрузку на GPSPOS в рамках.
-_BATCH_CONCURRENCY = 8
+_BATCH_CONCURRENCY = _envi("BATCH_CONCURRENCY", 8)
 
 # Trackers/Okdesk report in Moscow time (UTC+3); the prod server runs in UTC.
 # Day windows MUST be built in MSK — otherwise the daily window is shifted by 3h

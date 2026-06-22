@@ -1412,6 +1412,9 @@ async def resolve_issue(
         except Exception:
             log.warning("training_sample_record_failed", issue_id=issue_id)
 
+        # Инвалидация кэша анализа (1.4): после решения/комментария старый разбор устарел.
+        await cache.delete_result_cache(external_id, "automate")
+
         return {
             "ok": True,
             "status_changed": status_changed,
@@ -1439,6 +1442,8 @@ async def add_comment(
             raise HTTPException(status_code=404, detail="Issue not found")
         external_id = issue_data["issue"].external_id
         result = await okdesk.add_comment(external_id, text, public=is_public)
+        # Новый комментарий может изменить верный ответ — сбрасываем кэш анализа (1.4).
+        await cache.delete_result_cache(external_id, "automate")
         return {"ok": True, "result": result}
     except HTTPException:
         raise
