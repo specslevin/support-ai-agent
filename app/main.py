@@ -129,6 +129,11 @@ async def lifespan(app: FastAPI):
                 async with AsyncSessionLocal() as db:
                     svc = CacheService(db=db, okdesk=okdesk_service)
                     due = await svc.issues_due_soon(within_hours=within)
+                # Чистим notified до актуальных: остаются помеченными те, кто всё ещё
+                # «горит» (без повторного спама), а ушедшие из выборки забываются —
+                # при возврате заявки (новый срок/переоткрытие) алерт придёт снова.
+                # Заодно ограничивает рост множества.
+                notified &= {d["external_id"] for d in due}
                 fresh = [d for d in due if d["external_id"] not in notified]
                 if not fresh:
                     continue

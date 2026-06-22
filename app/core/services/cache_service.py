@@ -375,6 +375,10 @@ class CacheService:
             await self.db.commit()
         except Exception:
             log.warning("delete_result_cache_failed", external_id=external_id, kind=kind)
+            try:
+                await self.db.rollback()
+            except Exception:
+                pass
 
     async def save_result_cache(self, external_id: int, kind: str, result_json: str) -> None:
         """Upsert a cached analysis result for (issue, kind)."""

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from typing import Any
@@ -34,20 +35,27 @@ class GpsposGeoService:
     def __init__(self, client: GpsposGeoClient) -> None:
         self._client = client
         self._objects_cache: tuple[float, list[dict[str, Any]]] | None = None
+        self._objects_lock = asyncio.Lock()
 
     async def _objects_cached(self) -> list[dict[str, Any]]:
         """Список всех объектов с коротким TTL-кэшем.
 
         ``find_object_by_plate`` раньше качал ВЕСЬ список на каждый вызов — в
         пакетном разборе (десятки/сотни ТС) это давало сотни полных загрузок и
-        многоминутные таймауты (63317). Кэш на 120с убирает повторные загрузки."""
+        многоминутные таймауты (63317). Кэш на 120с + Lock (чтобы при истёкшем TTL
+        8 параллельных корутин разбора не сделали 8 одновременных загрузок)."""
         now = time.time()
         if self._objects_cache and now - self._objects_cache[0] < self._OBJECTS_TTL:
             return self._objects_cache[1]
-        raw = await self._client.request("GET", "Objects")
-        rows = _unwrap_list(raw)
-        self._objects_cache = (now, rows)
-        return rows
+        async with self._objects_lock:
+            # Повторная проверка: пока ждали лок, другой корутиной кэш мог обновиться.
+            now = time.time()
+            if self._objects_cache and now - self._objects_cache[0] < self._OBJECTS_TTL:
+                return self._objects_cache[1]
+            raw = await self._client.request("GET", "Objects")
+            rows = _unwrap_list(raw)
+            self._objects_cache = (now, rows)
+            return rows
 
     async def list_objects(self) -> list[ObjectInfo]:
         raw = await self._client.request("GET", "Objects")

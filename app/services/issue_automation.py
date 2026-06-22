@@ -241,9 +241,14 @@ def _detect_date_range(text: str) -> tuple[str, str] | None:
         try:
             start = _dt.date(_norm_year(y1 or y2, cur), int(mo1), int(d1))
             end = _dt.date(_norm_year(y2 or y1, cur), int(mo2), int(d2))
+            # Переход года без явных годов: «28.12 — 03.01» → конец в следующем году.
+            if end < start and not (y1 or y2):
+                end = end.replace(year=end.year + 1)
         except (ValueError, TypeError):
             continue
-        if end < start or (end - start).days > 31:
+        # Это короткий интервал «даты неисправности» (≤7 дней), а НЕ отчётный период
+        # (месяц) — длинные диапазоны НЕ перетирают распарсенную дату неисправности.
+        if end < start or (end - start).days > 7:
             continue
         return start.isoformat(), end.isoformat()
     return None
@@ -620,36 +625,41 @@ class IssueAutomationService:
             # «Хвостовой» разрыв: данные были, но ОБОРВАЛИСЬ среди дня и не
             # возобновились до конца суток (признак потери питания/связи в течение
             # рабочего дня — 64275). Время последнего пакета и разрыв до 24:00 МСК.
+            # Хвостовой разрыв и профиль суток — ТОЛЬКО для одного дня. Для
+            # многодневного интервала «конец суток» и 6×4ч-сетка некорректны
+            # (давали бы ложный midday_stop и профиль лишь первого дня).
+            single_day = day_to == day
             last_ms = times[-1] if times else 0
-            if last_ms:
+            if last_ms and single_day:
                 facts.last_packet_msk = _dt.datetime.fromtimestamp(last_ms / 1000.0, _MSK).strftime("%H:%M")
                 facts.tail_gap_min = round(max(0.0, (till_ms - last_ms) / 60000.0), 1)
 
             # Профиль суток по 4-часовым отрезкам — чтобы ИИ «читал график»:
             # как менялись напряжение и движение в течение дня (64281/64275).
-            seg_ms = 4 * 3600 * 1000
-            profile: list[dict[str, Any]] = []
-            for i in range(6):
-                b0 = from_ms + i * seg_ms
-                b1 = b0 + seg_ms
-                seg = [p for p in packets if b0 <= (p.get("time") or 0) < b1]
-                label = f"{i * 4:02d}–{i * 4 + 4:02d}"
-                if not seg:
-                    profile.append({"период": label, "статус": "нет данных"})
-                    continue
-                seg_v = [
-                    (p.get("tags") or {}).get("pwr_ext") for p in seg
-                    if isinstance(p.get("tags"), dict) and (p.get("tags") or {}).get("pwr_ext") is not None
-                ]
-                seg_v = [v for v in seg_v if v >= _GLITCH_V]
-                seg_speed = [p.get("speed") or 0 for p in seg]
-                profile.append({
-                    "период": label,
-                    "пакетов": len(seg),
-                    "напряжение_В": round(sum(seg_v) / len(seg_v), 1) if seg_v else None,
-                    "макс_скорость": max(seg_speed) if seg_speed else 0,
-                })
-            facts.day_profile = profile
+            if single_day:
+                seg_ms = 4 * 3600 * 1000
+                profile: list[dict[str, Any]] = []
+                for i in range(6):
+                    b0 = from_ms + i * seg_ms
+                    b1 = b0 + seg_ms
+                    seg = [p for p in packets if b0 <= (p.get("time") or 0) < b1]
+                    label = f"{i * 4:02d}–{i * 4 + 4:02d}"
+                    if not seg:
+                        profile.append({"период": label, "статус": "нет данных"})
+                        continue
+                    seg_v = [
+                        (p.get("tags") or {}).get("pwr_ext") for p in seg
+                        if isinstance(p.get("tags"), dict) and (p.get("tags") or {}).get("pwr_ext") is not None
+                    ]
+                    seg_v = [v for v in seg_v if v >= _GLITCH_V]
+                    seg_speed = [p.get("speed") or 0 for p in seg]
+                    profile.append({
+                        "период": label,
+                        "пакетов": len(seg),
+                        "напряжение_В": round(sum(seg_v) / len(seg_v), 1) if seg_v else None,
+                        "макс_скорость": max(seg_speed) if seg_speed else 0,
+                    })
+                facts.day_profile = profile
 
             # Структурный «разбор графика» для ИИ: конкретные моменты (окно
             # движения, время падения напряжения, крупные разрывы) — чтобы ответ

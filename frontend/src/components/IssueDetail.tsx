@@ -917,6 +917,11 @@ function BatchAnalysis({ issueId, onUseDraft, onOpenExternal }: { issueId: numbe
   const [verdictError, setVerdictError] = useState<string | null>(null)
   const [localBatch, setLocalBatch] = useState<import('../types').BatchResult | null>(null)
 
+  useEffect(() => {
+    setLocalBatch(null)
+    setVerdictError(null)
+  }, [issueId])
+
   // Per-issue child creation map — survives panel close/reopen (global store, not local state)
   const rowCreated = batchChildren[issueId] ?? {}
 
@@ -1413,6 +1418,12 @@ function ExtractedDataBlock({ issueId }: { issueId: number }) {
   const [data, setData] = useState<ExtractedData | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setData(null)
+    setLoading(false)
+    setError(null)
+  }, [issueId])
 
   const load = async () => {
     setLoading(true)
