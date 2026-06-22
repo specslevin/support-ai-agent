@@ -9,6 +9,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { api } from '../api/client'
+import type { ExtractedData } from '../api/client'
 import { useIssuesStore } from '../store/issuesStore'
 import { useUserStore } from '../store/userStore'
 import { useAuthStore } from '../store/authStore'
@@ -1264,6 +1265,103 @@ function AttachmentsSection({ issueId }: { issueId: number }) {
   )
 }
 
+function ExtractedDataBlock({ issueId }: { issueId: number }) {
+  const [data, setData] = useState<ExtractedData | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const load = async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const result = await api.getExtracted(issueId)
+      setData(result)
+    } catch {
+      setError('Ошибка загрузки извлечённых данных')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <Block icon={FileText} title="Извлечённые данные из заявки">
+      {!data && !loading && (
+        <button
+          onClick={load}
+          className="flex items-center justify-center gap-2 w-full bg-card border border-border hover:border-accent text-muted hover:text-white text-xs font-semibold py-2 rounded-lg transition-colors"
+        >
+          <FileText size={14} /> Показать извлечённые данные
+        </button>
+      )}
+
+      {loading && (
+        <div className="flex items-center gap-2 text-xs text-muted py-2">
+          <Loader2 size={14} className="animate-spin text-accent shrink-0" />
+          Извлекаю данные из заявки…
+        </div>
+      )}
+
+      {error && (
+        <p className="text-xs text-orange-400 flex items-center gap-1.5">
+          <AlertTriangle size={13} className="shrink-0" /> {error}
+        </p>
+      )}
+
+      {data && (
+        <div className="space-y-3 text-xs">
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+            <span className="text-muted">Гос. номер</span>
+            <span className="font-mono">{data.plate ?? '—'}</span>
+
+            <span className="text-muted">Дата неисправности</span>
+            <span>{data.date ?? '—'}</span>
+
+            <span className="text-muted">Пробег по путевому листу (из заявки)</span>
+            <span>{data.sheet_mileage_km != null ? `${data.sheet_mileage_km} км` : 'не найдено'}</span>
+
+            <span className="text-muted">Пробег в системе (заявлено клиентом)</span>
+            <span>{data.declared_system_km != null ? `${data.declared_system_km} км` : 'не найдено'}</span>
+
+            <span className="text-muted">Вложений</span>
+            <span>{data.attachments_count}</span>
+          </div>
+
+          <details className="group">
+            <summary className="flex items-center gap-1.5 cursor-pointer text-muted hover:text-white transition-colors list-none select-none">
+              <ChevronDown size={13} className="transition-transform group-open:rotate-180" />
+              Текст заявки
+            </summary>
+            <div className="mt-2 max-h-48 overflow-y-auto bg-frame border border-border rounded-lg px-3 py-2">
+              <pre className="font-mono text-[11px] text-white/80 whitespace-pre-wrap leading-relaxed">
+                {data.body_text || <span className="text-muted/60">Текст отсутствует</span>}
+              </pre>
+            </div>
+          </details>
+
+          <details className="group">
+            <summary className="flex items-center gap-1.5 cursor-pointer text-muted hover:text-white transition-colors list-none select-none">
+              <ChevronDown size={13} className="transition-transform group-open:rotate-180" />
+              Текст вложений
+            </summary>
+            <div className="mt-2 max-h-48 overflow-y-auto bg-frame border border-border rounded-lg px-3 py-2">
+              <pre className="font-mono text-[11px] text-white/80 whitespace-pre-wrap leading-relaxed">
+                {data.attachments_text || <span className="text-muted/60">Текст вложений отсутствует</span>}
+              </pre>
+            </div>
+          </details>
+
+          <button
+            onClick={load}
+            className="flex items-center gap-1 text-[10px] text-muted hover:text-white transition-colors"
+          >
+            <RefreshCw size={11} /> Обновить
+          </button>
+        </div>
+      )}
+    </Block>
+  )
+}
+
 export function IssueDetail() {
   const { selectedIssueId, selectIssue, trackOpen, setTrackOpen, openTrack, lastTemplate } = useIssuesStore()
   const isDemo = useAuthStore(s => s.user?.role === 'demo')
@@ -1436,6 +1534,9 @@ export function IssueDetail() {
 
         {/* ── 2. Вложения (перед анализом — ИИ читает их) ───────── */}
         <AttachmentsSection issueId={issue.id} />
+
+        {/* ── 2b. Извлечённые данные (по кнопке) ──────────────── */}
+        <ExtractedDataBlock issueId={issue.id} />
 
         {/* ── 3. Анализ ────────────────────────────────────────── */}
         <Block icon={Sparkles} title="Анализ заявки">

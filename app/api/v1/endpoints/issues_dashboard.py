@@ -1162,6 +1162,47 @@ async def get_issue_comments(
         raise HTTPException(status_code=500, detail="Failed to fetch comments")
 
 
+@router.get("/{issue_id}/extracted")
+async def get_extracted(
+    issue_id: int,
+    cache: CacheService = Depends(get_cache_service),
+    okdesk: OkdeskService = Depends(get_okdesk_service),
+    automation: IssueAutomationService = Depends(get_issue_automation_service),
+) -> dict[str, object]:
+    """Что извлечено из тела/вложений заявки БЕЗ запуска ИИ-анализа.
+
+    Лёгкий разбор: regex по тексту (гос.номер, дата неисправности, пробег по
+    путевому листу, пробег «в системе» заявленный клиентом) + сырой извлечённый
+    текст вложений. Телеметрия и LLM НЕ вызываются."""
+    try:
+        issue_data = await cache.get_issue_with_analysis(issue_id)
+        if not issue_data:
+            raise HTTPException(status_code=404, detail="Issue not found")
+        external_id = issue_data["issue"].external_id
+        live = await okdesk.get_issue(external_id)
+        att_text = ""
+        try:
+            att_text = await automation.read_attachments(external_id, live.attachments or [])
+        except Exception:
+            log.warning("extracted_attachments_failed", issue_id=issue_id)
+        parsed = automation.parse_issue(live.title, live.description, None, extra_text=att_text)
+        body_text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", live.description or "")).strip()
+        return {
+            "plate": parsed.plate,
+            "date": parsed.date,
+            "sheet_mileage_km": parsed.sheet_mileage_km,
+            "declared_system_km": parsed.declared_system_km,
+            "body_text": body_text[:4000],
+            "attachments_text": (att_text or "")[:8000],
+            "attachments_count": len(live.attachments or []),
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        log.exception("get_extracted_failed", issue_id=issue_id)
+        raise HTTPException(status_code=500, detail="Failed to extract issue data")
+
+
 @router.patch("/{issue_id}/type")
 async def change_issue_type(
     issue_id: int,

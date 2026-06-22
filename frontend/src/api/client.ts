@@ -247,6 +247,10 @@ export const api = {
   }> {
     return http.post('/issues/training/backfill', null, { params: { dry_run: dryRun, limit } }).then(r => r.data)
   },
+
+  getExtracted(id: number): Promise<ExtractedData> {
+    return http.get(`/issues/${id}/extracted`).then(r => r.data)
+  },
 }
 
 export interface BulkResult {
@@ -254,4 +258,14 @@ export interface BulkResult {
   succeeded: number
   failed: number
   results: { issue_id: number; ok: boolean }[]
+}
+
+export interface ExtractedData {
+  plate: string | null
+  date: string | null
+  sheet_mileage_km: number | null
+  declared_system_km: number | null
+  body_text: string
+  attachments_text: string
+  attachments_count: number
 }
