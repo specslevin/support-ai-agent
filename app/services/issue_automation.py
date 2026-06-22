@@ -214,6 +214,41 @@ def _parse_summary_table(text: str) -> list[tuple[str, str | None]]:
     return results
 
 
+def _parse_grouping_table(text: str) -> list[tuple[str, float | None, float | None]]:
+    """Табличный отчёт «Группировка <дата> | Пробег по ГЛОНАСС | Пробег ТС | …»
+    (Ульяновские РС, 64436): по одному XLSX на дату, строка — один ТС.
+
+    «Пробег ТС» = пробег по путевому листу (одометр), «Пробег по ГЛОНАСС» =
+    заявленный клиентом пробег по системе. Пустые ячейки XLSX выпадают при
+    извлечении, поэтому берём ЧИСЛА после ячейки с гос.номером: 1-е = ГЛОНАСС,
+    2-е = Пробег ТС. Возвращает (plate, sheet_km|None, glonass_km|None)."""
+    results: list[tuple[str, float | None, float | None]] = []
+    for line in (text or "").splitlines():
+        if "|" not in line:
+            continue
+        cells = [c.strip() for c in line.split("|")]
+        plate: str | None = None
+        name_idx = -1
+        for i, cell in enumerate(cells):
+            m = _PLATE_STD_RE.search(cell) or _PLATE_FALLBACK_RE.search(cell)
+            if m:
+                plate = re.sub(r"[\s\-]", "", m.group(0)).upper().translate(_PLATE_TRANSLIT)
+                name_idx = i
+                break
+        if not plate:
+            continue
+        nums: list[float] = []
+        for cell in cells[name_idx + 1:]:
+            try:
+                nums.append(float(cell.replace(",", ".").replace(" ", "")))
+            except ValueError:
+                continue
+        glonass = nums[0] if len(nums) >= 1 else None
+        sheet = nums[1] if len(nums) >= 2 else None
+        results.append((plate, sheet, glonass))
+    return results
+
+
 _DATE_RE = re.compile(r"(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{4})")
 # Интервал дат неисправности: «15.06-16.06», «15.06.2026 - 16.06.2026», «15.06 по 16.06».
 _RANGE_RE = re.compile(
@@ -1643,6 +1678,17 @@ class IssueAutomationService:
                     base_date = p.date
                     for plate in extract_all_plates(text):
                         targets.append((plate, p.date, p.sheet_mileage_km))
+            elif "пробег тс" in text.lower():
+                # Табличный отчёт «Группировка <дата>» (Ульяновские РС, 64436):
+                # один XLSX на дату, по строке — гос.номер + «Пробег ТС» (= ПЛ).
+                # Дата берётся из имени файла/заголовка (один день на файл).
+                p0 = self.parse_issue(name, "", None, extra_text=text)
+                for plate, sheet_km, _glonass in _parse_grouping_table(text):
+                    targets.append((plate, p0.date, sheet_km))
+                if not targets:
+                    base_date = p0.date
+                    for plate in extract_all_plates(text):
+                        targets.append((plate, p0.date, p0.sheet_mileage_km))
             else:
                 acts = _split_acts(text)
                 if len(acts) >= 2:
