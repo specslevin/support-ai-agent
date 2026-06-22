@@ -288,13 +288,28 @@ function pad(n: number) { return String(n).padStart(2, '0') }
 function isoOf(y: number, m: number, d: number) { return `${y}-${pad(m + 1)}-${pad(d)}` }
 function ruShort(iso: string) { const [, m, d] = iso.split('-'); return `${d}.${m}` }
 
+interface DateRangePickerProps {
+  from: string
+  to: string
+  timeFrom: string
+  timeTo: string
+  onChange: (f: string, t: string, tf: string, tt: string) => void
+}
+
 // Range calendar: 1st click = start, 2nd click = end (one day = click same date twice).
-function DateRangePicker({ from, to, onChange }: { from: string; to: string; onChange: (f: string, t: string) => void }) {
+// timeFrom/timeTo are HH:MM strings (empty = whole day, no time suffix).
+function DateRangePicker({ from, to, timeFrom, timeTo, onChange }: DateRangePickerProps) {
   const [open, setOpen] = useState(false)
   const [pend, setPend] = useState<string | null>(null)
+  const [localTimeFrom, setLocalTimeFrom] = useState(timeFrom)
+  const [localTimeTo, setLocalTimeTo] = useState(timeTo)
   const init = from || to || isoOf(new Date().getFullYear(), new Date().getMonth(), new Date().getDate())
   const [yy, mm] = init.split('-').map(Number)
   const [view, setView] = useState<[number, number]>([yy, mm - 1])
+
+  // Sync local time state when prop changes (e.g. reset)
+  useEffect(() => { setLocalTimeFrom(timeFrom) }, [timeFrom])
+  useEffect(() => { setLocalTimeTo(timeTo) }, [timeTo])
 
   const [vy, vm] = view
   const daysIn = new Date(vy, vm + 1, 0).getDate()
@@ -308,9 +323,20 @@ function DateRangePicker({ from, to, onChange }: { from: string; to: string; onC
   const click = (iso: string) => {
     if (!pend) { setPend(iso); return }
     const [lo, hi] = pend <= iso ? [pend, iso] : [iso, pend]
-    onChange(lo, hi); setPend(null); setOpen(false)
+    onChange(lo, hi, localTimeFrom, localTimeTo); setPend(null); setOpen(false)
   }
   const close = () => { setOpen(false); setPend(null) }
+
+  const applyTime = () => {
+    onChange(from, to, localTimeFrom, localTimeTo)
+    setOpen(false)
+  }
+
+  // Display label in button
+  const dateLabel = from === to ? ruShort(from) : `${ruShort(from)} — ${ruShort(to)}`
+  const timeLabel = localTimeFrom || localTimeTo
+    ? ` ${localTimeFrom || '00:00'}–${localTimeTo || '23:59'}`
+    : ''
 
   return (
     <div className="relative inline-block">
@@ -318,7 +344,7 @@ function DateRangePicker({ from, to, onChange }: { from: string; to: string; onC
         onClick={() => setOpen(o => !o)}
         className="flex items-center gap-1.5 bg-base border border-border rounded-lg px-2 py-0.5 text-[11px] text-white hover:border-accent transition-colors"
       >
-        <Calendar size={12} className="text-muted" /> {from === to ? ruShort(from) : `${ruShort(from)} — ${ruShort(to)}`}
+        <Calendar size={12} className="text-muted" /> {dateLabel}{timeLabel}
       </button>
       {open && (
         <>
@@ -350,6 +376,42 @@ function DateRangePicker({ from, to, onChange }: { from: string; to: string; onC
             <div className="text-[10px] text-muted/70 mt-1 text-center">
               {pend ? 'Выберите конечную дату (или ту же — один день)' : 'Выберите начало интервала'}
             </div>
+            {/* Time inputs */}
+            <div className="mt-2 pt-2 border-t border-border flex flex-col gap-1.5">
+              <div className="text-[10px] text-muted/60 text-center">Время (МСК, необязательно)</div>
+              <div className="flex items-center gap-1.5">
+                <label className="text-[10px] text-muted w-7 shrink-0">с</label>
+                <input
+                  type="time"
+                  value={localTimeFrom}
+                  onChange={e => setLocalTimeFrom(e.target.value)}
+                  className="flex-1 bg-base border border-border rounded px-1.5 py-0.5 text-[11px] text-white focus:border-accent outline-none"
+                />
+              </div>
+              <div className="flex items-center gap-1.5">
+                <label className="text-[10px] text-muted w-7 shrink-0">по</label>
+                <input
+                  type="time"
+                  value={localTimeTo}
+                  onChange={e => setLocalTimeTo(e.target.value)}
+                  className="flex-1 bg-base border border-border rounded px-1.5 py-0.5 text-[11px] text-white focus:border-accent outline-none"
+                />
+              </div>
+              <button
+                onClick={applyTime}
+                className="mt-0.5 w-full text-[11px] bg-accent/10 hover:bg-accent/20 border border-accent/30 hover:border-accent text-accent rounded px-2 py-1 transition-colors"
+              >
+                Применить время
+              </button>
+              {(localTimeFrom || localTimeTo) && (
+                <button
+                  onClick={() => { setLocalTimeFrom(''); setLocalTimeTo(''); onChange(from, to, '', '') }}
+                  className="w-full text-[10px] text-muted hover:text-white transition-colors"
+                >
+                  Сбросить время
+                </button>
+              )}
+            </div>
           </div>
         </>
       )}
@@ -366,13 +428,22 @@ export function TrackPanel({ issueId }: { issueId: number }) {
   const fullRangeRef = useRef<[number, number] | null>(null)
   const onRange = useCallback((min: number, max: number) => setRange([min, max]), [])
   // Custom date interval (null → use issue's fault date)
-  const [interval, setInterval] = useState<{ from: string; to: string } | null>(null)
+  // timeFrom/timeTo are HH:MM or '' (empty = whole day, sends date only)
+  const [interval, setInterval] = useState<{ from: string; to: string; timeFrom: string; timeTo: string } | null>(null)
   // Reset interval when switching to another object/issue.
   useEffect(() => { setInterval(null) }, [issueId, trackPlate, trackDate])
 
+  // Build date_from / date_to strings: append time suffix when set
+  const dateFrom = interval
+    ? (interval.timeFrom ? `${interval.from}T${interval.timeFrom}` : interval.from)
+    : null
+  const dateTo = interval
+    ? (interval.timeTo ? `${interval.to}T${interval.timeTo}` : interval.to)
+    : null
+
   const { data, isPending, isError } = useQuery({
-    queryKey: ['track', issueId, trackPlate, trackDate, interval?.from, interval?.to],
-    queryFn: () => api.getTrack(issueId, trackPlate, trackDate, interval?.from, interval?.to),
+    queryKey: ['track', issueId, trackPlate, trackDate, dateFrom, dateTo],
+    queryFn: () => api.getTrack(issueId, trackPlate, trackDate, dateFrom, dateTo),
     staleTime: 5 * 60_000,
   })
 
@@ -447,7 +518,9 @@ export function TrackPanel({ issueId }: { issueId: number }) {
           <DateRangePicker
             from={interval?.from ?? data.range_from ?? ''}
             to={interval?.to ?? data.range_to ?? ''}
-            onChange={(f, t) => setInterval({ from: f, to: t })}
+            timeFrom={interval?.timeFrom ?? ''}
+            timeTo={interval?.timeTo ?? ''}
+            onChange={(f, t, tf, tt) => setInterval({ from: f, to: t, timeFrom: tf, timeTo: tt })}
           />
           {interval && (
             <button onClick={() => setInterval(null)} title="Сбросить к дате неисправности" className="flex items-center text-muted hover:text-accent"><RotateCcw size={12} /></button>

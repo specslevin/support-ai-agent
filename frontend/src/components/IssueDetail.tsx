@@ -5,7 +5,7 @@ import {
   Lightbulb, ArrowDown, ArrowLeft, Map, FilePlus, ExternalLink, Pause, Send,
   Layers, Power, RadioTower, Scissors, HelpCircle, FileText, Sheet,
   Image as ImageIcon, Paperclip, PanelRightClose, Info, MessageSquare, Sparkles, Wand2,
-  Loader2, Lock, User, Headset,
+  Loader2, Lock, User, Headset, Eye, Download,
   type LucideIcon,
 } from 'lucide-react'
 import { api } from '../api/client'
@@ -1225,43 +1225,187 @@ function formatSize(bytes: number | null): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} МБ`
 }
 
+/** Определяет тип предпросмотра по имени файла. */
+type PreviewKind = 'image' | 'pdf' | 'none'
+const IMAGE_EXTS = new Set(['jpg', 'jpeg', 'png', 'bmp', 'tif', 'tiff', 'webp', 'gif'])
+const HEIC_EXTS = new Set(['heic', 'heif'])
+
+function previewKind(name: string | null): PreviewKind {
+  if (!name) return 'none'
+  const ext = name.split('.').pop()?.toLowerCase() ?? ''
+  if (IMAGE_EXTS.has(ext) || HEIC_EXTS.has(ext)) return 'image'
+  if (ext === 'pdf') return 'pdf'
+  return 'none'
+}
+
+function isHeic(name: string | null): boolean {
+  if (!name) return false
+  const ext = name.split('.').pop()?.toLowerCase() ?? ''
+  return HEIC_EXTS.has(ext)
+}
+
+interface AttachmentPreviewModalProps {
+  name: string | null
+  url: string
+  onClose: () => void
+}
+
+function AttachmentPreviewModal({ name, url, onClose }: AttachmentPreviewModalProps) {
+  const kind = previewKind(name)
+  const heic = isHeic(name)
+
+  // Close on Escape
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [onClose])
+
+  return (
+    <div
+      className="fixed inset-0 z-[2000] flex items-center justify-center bg-black/80"
+      onClick={onClose}
+    >
+      <div
+        className="relative bg-surface border border-border rounded-xl shadow-2xl flex flex-col max-w-[90vw] max-h-[90vh] w-full overflow-hidden"
+        style={{ minWidth: 320 }}
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Шапка */}
+        <div className="flex items-center justify-between px-4 py-2.5 border-b border-border shrink-0 gap-3">
+          <span className="text-sm text-white truncate">{name ?? 'Вложение'}</span>
+          <div className="flex items-center gap-2 shrink-0">
+            <a
+              href={url}
+              download
+              className="flex items-center gap-1.5 text-xs text-muted hover:text-white border border-border hover:border-accent rounded-lg px-2 py-1 transition-colors"
+            >
+              <Download size={13} /> Скачать
+            </a>
+            <button
+              onClick={onClose}
+              className="flex items-center justify-center w-7 h-7 rounded-lg text-muted hover:text-white hover:bg-white/10 transition-colors"
+              title="Закрыть"
+            >
+              <X size={16} />
+            </button>
+          </div>
+        </div>
+
+        {/* Содержимое */}
+        <div className="flex-1 overflow-auto flex items-center justify-center p-4 min-h-[200px]">
+          {kind === 'image' && !heic && (
+            <img
+              src={url}
+              alt={name ?? 'Вложение'}
+              className="max-w-full max-h-[70vh] rounded-lg object-contain"
+            />
+          )}
+          {kind === 'image' && heic && (
+            <div className="flex flex-col items-center gap-3 text-center text-sm text-muted py-8 px-6">
+              <ImageIcon size={40} className="text-muted/40" />
+              <span>Формат HEIC/HEIF не поддерживается браузером.</span>
+              <a
+                href={url}
+                download
+                className="flex items-center gap-1.5 text-xs text-accent hover:underline"
+              >
+                <Download size={13} /> Скачать файл
+              </a>
+            </div>
+          )}
+          {kind === 'pdf' && (
+            <embed
+              src={url}
+              type="application/pdf"
+              className="w-full rounded"
+              style={{ height: '70vh' }}
+            />
+          )}
+          {kind === 'none' && (
+            <div className="flex flex-col items-center gap-3 text-center text-sm text-muted py-8 px-6">
+              <Paperclip size={40} className="text-muted/40" />
+              <span>Предпросмотр недоступен для данного формата.</span>
+              <a
+                href={url}
+                download
+                className="flex items-center gap-1.5 text-xs text-accent hover:underline"
+              >
+                <Download size={13} /> Скачать файл
+              </a>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function AttachmentsSection({ issueId }: { issueId: number }) {
   const { data: items = [] } = useQuery({
     queryKey: ['attachments', issueId],
     queryFn: () => api.listAttachments(issueId),
     staleTime: 5 * 60_000,
   })
+  const [preview, setPreview] = useState<{ name: string | null; url: string } | null>(null)
 
   if (items.length === 0) return null
 
   return (
-    <Block icon={Paperclip} title="Вложения" count={items.length}>
-      <div className="space-y-1.5">
-        {items.map(a => {
-          const KI = KIND_ICON[a.kind] ?? Paperclip
-          return (
-            <a
-              key={a.id}
-              href={api.attachmentUrl(issueId, a.id)}
-              target="_blank"
-              rel="noreferrer"
-              className="flex items-center gap-2.5 bg-frame hover:bg-white/5 border border-border rounded-lg px-3 py-2 transition-colors group"
-            >
-              <KI size={18} className="shrink-0 text-muted" />
-              <div className="flex-1 min-w-0">
-                <div className="text-xs text-white group-hover:text-accent truncate">{a.name ?? `#${a.id}`}</div>
-                <div className="text-[10px] text-muted flex items-center gap-1.5">
-                  {formatSize(a.size)}
-                  {a.extractable && <span className="inline-flex items-center gap-1 text-green-400/80">· <Sparkles size={10} /> ИИ читает</span>}
-                  {!a.extractable && a.kind === 'image' && <span className="text-warning/70">· скан (OCR недоступен)</span>}
+    <>
+      <Block icon={Paperclip} title="Вложения" count={items.length}>
+        <div className="space-y-1.5">
+          {items.map(a => {
+            const KI = KIND_ICON[a.kind] ?? Paperclip
+            const url = api.attachmentUrl(issueId, a.id)
+            const canPreview = previewKind(a.name) !== 'none' || a.kind === 'image'
+            return (
+              <div
+                key={a.id}
+                className="flex items-center gap-2.5 bg-frame border border-border rounded-lg px-3 py-2 group"
+              >
+                <KI size={18} className="shrink-0 text-muted" />
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs text-white truncate">{a.name ?? `#${a.id}`}</div>
+                  <div className="text-[10px] text-muted flex items-center gap-1.5">
+                    {formatSize(a.size)}
+                    {a.extractable && <span className="inline-flex items-center gap-1 text-green-400/80">· <Sparkles size={10} /> ИИ читает</span>}
+                    {!a.extractable && a.kind === 'image' && <span className="text-warning/70">· скан (OCR недоступен)</span>}
+                  </div>
+                </div>
+                <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                  {canPreview && (
+                    <button
+                      onClick={() => setPreview({ name: a.name, url })}
+                      title="Предпросмотр"
+                      className="flex items-center justify-center w-6 h-6 rounded text-muted hover:text-accent hover:bg-white/10 transition-colors"
+                    >
+                      <Eye size={13} />
+                    </button>
+                  )}
+                  <a
+                    href={url}
+                    target="_blank"
+                    rel="noreferrer"
+                    title="Открыть в новой вкладке"
+                    className="flex items-center justify-center w-6 h-6 rounded text-muted hover:text-accent hover:bg-white/10 transition-colors"
+                  >
+                    <ExternalLink size={13} />
+                  </a>
                 </div>
               </div>
-              <ExternalLink size={14} className="text-muted/50 shrink-0" />
-            </a>
-          )
-        })}
-      </div>
-    </Block>
+            )
+          })}
+        </div>
+      </Block>
+      {preview && (
+        <AttachmentPreviewModal
+          name={preview.name}
+          url={preview.url}
+          onClose={() => setPreview(null)}
+        />
+      )}
+    </>
   )
 }
 
