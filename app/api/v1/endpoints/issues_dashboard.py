@@ -215,7 +215,7 @@ def _extract_phone_from_contact(contact_value: str | None) -> str | None:
 
 
 async def _build_comments_digest(external_id: int, okdesk: OkdeskService,
-                                 max_chars: int = 2000) -> str:
+                                 max_chars: int = 6000) -> str:
     """Compact chronological digest of issue comments for the AI analyzer.
 
     Each line: «author • date • text» (html stripped). Bounded to ~max_chars.
