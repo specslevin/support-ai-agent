@@ -1539,6 +1539,8 @@ class IssueAutomationService:
         _cap = 31 * 86400 * 1000
         if till_ms - from_ms > _cap:
             till_ms = from_ms + _cap
+        range_from = _msk_date_from_ms(from_ms).isoformat()
+        range_to = _msk_date_from_ms(max(from_ms, till_ms - 1)).isoformat()
         packets = await self._geo.get_packets(oid, from_ms, till_ms)
         packets.sort(key=lambda p: p.get("time") or 0)
 
@@ -1592,8 +1594,8 @@ class IssueAutomationService:
             "imei": obj.get("imei"),
             "phone": obj.get("phone") or obj.get("phone1"),
             "status": status,
-            "range_from": d_from.isoformat(),
-            "range_to": d_to.isoformat(),
+            "range_from": range_from,
+            "range_to": range_to,
             "total_packets": len(packets),
             "points": points,
             "teleports": [index_map[i] for i in teleports if i in index_map],
