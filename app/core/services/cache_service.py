@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import structlog
@@ -211,6 +211,33 @@ class CacheService:
 
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
+
+    async def issues_due_soon(self, within_hours: int = 24) -> list[dict[str, Any]]:
+        """Активные заявки с приближающимся/просроченным сроком (для уведомлений).
+
+        deadline_at хранится как МСК-wall-clock (naive); сравниваем с МСК-now."""
+        now_msk = datetime.utcnow() + timedelta(hours=3)
+        horizon = now_msk + timedelta(hours=within_hours)
+        floor = now_msk - timedelta(days=30)  # не алертить совсем древние просрочки
+        stmt = (
+            select(IssueCache)
+            .where(IssueCache.deadline_at.isnot(None))
+            .where(IssueCache.deadline_at <= horizon)
+            .where(IssueCache.deadline_at >= floor)
+            .where(IssueCache.status.in_(self._ACTIVE_STATUSES))
+            .order_by(IssueCache.deadline_at.asc())
+        )
+        rows = list((await self.db.execute(stmt)).scalars().all())
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            dl = r.deadline_at
+            out.append({
+                "external_id": r.external_id,
+                "subject": r.subject or "",
+                "deadline": dl.strftime("%d.%m %H:%M") if dl else "",
+                "overdue": bool(dl and dl < now_msk),
+            })
+        return out
 
     async def get_issue_with_analysis(self, issue_id: int) -> dict[str, Any] | None:
         """Return IssueCache row plus its latest AnalysisCache entry.

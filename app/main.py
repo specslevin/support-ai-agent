@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -104,6 +105,47 @@ async def lifespan(app: FastAPI):
     cache_task = asyncio.create_task(_cache_refresh_loop())
     log.info("cache_refresh_scheduled", interval_sec=300)
 
+    async def _deadline_alert_loop(interval: int = 1800) -> None:
+        """Уведомления о приближающихся/просроченных сроках в Telegram.
+
+        Активируется при заданном TELEGRAM_ALERT_CHAT_ID (+ настроенном боте).
+        Порог часов — TELEGRAM_ALERT_HOURS (по умолчанию 24). Без чата — no-op."""
+        _log = structlog.get_logger("deadline_alert")
+        chat_id = (os.getenv("TELEGRAM_ALERT_CHAT_ID") or "").strip()
+        if not chat_id:
+            _log.info("deadline_alerts_disabled", reason="no TELEGRAM_ALERT_CHAT_ID")
+            return
+        try:
+            within = int(os.getenv("TELEGRAM_ALERT_HOURS", "24"))
+        except ValueError:
+            within = 24
+        notified: set[int] = set()
+        while True:
+            await asyncio.sleep(interval)
+            bot = getattr(app.state, "telegram_bot", None)
+            if bot is None:
+                continue
+            try:
+                async with AsyncSessionLocal() as db:
+                    svc = CacheService(db=db, okdesk=okdesk_service)
+                    due = await svc.issues_due_soon(within_hours=within)
+                fresh = [d for d in due if d["external_id"] not in notified]
+                if not fresh:
+                    continue
+                lines = [f"⏰ Сроки заявок (≤{within}ч / просрочено):"]
+                for d in fresh[:20]:
+                    mark = "❗просрочено" if d["overdue"] else f"до {d['deadline']}"
+                    lines.append(f"#{d['external_id']} {d['subject'][:60]} — {mark}")
+                    notified.add(d["external_id"])
+                await bot.send_message(chat_id=int(chat_id), text="\n".join(lines))
+                _log.info("deadline_alert_sent", count=len(fresh))
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                _log.exception("deadline_alert_failed")
+
+    deadline_task = asyncio.create_task(_deadline_alert_loop())
+
     polling_task: asyncio.Task[None] | None = None
     token = tg.TELEGRAM_BOT_TOKEN.strip()
     if token:
@@ -146,6 +188,12 @@ async def lifespan(app: FastAPI):
     cache_task.cancel()
     try:
         await cache_task
+    except asyncio.CancelledError:
+        pass
+
+    deadline_task.cancel()
+    try:
+        await deadline_task
     except asyncio.CancelledError:
         pass
 
