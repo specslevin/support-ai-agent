@@ -18,6 +18,7 @@ class IssueResponse(BaseModel):
     assignee_name: str | None
     created_at: str | None
     updated_at: str | None
+    deadline_at: str | None
     synced_at: str
 
     @classmethod
@@ -35,6 +36,7 @@ class IssueResponse(BaseModel):
             assignee_name=r.assignee_name,
             created_at=r.created_at.isoformat() if r.created_at else None,
             updated_at=r.updated_at.isoformat() if r.updated_at else None,
+            deadline_at=r.deadline_at.isoformat() if getattr(r, "deadline_at", None) else None,
             synced_at=r.synced_at.isoformat(),
         )
 

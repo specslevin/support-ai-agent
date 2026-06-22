@@ -100,6 +100,7 @@ class CacheService:
             row.contact_name = issue.contact.name if issue.contact else None
             row.created_at = _parse_dt(issue.created_at)
             row.updated_at = _parse_dt(issue.updated_at)
+            row.deadline_at = _parse_dt(getattr(issue, "deadline_at", None))
             row.synced_at = synced_at
             self.db.add(row)
             count += 1
@@ -301,6 +302,7 @@ class CacheService:
                 row.assignee_name = issue.assignee.name
             row.created_at = _parse_dt(issue.created_at)
             row.updated_at = _parse_dt(issue.updated_at)
+            row.deadline_at = _parse_dt(getattr(issue, "deadline_at", None))
             row.synced_at = datetime.utcnow()
             self.db.add(row)
             await self.db.commit()
