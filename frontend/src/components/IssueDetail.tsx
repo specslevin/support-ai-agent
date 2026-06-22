@@ -1108,7 +1108,7 @@ function BatchAnalysis({ issueId, onUseDraft, onOpenExternal }: { issueId: numbe
                         )}
                       </td>
                       <td className="text-center">
-                        {!isAggregate && o.plate && (
+                        {o.plate && (
                           isLoading ? (
                             <span className="text-muted animate-pulse">…</span>
                           ) : rc?.ok && rc.issue_id ? (
