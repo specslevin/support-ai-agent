@@ -10,6 +10,7 @@ export interface Issue {
   created_at: string | null
   updated_at: string | null
   synced_at: string
+  deadline_at: string | null
 }
 
 export interface ChatIssue {

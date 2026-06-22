@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import { ChevronDown, ChevronLeft, ChevronRight, Check, X } from 'lucide-react'
+import { ChevronDown, ChevronLeft, ChevronRight, Check, X, Clock } from 'lucide-react'
 import { api } from '../api/client'
 import { useIssuesStore } from '../store/issuesStore'
 import { useAuthStore } from '../store/authStore'
@@ -8,6 +8,7 @@ import { StatusBadge } from './StatusBadge'
 import { TemplatePicker } from './IssueDetail'
 import { EmployeeMenu, TypeMenu } from './pickers'
 import type { Issue } from '../types'
+import { getDeadlineInfo } from '../lib/deadline'
 
 export type ViewMode = 'table' | 'cards'
 
@@ -27,6 +28,17 @@ function formatDate(iso: string | null) {
   return d.toLocaleDateString('ru-RU', { day: '2-digit', month: 'long', year: 'numeric' })
     + ', '
     + d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+}
+
+function DeadlineBadge({ deadlineAt, status }: { deadlineAt: string | null; status: string | null }) {
+  const info = getDeadlineInfo(deadlineAt, status)
+  if (info.urgency === 'none' || !info.label) return null
+  return (
+    <span className={`inline-flex items-center gap-1 text-xs whitespace-nowrap ${info.textClass}`}>
+      <Clock size={11} className="shrink-0" />
+      {info.label}
+    </span>
+  )
 }
 
 const BULK_STATUSES = [
@@ -165,6 +177,9 @@ function IssueRow({ issue, highlighted, checked, onToggle, onClick }: { issue: I
       <td className="px-3 py-2.5 text-xs text-muted whitespace-nowrap w-44">
         {formatDate(issue.updated_at)}
       </td>
+      <td className="px-3 py-2.5 w-36">
+        <DeadlineBadge deadlineAt={issue.deadline_at} status={issue.status} />
+      </td>
       <td className="px-3 py-2.5 w-32">
         <StatusBadge status={issue.status} />
       </td>
@@ -209,6 +224,11 @@ function IssueCard({ issue, highlighted, checked, onToggle, onClick }: { issue: 
           <span className="text-xs text-muted truncate">{issue.assignee_name ?? '—'}</span>
           <span className="text-xs text-muted whitespace-nowrap shrink-0">{formatDate(issue.created_at)}</span>
         </div>
+        {issue.deadline_at && (
+          <div className="mt-0.5">
+            <DeadlineBadge deadlineAt={issue.deadline_at} status={issue.status} />
+          </div>
+        )}
       </div>
     </div>
   )
@@ -273,6 +293,7 @@ export function IssuesList({ viewMode }: IssuesListProps) {
                   <th className="px-3 py-2 font-medium">Клиент</th>
                   <th className="px-3 py-2 font-medium">Ответственный</th>
                   <th className="px-3 py-2 font-medium">Дата изменения</th>
+                  <th className="px-3 py-2 font-medium">Срок</th>
                   <th className="px-3 py-2 font-medium">Статус</th>
                 </tr>
               </thead>
