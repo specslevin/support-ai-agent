@@ -1455,17 +1455,28 @@ class IssueAutomationService:
             return {"error": "object_not_found", "parsed": asdict(parsed), "points": []}
         oid = int(obj["id"])
         # Window: explicit interval (capped 31 days) or the single fault day.
+        # Поддержка ВРЕМЕНИ: 'YYYY-MM-DD' → границы суток МСК; 'YYYY-MM-DDTHH:MM'
+        # (или с пробелом) → точный момент МСК (интервал трека по времени, 3.4).
+        def _bound_ms(s: str, end: bool) -> int:
+            if "T" in s or " " in s:
+                dt = _dt.datetime.fromisoformat(s.replace(" ", "T"))
+                return int(dt.replace(tzinfo=_MSK).timestamp() * 1000)
+            d = _dt.date.fromisoformat(s)
+            a, b = _msk_day_window_ms(d)
+            return b if end else a
+
         try:
-            d_from = _dt.date.fromisoformat(date_from) if date_from else _dt.date.fromisoformat(parsed.date)
-            d_to = _dt.date.fromisoformat(date_to) if date_to else d_from
-        except ValueError:
-            d_from = d_to = _dt.date.fromisoformat(parsed.date)
-        if d_to < d_from:
-            d_from, d_to = d_to, d_from
-        if (d_to - d_from).days > 31:
-            d_to = d_from + _dt.timedelta(days=31)
-        from_ms, _ = _msk_day_window_ms(d_from)
-        _, till_ms = _msk_day_window_ms(d_to)
+            f_raw = date_from or parsed.date
+            t_raw = date_to or f_raw
+            from_ms = _bound_ms(f_raw, end=False)
+            till_ms = _bound_ms(t_raw, end=True)
+        except (ValueError, TypeError):
+            from_ms, till_ms = _msk_day_window_ms(_dt.date.fromisoformat(parsed.date))
+        if till_ms < from_ms:
+            from_ms, till_ms = till_ms, from_ms
+        _cap = 31 * 86400 * 1000
+        if till_ms - from_ms > _cap:
+            till_ms = from_ms + _cap
         packets = await self._geo.get_packets(oid, from_ms, till_ms)
         packets.sort(key=lambda p: p.get("time") or 0)
 
