@@ -23,7 +23,7 @@ _TEXT_EXTS = {".txt", ".csv", ".log"}
 _PDF_EXTS = {".pdf"}
 _DOCX_EXTS = {".docx"}
 _XLSX_EXTS = {".xlsx", ".xlsm"}
-_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".heic", ".bmp", ".tif", ".tiff"}
+_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".heic", ".heif", ".bmp", ".tif", ".tiff"}
 
 
 def _ext(filename: str) -> str:
@@ -42,11 +42,20 @@ def _ocr_available() -> bool:
     return bool(u.find_spec("pytesseract") and u.find_spec("PIL"))
 
 
+def _heif_available() -> bool:
+    """pillow-heif нужен, чтобы PIL открывал HEIC/HEIF (фото с iPhone)."""
+    import importlib.util as u
+    return bool(u.find_spec("pillow_heif"))
+
+
 def is_extractable(filename: str) -> bool:
     e = _ext(filename)
     if e in _TEXT_EXTS | _PDF_EXTS | _DOCX_EXTS | _XLSX_EXTS:
         return True
-    # Images are extractable only when OCR is available
+    # HEIC/HEIF — только если установлен pillow-heif (иначе PIL не откроет).
+    if e in {".heic", ".heif"}:
+        return _ocr_available() and _heif_available()
+    # Прочие картинки — когда доступен OCR.
     return e in _IMAGE_EXTS and _ocr_available()
 
 
@@ -140,6 +149,13 @@ def _ocr_image(data: bytes) -> str:
         return ""
     import pytesseract
     from PIL import Image
+
+    # Зарегистрировать HEIC/HEIF-декодер, если установлен pillow-heif (фото iPhone).
+    try:
+        import pillow_heif
+        pillow_heif.register_heif_opener()
+    except Exception:
+        pass
 
     _ensure_tesseract_cmd()
     img = Image.open(io.BytesIO(data))
