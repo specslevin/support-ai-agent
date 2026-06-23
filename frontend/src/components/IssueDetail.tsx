@@ -987,11 +987,6 @@ function BatchAnalysis({ issueId, onUseDraft, onOpenExternal }: { issueId: numbe
     },
   })
 
-  const composeMut = useMutation({
-    mutationFn: () => api.composeAnswer(issueId),
-    onSuccess: (data) => { if (data.answer) onUseDraft(data.answer) },
-  })
-
   const createRow = async (o: import('../types').BatchObject) => {
     if (!o.plate) return
     setLoadingPlates(prev => new Set([...prev, o.plate!]))
