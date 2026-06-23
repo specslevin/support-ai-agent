@@ -944,22 +944,9 @@ async def create_children(
                 created.append({"plate": obj.plate, "ok": False})
                 continue
 
-            # Best-effort: attach the source file from the parent issue to the
-            # newly created child.  Failure must NOT break issue creation.
-            try:
-                await _attach_source_file_to_child(
-                    okdesk=okdesk,
-                    parent_external_id=external_id,
-                    parent_attachments=parent.attachments,
-                    child_id=child.id,
-                    source_filename=obj.file,
-                )
-            except Exception:
-                log.warning(
-                    "attach_source_file_failed",
-                    plate=obj.plate,
-                    child_id=child.id,
-                )
+            # Вложения к дочерней НЕ копируем: все нужные данные (номер, дата, пробег
+            # по системе и путевому листу) уже есть в теле дочерней заявки. Прежний
+            # фоллбэк цеплял ВСЕ вложения родителя — это лишнее (64444).
 
         ok = sum(1 for c in created if c["ok"])
         return {"ok": True, "created": ok, "failed": len(created) - ok, "results": created}
@@ -1379,7 +1366,7 @@ async def resolve_issue(
     automation: IssueAutomationService = Depends(get_issue_automation_service),
 ) -> dict[str, object]:
     """Send a comment and change issue status in one action."""
-    ALLOWED = {"completed", "delayed", "opened"}
+    ALLOWED = {"completed", "delayed", "opened", "closed"}
     if status_code not in ALLOWED:
         raise HTTPException(status_code=400, detail=f"status_code must be one of {ALLOWED}")
     if status_code == "delayed" and not delay_to:

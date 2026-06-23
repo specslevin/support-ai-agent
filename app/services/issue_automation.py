@@ -335,6 +335,20 @@ def _strip_html(text: str | None) -> str:
     return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", text)).strip()
 
 
+_MD_NOISE_RE = re.compile(r"\*\*|\*|__|`|#+|^\s*[-•]\s+", re.M)
+
+
+def _clean_answer(text: str | None) -> str:
+    """Убрать лишние символы из ответа клиенту (markdown-разметку LLM: **, *, #,
+    `, маркеры списков) — в Okdesk это выглядит мусором (64432)."""
+    if not text:
+        return ""
+    cleaned = _MD_NOISE_RE.sub("", text)
+    cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
 def _to_km(value: float, unit: str | None) -> float:
     if unit and unit.lower().startswith("м") and not unit.lower().startswith("км"):
         return round(value / 1000.0, 3)
@@ -1239,7 +1253,7 @@ class IssueAutomationService:
             raw = await self._llm.chat(_GENERAL_ANSWER_PROMPT, p2_user)
             p2 = self._parse_llm_json(raw)
             problem = str(p2.get("problem") or "").strip()
-            answer = str(p2.get("answer") or "").strip()
+            answer = _clean_answer(str(p2.get("answer") or ""))
             answer_reasoning = str(p2.get("reasoning") or "").strip()
             needs_more = str(p2.get("needs_more") or "").strip()
             try:
@@ -1467,7 +1481,7 @@ class IssueAutomationService:
             comment_date_facts=comment_date_facts,
         )
         category = llm.get("category") or hint
-        draft = (llm.get("answer") or "").strip()
+        draft = _clean_answer(llm.get("answer") or "")
         confidence = float(llm.get("confidence") or 0.0)
         reasoning = llm.get("reasoning") or ""
         if not draft:
@@ -1835,7 +1849,7 @@ class IssueAutomationService:
         )
         raw = await self._llm.chat(system, user)
         parsed = self._parse_llm_json(raw)
-        return str(parsed.get("answer") or "").strip()
+        return _clean_answer(str(parsed.get("answer") or ""))
 
     async def _analyze_object(self, plate: str, date: str | None, sheet: float | None,
                               address: str | None, file: str) -> dict[str, Any]:
