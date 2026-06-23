@@ -2,7 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState, useMemo, useEffect } from 'react'
 import {
   ChevronDown, AlertTriangle, X, Check, Star, Bot, RefreshCw, Database,
-  Lightbulb, ArrowDown, ArrowLeft, Map, FilePlus, ExternalLink, Pause, Send,
+  Lightbulb, Map, FilePlus, ExternalLink, Pause, Send,
   Layers, Power, RadioTower, Scissors, HelpCircle, FileText, Sheet,
   Image as ImageIcon, Paperclip, PanelRightClose, Info, MessageSquare, Sparkles, Wand2,
   Loader2, Lock, User, Headset,
@@ -628,7 +628,7 @@ function Fact({ label, value, warn }: { label: string; value: React.ReactNode; w
   )
 }
 
-function AutoAnalysis({ issueId, onUseDraft, latestAnalysis, issueTitle, companyName }: { issueId: number; onUseDraft: (text: string) => void; latestAnalysis: Analysis | null; issueTitle?: string | null; companyName?: string | null }) {
+function AutoAnalysis({ issueId, latestAnalysis, issueTitle, companyName }: { issueId: number; latestAnalysis: Analysis | null; issueTitle?: string | null; companyName?: string | null }) {
   const queryClient = useQueryClient()
   const isDemo = useAuthStore(s => s.user?.role === 'demo')
   const [result, setResult] = useState<AutomationResult | null>(null)
@@ -855,12 +855,6 @@ function AutoAnalysis({ issueId, onUseDraft, latestAnalysis, issueTitle, company
         ) : (
           <div className="space-y-1.5 pt-2 border-t border-border">
             <div className="flex gap-2">
-              <button
-                onClick={() => onUseDraft(shown.draft_answer)}
-                className="flex items-center justify-center gap-1.5 flex-1 bg-frame border border-border hover:border-accent text-white text-xs font-semibold py-1.5 rounded-lg transition-colors"
-              >
-                <ArrowDown size={14} /> В комментарий
-              </button>
               {confirmResolve ? (
                 <button
                   onClick={() => resolve.mutate(shown.draft_answer)}
@@ -932,7 +926,7 @@ function ComposeAnswerButton({ issueId, hasExtractable, onUseDraft }: { issueId:
   )
 }
 
-function BatchAnalysis({ issueId, onUseDraft, onOpenExternal }: { issueId: number; onUseDraft: (text: string) => void; issueTitle?: string | null; companyName?: string | null; onOpenExternal: (extId: number) => void }) {
+function BatchAnalysis({ issueId, onOpenExternal }: { issueId: number; issueTitle?: string | null; companyName?: string | null; onOpenExternal: (extId: number) => void }) {
   const queryClient = useQueryClient()
   const isDemo = useAuthStore(s => s.user?.role === 'demo')
   const openTrack = useIssuesStore(s => s.openTrack)
@@ -942,8 +936,6 @@ function BatchAnalysis({ issueId, onUseDraft, onOpenExternal }: { issueId: numbe
   const batchChildren = useIssuesStore(s => s.batchChildren)
   const setBatchChild = useIssuesStore(s => s.setBatchChild)
   const clearBatchChildren = useIssuesStore(s => s.clearBatchChildren)
-  const lastBatchTemplate = useIssuesStore(s => s.lastBatchTemplate)
-  const setLastBatchTemplate = useIssuesStore(s => s.setLastBatchTemplate)
   const [loadingPlates, setLoadingPlates] = useState<Set<string>>(new Set())
   const [verdictLoading, setVerdictLoading] = useState<Set<string>>(new Set())
   const [verdictError, setVerdictError] = useState<string | null>(null)
@@ -1026,9 +1018,6 @@ function BatchAnalysis({ issueId, onUseDraft, onOpenExternal }: { issueId: numbe
       setVerdictLoading(prev => { const s = new Set(prev); s.delete(key); return s })
     }
   }
-
-  // All plates with a successfully created child issue (per-row or bulk)
-  const allCreatedPlates = Object.entries(rowCreated).filter(([, v]) => v.ok).map(([plate]) => plate)
 
   return (
     <div className="space-y-2">
@@ -1162,28 +1151,6 @@ function BatchAnalysis({ issueId, onUseDraft, onOpenExternal }: { issueId: numbe
               <span>Агрегатная заявка (ОДКР) — отвечаем одним ответом по всем объектам, без разбивки на дочерние.</span>
             </p>
           )}
-          {!isAggregate && (() => {
-            const suffix = allCreatedPlates.length
-              ? `\n\nПо ТС ${allCreatedPlates.join(', ')} оформлены отдельные заявки для индивидуального рассмотрения.`
-              : ''
-            return (
-              <div className="flex items-center gap-2">
-                <button
-                  disabled={!lastBatchTemplate}
-                  onClick={() => lastBatchTemplate && onUseDraft(lastBatchTemplate.content + suffix)}
-                  className="flex items-center justify-center gap-1.5 flex-1 bg-accent/90 hover:bg-accent text-black text-xs font-semibold py-1.5 rounded-lg transition-colors disabled:opacity-40 disabled:bg-frame disabled:text-muted disabled:border disabled:border-border"
-                >
-                  {lastBatchTemplate
-                    ? <><ArrowDown size={14} /> {lastBatchTemplate.name} в комментарий{allCreatedPlates.length ? ' + заявки' : ''}</>
-                    : <><ArrowLeft size={14} /> Выберите шаблон</>}
-                </button>
-                <TemplatePicker
-                  onSelect={() => {}}
-                  onSelectFull={setLastBatchTemplate}
-                />
-              </div>
-            )
-          })()}
           {!isAggregate && (() => {
             const children = res.objects.filter(o => o.plate && !rowCreated[o.plate]?.ok && (o.verdict === 'Данные верны' || o.verdict === 'Нет данных'))
             const totalEligible = res.objects.filter(o => o.verdict === 'Данные верны' || o.verdict === 'Нет данных').length
@@ -1417,7 +1384,6 @@ function AnalysisWizard({
         {hasAttachments ? (
           <BatchAnalysis
             issueId={issue.id}
-            onUseDraft={onUseDraft}
             issueTitle={issue.subject}
             companyName={issue.company_name}
             onOpenExternal={onOpenExternal}
@@ -1441,7 +1407,6 @@ function AnalysisWizard({
         ) : (
           <AutoAnalysis
             issueId={issue.id}
-            onUseDraft={onUseDraft}
             latestAnalysis={latestAnalysis}
             issueTitle={issue.subject}
             companyName={issue.company_name}
