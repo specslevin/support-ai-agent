@@ -906,6 +906,8 @@ async def create_children(
         external_id = issue_data["issue"].external_id
         parent = await okdesk.get_issue(external_id)
         contact_id = parent.contact.id if parent.contact else None
+        # Ответственного дочерней наследуем от родительской заявки.
+        parent_assignee_id = parent.assignee.id if getattr(parent, "assignee", None) else None
 
         created = []
         for obj in body.objects:
@@ -937,6 +939,12 @@ async def create_children(
                     external_id, title, desc, address=obj.address, contact_id=contact_id,
                 )
                 created.append({"plate": obj.plate, "issue_id": child.id, "ok": True})
+                # Наследуем ответственного от родителя (best-effort, не ломает создание).
+                if parent_assignee_id:
+                    try:
+                        await okdesk.assign_issue(child.id, parent_assignee_id)
+                    except Exception:
+                        log.warning("child_assign_failed", child_id=child.id)
                 # Immediately cache the child so openExternal can find it without a full refresh
                 await cache.cache_single_issue(child.id)
             except Exception:

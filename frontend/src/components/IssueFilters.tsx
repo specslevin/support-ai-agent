@@ -18,7 +18,7 @@ interface IssueFiltersProps {
 }
 
 export function IssueFilters({ viewMode, onViewModeChange }: IssueFiltersProps) {
-  const { status, company, search, assignee, issueId, setFilter, resetFilters } = useIssuesStore()
+  const { status, company, search, assignee, issueId, sort, order, setFilter, setSort, resetFilters } = useIssuesStore()
   const hasAny = status || company || search || assignee || issueId
 
   const inputCls = 'bg-surface border border-border rounded px-3 py-1.5 text-sm text-white placeholder-muted focus:outline-none focus:border-accent'
@@ -81,8 +81,28 @@ export function IssueFilters({ viewMode, onViewModeChange }: IssueFiltersProps) 
         </button>
       )}
 
-      {/* View mode toggle — right-aligned in the filter bar */}
-      <div className="ml-auto flex items-center gap-0.5 p-0.5 rounded-lg border border-border bg-base shrink-0">
+      {/* Сортировка списка — рядом с переключателем вида */}
+      <div className="ml-auto flex items-center gap-1.5 shrink-0">
+        <span className="text-xs text-muted">Сортировка:</span>
+        <select
+          value={`${sort}:${order}`}
+          onChange={e => {
+            const [s, o] = e.target.value.split(':') as [string, 'asc' | 'desc']
+            setSort(s, o)
+          }}
+          className={`${inputCls} cursor-pointer`}
+        >
+          <option value="deadline_at:asc">По сроку ↑</option>
+          <option value="deadline_at:desc">По сроку ↓</option>
+          <option value="created_at:desc">По дате создания ↓</option>
+          <option value="created_at:asc">По дате создания ↑</option>
+          <option value="updated_at:desc">По дате изменения ↓</option>
+          <option value="updated_at:asc">По дате изменения ↑</option>
+        </select>
+      </div>
+
+      {/* View mode toggle */}
+      <div className="flex items-center gap-0.5 p-0.5 rounded-lg border border-border bg-base shrink-0">
         <button
           onClick={() => onViewModeChange('table')}
           title="Таблица"

@@ -5,7 +5,7 @@ import {
   Lightbulb, ArrowDown, ArrowLeft, Map, FilePlus, ExternalLink, Pause, Send,
   Layers, Power, RadioTower, Scissors, HelpCircle, FileText, Sheet,
   Image as ImageIcon, Paperclip, PanelRightClose, Info, MessageSquare, Sparkles, Wand2,
-  Loader2, Lock, User, Headset, Eye, Download,
+  Loader2, Lock, User, Headset,
   type LucideIcon,
 } from 'lucide-react'
 import { api } from '../api/client'
@@ -900,11 +900,20 @@ const VERDICT_STYLE: Record<string, string> = {
 }
 
 
-function ComposeAnswerButton({ issueId, onUseDraft }: { issueId: number; onUseDraft: (text: string) => void }) {
+function ComposeAnswerButton({ issueId, hasExtractable, onUseDraft }: { issueId: number; hasExtractable: boolean; onUseDraft: (text: string) => void }) {
   const isDemo = useAuthStore(s => s.user?.role === 'demo')
   const composeMut = useMutation({
-    mutationFn: () => api.composeAnswer(issueId),
-    onSuccess: (data) => { if (data.answer) onUseDraft(data.answer) },
+    mutationFn: async () => {
+      // Есть извлекаемые вложения → ответ по таблице разбора.
+      // Нет вложений → ответ на основе одиночного автоанализа заявки.
+      if (hasExtractable) {
+        const data = await api.composeAnswer(issueId)
+        return data.answer
+      }
+      const data = await api.automateIssue(issueId)
+      return data.draft_answer
+    },
+    onSuccess: (answer) => { if (answer) onUseDraft(answer) },
   })
   return (
     <>
@@ -916,7 +925,7 @@ function ComposeAnswerButton({ issueId, onUseDraft }: { issueId: number; onUseDr
       >
         {composeMut.isPending
           ? <Working label="Составляю ответ…" />
-          : <><Sparkles size={14} /> Составить общий ответ</>}
+          : <><Sparkles size={14} /> Составить ответ</>}
       </button>
       {composeMut.isError && <p className="text-xs text-orange-400">Ошибка составления ответа. Попробуйте снова.</p>}
     </>
@@ -972,18 +981,6 @@ function BatchAnalysis({ issueId, onUseDraft, onOpenExternal }: { issueId: numbe
       setVerdictError(null)
       queryClient.invalidateQueries({ queryKey: ['batch-cached', issueId] })
       clearBatchChildren(issueId)
-    },
-  })
-
-  const createMut = useMutation({
-    mutationFn: (objs: import('../types').BatchObject[]) => api.createChildren(issueId, objs),
-    onSuccess: (data) => {
-      for (const r of data.results) {
-        if (r.plate) setBatchChild(issueId, r.plate, { issue_id: r.issue_id, ok: r.ok })
-      }
-      // Backend caches each child immediately — just invalidate queries
-      queryClient.invalidateQueries({ queryKey: ['issues'] })
-      queryClient.invalidateQueries({ queryKey: ['issue', issueId] })
     },
   })
 
@@ -1195,22 +1192,9 @@ function BatchAnalysis({ issueId, onUseDraft, onOpenExternal }: { issueId: numbe
               <>
                 <p className="flex items-start gap-1.5 text-[11px] text-muted leading-relaxed">
                   <Lightbulb size={13} className="shrink-0 mt-0.5" />
-                  <span>Отдельные заявки: «данные верны» {res.objects.filter(o => o.verdict === 'Данные верны').length}{res.objects.filter(o => o.verdict === 'Нет данных').length ? `, «нет данных» ${res.objects.filter(o => o.verdict === 'Нет данных').length}` : ''} — используйте кнопку создания в строке или создайте все сразу:</span>
+                  <span>Отдельные заявки: «данные верны» {res.objects.filter(o => o.verdict === 'Данные верны').length}{res.objects.filter(o => o.verdict === 'Нет данных').length ? `, «нет данных» ${res.objects.filter(o => o.verdict === 'Нет данных').length}` : ''} — создавайте по одной кнопкой в строке таблицы.</span>
                 </p>
-                {children.length > 0 && (
-                  createMut.isSuccess && children.length === 0 ? null : (
-                    <button
-                      onClick={() => createMut.mutate(children)}
-                      disabled={createMut.isPending || children.length === 0 || isDemo}
-                      title={isDemo ? 'Недоступно в демо-режиме' : undefined}
-                      className={`flex items-center justify-center gap-1.5 w-full bg-frame border border-accent/50 text-accent hover:bg-accent/10 text-xs font-semibold py-1.5 rounded-lg transition-colors disabled:opacity-40 ${createMut.isPending ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
-                    >
-                      {createMut.isPending ? <Working label="Создаю заявки…" /> : <><FilePlus size={14} /> Создать все {children.length} (ещё не созданные)</>}
-                    </button>
-                  )
-                )}
                 {children.length === 0 && <p className="flex items-center gap-1.5 text-xs text-green-400"><Check size={14} /> Все дочерние заявки созданы</p>}
-                {createMut.isError && <p className="text-xs text-orange-400">Ошибка создания. Попробуйте снова.</p>}
               </>
             )
           })()}
@@ -1233,187 +1217,45 @@ function formatSize(bytes: number | null): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} МБ`
 }
 
-/** Определяет тип предпросмотра по имени файла. */
-type PreviewKind = 'image' | 'pdf' | 'none'
-const IMAGE_EXTS = new Set(['jpg', 'jpeg', 'png', 'bmp', 'tif', 'tiff', 'webp', 'gif'])
-const HEIC_EXTS = new Set(['heic', 'heif'])
-
-function previewKind(name: string | null): PreviewKind {
-  if (!name) return 'none'
-  const ext = name.split('.').pop()?.toLowerCase() ?? ''
-  if (IMAGE_EXTS.has(ext) || HEIC_EXTS.has(ext)) return 'image'
-  if (ext === 'pdf') return 'pdf'
-  return 'none'
-}
-
-function isHeic(name: string | null): boolean {
-  if (!name) return false
-  const ext = name.split('.').pop()?.toLowerCase() ?? ''
-  return HEIC_EXTS.has(ext)
-}
-
-interface AttachmentPreviewModalProps {
-  name: string | null
-  url: string
-  onClose: () => void
-}
-
-function AttachmentPreviewModal({ name, url, onClose }: AttachmentPreviewModalProps) {
-  const kind = previewKind(name)
-  const heic = isHeic(name)
-
-  // Close on Escape
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
-    document.addEventListener('keydown', handler)
-    return () => document.removeEventListener('keydown', handler)
-  }, [onClose])
-
-  return (
-    <div
-      className="fixed inset-0 z-[2000] flex items-center justify-center bg-black/80"
-      onClick={onClose}
-    >
-      <div
-        className="relative bg-surface border border-border rounded-xl shadow-2xl flex flex-col max-w-[90vw] max-h-[90vh] w-full overflow-hidden"
-        style={{ minWidth: 320 }}
-        onClick={e => e.stopPropagation()}
-      >
-        {/* Шапка */}
-        <div className="flex items-center justify-between px-4 py-2.5 border-b border-border shrink-0 gap-3">
-          <span className="text-sm text-white truncate">{name ?? 'Вложение'}</span>
-          <div className="flex items-center gap-2 shrink-0">
-            <a
-              href={url}
-              download
-              className="flex items-center gap-1.5 text-xs text-muted hover:text-white border border-border hover:border-accent rounded-lg px-2 py-1 transition-colors"
-            >
-              <Download size={13} /> Скачать
-            </a>
-            <button
-              onClick={onClose}
-              className="flex items-center justify-center w-7 h-7 rounded-lg text-muted hover:text-white hover:bg-white/10 transition-colors"
-              title="Закрыть"
-            >
-              <X size={16} />
-            </button>
-          </div>
-        </div>
-
-        {/* Содержимое */}
-        <div className="flex-1 overflow-auto flex items-center justify-center p-4 min-h-[200px]">
-          {kind === 'image' && !heic && (
-            <img
-              src={url}
-              alt={name ?? 'Вложение'}
-              className="max-w-full max-h-[70vh] rounded-lg object-contain"
-            />
-          )}
-          {kind === 'image' && heic && (
-            <div className="flex flex-col items-center gap-3 text-center text-sm text-muted py-8 px-6">
-              <ImageIcon size={40} className="text-muted/40" />
-              <span>Формат HEIC/HEIF не поддерживается браузером.</span>
-              <a
-                href={url}
-                download
-                className="flex items-center gap-1.5 text-xs text-accent hover:underline"
-              >
-                <Download size={13} /> Скачать файл
-              </a>
-            </div>
-          )}
-          {kind === 'pdf' && (
-            <embed
-              src={url}
-              type="application/pdf"
-              className="w-full rounded"
-              style={{ height: '70vh' }}
-            />
-          )}
-          {kind === 'none' && (
-            <div className="flex flex-col items-center gap-3 text-center text-sm text-muted py-8 px-6">
-              <Paperclip size={40} className="text-muted/40" />
-              <span>Предпросмотр недоступен для данного формата.</span>
-              <a
-                href={url}
-                download
-                className="flex items-center gap-1.5 text-xs text-accent hover:underline"
-              >
-                <Download size={13} /> Скачать файл
-              </a>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
-
 function AttachmentsSection({ issueId }: { issueId: number }) {
   const { data: items = [] } = useQuery({
     queryKey: ['attachments', issueId],
     queryFn: () => api.listAttachments(issueId),
     staleTime: 5 * 60_000,
   })
-  const [preview, setPreview] = useState<{ name: string | null; url: string } | null>(null)
 
   if (items.length === 0) return null
 
   return (
-    <>
-      <Block icon={Paperclip} title="Вложения" count={items.length}>
-        <div className="space-y-1.5">
-          {items.map(a => {
-            const KI = KIND_ICON[a.kind] ?? Paperclip
-            const url = api.attachmentUrl(issueId, a.id)
-            const canPreview = previewKind(a.name) !== 'none' || a.kind === 'image'
-            return (
-              <div
-                key={a.id}
-                className="flex items-center gap-2.5 bg-frame border border-border rounded-lg px-3 py-2 group"
-              >
-                <KI size={18} className="shrink-0 text-muted" />
-                <div className="flex-1 min-w-0">
-                  <div className="text-xs text-white truncate">{a.name ?? `#${a.id}`}</div>
-                  <div className="text-[10px] text-muted flex items-center gap-1.5">
-                    {formatSize(a.size)}
-                    {a.extractable && <span className="inline-flex items-center gap-1 text-green-400/80">· <Sparkles size={10} /> ИИ читает</span>}
-                    {!a.extractable && a.kind === 'image' && <span className="text-warning/70">· скан (OCR недоступен)</span>}
-                  </div>
-                </div>
-                <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                  {canPreview && (
-                    <button
-                      onClick={() => setPreview({ name: a.name, url })}
-                      title="Предпросмотр"
-                      className="flex items-center justify-center w-6 h-6 rounded text-muted hover:text-accent hover:bg-white/10 transition-colors"
-                    >
-                      <Eye size={13} />
-                    </button>
-                  )}
-                  <a
-                    href={url}
-                    target="_blank"
-                    rel="noreferrer"
-                    title="Открыть в новой вкладке"
-                    className="flex items-center justify-center w-6 h-6 rounded text-muted hover:text-accent hover:bg-white/10 transition-colors"
-                  >
-                    <ExternalLink size={13} />
-                  </a>
+    <Block icon={Paperclip} title="Вложения" count={items.length}>
+      <div className="space-y-1.5">
+        {items.map(a => {
+          const KI = KIND_ICON[a.kind] ?? Paperclip
+          const url = api.attachmentUrl(issueId, a.id)
+          return (
+            <a
+              key={a.id}
+              href={url}
+              target="_blank"
+              rel="noreferrer"
+              title="Открыть / скачать вложение"
+              className="flex items-center gap-2.5 bg-frame border border-border hover:border-accent rounded-lg px-3 py-2 group transition-colors"
+            >
+              <KI size={18} className="shrink-0 text-muted" />
+              <div className="flex-1 min-w-0">
+                <div className="text-xs text-white truncate">{a.name ?? `#${a.id}`}</div>
+                <div className="text-[10px] text-muted flex items-center gap-1.5">
+                  {formatSize(a.size)}
+                  {a.extractable && <span className="inline-flex items-center gap-1 text-green-400/80">· <Sparkles size={10} /> ИИ читает</span>}
+                  {!a.extractable && a.kind === 'image' && <span className="text-warning/70">· скан (OCR недоступен)</span>}
                 </div>
               </div>
-            )
-          })}
-        </div>
-      </Block>
-      {preview && (
-        <AttachmentPreviewModal
-          name={preview.name}
-          url={preview.url}
-          onClose={() => setPreview(null)}
-        />
-      )}
-    </>
+              <ExternalLink size={13} className="shrink-0 text-muted opacity-0 group-hover:opacity-100 transition-opacity" />
+            </a>
+          )
+        })}
+      </div>
+    </Block>
   )
 }
 
@@ -1728,9 +1570,10 @@ export function IssueDetail() {
               />
             )}
 
-            {/* 3. Составить общий ответ — всегда, кроме demo */}
+            {/* 3. Составить ответ — всегда, кроме demo */}
             <ComposeAnswerButton
               issueId={issue.id}
+              hasExtractable={extractableCount > 0}
               onUseDraft={(text) => { setComment(text); setCommentPublic(true) }}
             />
           </div>
