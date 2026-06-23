@@ -1362,6 +1362,113 @@ function ExtractedDataBlock({ issueId }: { issueId: number }) {
   )
 }
 
+/**
+ * Единый «мастер» ИИ-анализа карточки заявки.
+ * Приводит поток к одному виду для заявок С вложениями и БЕЗ:
+ *   1 Разбор → 2 Анализ → 3 Ответ → (решение оператора).
+ * Режим определяется автоматически по наличию извлекаемых вложений.
+ * Переиспользует существующие компоненты (BatchAnalysis / AutoAnalysis /
+ * ExtractedDataBlock / ComposeAnswerButton) без изменения их внутренностей.
+ */
+function AnalysisWizard({
+  issue,
+  extractableCount,
+  onUseDraft,
+  latestAnalysis,
+  onOpenExternal,
+}: {
+  issue: { id: number; subject?: string | null; company_name?: string | null }
+  extractableCount: number
+  onUseDraft: (text: string) => void
+  latestAnalysis: Analysis | null
+  onOpenExternal: (extId: number) => void
+}) {
+  const hasAttachments = extractableCount > 0
+
+  const steps: { n: number; title: string }[] = [
+    { n: 1, title: 'Разбор' },
+    { n: 2, title: 'Анализ' },
+    { n: 3, title: 'Ответ' },
+  ]
+
+  return (
+    <div className="border border-border rounded-xl p-4 space-y-5">
+      {/* Компактный степпер: номера шагов с подписями */}
+      <div className="flex items-center gap-2">
+        {steps.map((s, i) => (
+          <div key={s.n} className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5">
+              <span className="flex items-center justify-center w-5 h-5 rounded-full bg-accent/90 text-black text-[11px] font-bold shrink-0">
+                {s.n}
+              </span>
+              <span className="text-xs font-semibold text-white/90">{s.title}</span>
+            </div>
+            {i < steps.length - 1 && <span className="text-muted">→</span>}
+          </div>
+        ))}
+      </div>
+
+      {/* Шаг 1. Разбор данных */}
+      <div className="space-y-2">
+        <div className="flex items-center gap-2 text-xs font-semibold text-muted uppercase tracking-wide">
+          <span className="flex items-center justify-center w-4 h-4 rounded-full border border-border text-[10px] text-white/80">1</span>
+          Разбор данных
+        </div>
+        {hasAttachments ? (
+          <BatchAnalysis
+            issueId={issue.id}
+            onUseDraft={onUseDraft}
+            issueTitle={issue.subject}
+            companyName={issue.company_name}
+            onOpenExternal={onOpenExternal}
+          />
+        ) : (
+          <ExtractedDataBlock issueId={issue.id} />
+        )}
+      </div>
+
+      {/* Шаг 2. Анализ */}
+      <div className="space-y-2">
+        <div className="flex items-center gap-2 text-xs font-semibold text-muted uppercase tracking-wide">
+          <span className="flex items-center justify-center w-4 h-4 rounded-full border border-border text-[10px] text-white/80">2</span>
+          Анализ
+        </div>
+        {hasAttachments ? (
+          <p className="text-xs text-muted leading-relaxed">
+            Анализ телеметрии выполнен по каждому объекту в таблице разбора выше —
+            вердикты и расчёты показаны в строках таблицы.
+          </p>
+        ) : (
+          <AutoAnalysis
+            issueId={issue.id}
+            onUseDraft={onUseDraft}
+            latestAnalysis={latestAnalysis}
+            issueTitle={issue.subject}
+            companyName={issue.company_name}
+          />
+        )}
+      </div>
+
+      {/* Шаг 3. Предложение ответа */}
+      <div className="space-y-2">
+        <div className="flex items-center gap-2 text-xs font-semibold text-muted uppercase tracking-wide">
+          <span className="flex items-center justify-center w-4 h-4 rounded-full border border-border text-[10px] text-white/80">3</span>
+          Предложение ответа
+        </div>
+        <ComposeAnswerButton
+          issueId={issue.id}
+          hasExtractable={hasAttachments}
+          onUseDraft={onUseDraft}
+        />
+        <p className="text-xs text-muted leading-relaxed">
+          Итоговое решение принимает оператор: проверьте вердикт и текст ниже, при
+          необходимости отредактируйте и отправьте.
+        </p>
+      </div>
+    </div>
+  )
+}
+
 export function IssueDetail() {
   const { selectedIssueId, selectIssue, trackOpen, setTrackOpen, openTrack, lastTemplate } = useIssuesStore()
   const isDemo = useAuthStore(s => s.user?.role === 'demo')
@@ -1544,39 +1651,15 @@ export function IssueDetail() {
         {/* ── 2. Вложения (перед анализом — ИИ читает их) ───────── */}
         <AttachmentsSection issueId={issue.id} />
 
-        {/* ── 2b. Извлечённые данные (по кнопке) ──────────────── */}
-        <ExtractedDataBlock issueId={issue.id} />
-
-        {/* ── 3. Анализ ────────────────────────────────────────── */}
+        {/* ── 3. Анализ заявки (единый мастер: Разбор → Анализ → Ответ) ── */}
         <Block icon={Sparkles} title="Анализ заявки">
-          <div className="border border-border rounded-xl p-4 space-y-3">
-            {/* 1. Разбор по вложениям (рендерится только если есть вложения) */}
-            <BatchAnalysis
-              issueId={issue.id}
-              onUseDraft={(text) => { setComment(text); setCommentPublic(true) }}
-              issueTitle={issue.subject}
-              companyName={issue.company_name}
-              onOpenExternal={openExternal}
-            />
-
-            {/* 2. Анализ заявки — скрывается при >2 извлекаемых вложениях */}
-            {extractableCount <= 2 && (
-              <AutoAnalysis
-                issueId={issue.id}
-                onUseDraft={(text) => { setComment(text); setCommentPublic(true) }}
-                latestAnalysis={latest_analysis}
-                issueTitle={issue.subject}
-                companyName={issue.company_name}
-              />
-            )}
-
-            {/* 3. Составить ответ — всегда, кроме demo */}
-            <ComposeAnswerButton
-              issueId={issue.id}
-              hasExtractable={extractableCount > 0}
-              onUseDraft={(text) => { setComment(text); setCommentPublic(true) }}
-            />
-          </div>
+          <AnalysisWizard
+            issue={issue}
+            extractableCount={extractableCount}
+            latestAnalysis={latest_analysis}
+            onUseDraft={(text) => { setComment(text); setCommentPublic(true) }}
+            onOpenExternal={openExternal}
+          />
         </Block>
 
         {/* ── 4. Комментарии ───────────────────────────────────── */}
