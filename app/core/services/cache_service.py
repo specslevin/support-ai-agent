@@ -207,7 +207,13 @@ class CacheService:
             stmt = stmt.where(IssueCache.external_id == issue_id)
 
         col = getattr(IssueCache, sort, IssueCache.created_at)
-        stmt = stmt.order_by(col.desc() if order == "desc" else col.asc())
+        # Сортировка по сроку: заявки без дедлайна — всегда внизу (NULLs last),
+        # чтобы «старые сверху» показывало реальные приближающиеся/просроченные.
+        if sort == "deadline_at":
+            stmt = stmt.order_by(IssueCache.deadline_at.is_(None),
+                                 col.desc() if order == "desc" else col.asc())
+        else:
+            stmt = stmt.order_by(col.desc() if order == "desc" else col.asc())
 
         result = await self.db.execute(stmt)
         return list(result.scalars().all())

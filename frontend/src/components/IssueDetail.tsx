@@ -900,6 +900,29 @@ const VERDICT_STYLE: Record<string, string> = {
 }
 
 
+function ComposeAnswerButton({ issueId, onUseDraft }: { issueId: number; onUseDraft: (text: string) => void }) {
+  const isDemo = useAuthStore(s => s.user?.role === 'demo')
+  const composeMut = useMutation({
+    mutationFn: () => api.composeAnswer(issueId),
+    onSuccess: (data) => { if (data.answer) onUseDraft(data.answer) },
+  })
+  return (
+    <>
+      <button
+        onClick={() => composeMut.mutate()}
+        disabled={composeMut.isPending || isDemo}
+        title={isDemo ? 'Недоступно в демо-режиме' : undefined}
+        className={`flex items-center justify-center gap-1.5 w-full bg-accent/90 hover:bg-accent text-black text-xs font-semibold py-1.5 rounded-lg transition-colors disabled:opacity-40 ${composeMut.isPending ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
+      >
+        {composeMut.isPending
+          ? <Working label="Составляю ответ…" />
+          : <><Sparkles size={14} /> Составить общий ответ</>}
+      </button>
+      {composeMut.isError && <p className="text-xs text-orange-400">Ошибка составления ответа. Попробуйте снова.</p>}
+    </>
+  )
+}
+
 function BatchAnalysis({ issueId, onUseDraft, onOpenExternal }: { issueId: number; onUseDraft: (text: string) => void; issueTitle?: string | null; companyName?: string | null; onOpenExternal: (extId: number) => void }) {
   const queryClient = useQueryClient()
   const isDemo = useAuthStore(s => s.user?.role === 'demo')
@@ -1146,21 +1169,6 @@ function BatchAnalysis({ issueId, onUseDraft, onOpenExternal }: { issueId: numbe
               <Info size={13} className="shrink-0 mt-0.5 text-info" />
               <span>Агрегатная заявка (ОДКР) — отвечаем одним ответом по всем объектам, без разбивки на дочерние.</span>
             </p>
-          )}
-          {(res?.objects?.length ?? 0) >= 2 && (
-            <>
-              <button
-                onClick={() => composeMut.mutate()}
-                disabled={composeMut.isPending || isDemo}
-                title={isDemo ? 'Недоступно в демо-режиме' : undefined}
-                className={`flex items-center justify-center gap-1.5 w-full bg-accent/90 hover:bg-accent text-black text-xs font-semibold py-1.5 rounded-lg transition-colors disabled:opacity-40 ${composeMut.isPending ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
-              >
-                {composeMut.isPending
-                  ? <Working label="Составляю ответ…" />
-                  : <><Sparkles size={14} /> Составить общий ответ</>}
-              </button>
-              {composeMut.isError && <p className="text-xs text-orange-400">Ошибка составления ответа. Попробуйте снова.</p>}
-            </>
           )}
           {!isAggregate && (() => {
             const suffix = allCreatedPlates.length
@@ -1566,6 +1574,15 @@ export function IssueDetail() {
     staleTime: 30_000,
   })
 
+  // Кол-во извлекаемых вложений для управления видимостью AutoAnalysis
+  const { data: issueAttachments = [] } = useQuery({
+    queryKey: ['attachments', selectedIssueId],
+    queryFn: () => api.listAttachments(selectedIssueId!),
+    enabled: selectedIssueId != null,
+    staleTime: 5 * 60_000,
+  })
+  const extractableCount = issueAttachments.filter((a: import('../types').IssueAttachment) => a.extractable).length
+
   const addComment = useMutation({
     mutationFn: (text: string) => api.addComment(selectedIssueId!, text, commentPublic),
     onSuccess: () => {
@@ -1696,8 +1713,7 @@ export function IssueDetail() {
         {/* ── 3. Анализ ────────────────────────────────────────── */}
         <Block icon={Sparkles} title="Анализ заявки">
           <div className="border border-border rounded-xl p-4 space-y-3">
-            {/* Сначала разбор по вложениям (рендерится только если есть вложения), */}
-            {/* ниже — анализ заявки. */}
+            {/* 1. Разбор по вложениям (рендерится только если есть вложения) */}
             <BatchAnalysis
               issueId={issue.id}
               onUseDraft={(text) => { setComment(text); setCommentPublic(true) }}
@@ -1706,12 +1722,21 @@ export function IssueDetail() {
               onOpenExternal={openExternal}
             />
 
-            <AutoAnalysis
+            {/* 2. Анализ заявки — скрывается при >2 извлекаемых вложениях */}
+            {extractableCount <= 2 && (
+              <AutoAnalysis
+                issueId={issue.id}
+                onUseDraft={(text) => { setComment(text); setCommentPublic(true) }}
+                latestAnalysis={latest_analysis}
+                issueTitle={issue.subject}
+                companyName={issue.company_name}
+              />
+            )}
+
+            {/* 3. Составить общий ответ — всегда, кроме demo */}
+            <ComposeAnswerButton
               issueId={issue.id}
               onUseDraft={(text) => { setComment(text); setCommentPublic(true) }}
-              latestAnalysis={latest_analysis}
-              issueTitle={issue.subject}
-              companyName={issue.company_name}
             />
           </div>
         </Block>
@@ -1724,6 +1749,8 @@ export function IssueDetail() {
               const isSystem = c.author_kind === 'system'
               // is_internal is the legacy flag; is_public (new) takes precedence when present.
               const isInternal = c.is_public === false || (c.is_public == null && c.is_internal === true)
+              // Авто-уведомления Okdesk (смена статуса и т.п.) — приглушённый стиль
+              const isAutoNotif = /перешл\w* в статус|изменил\w* статус|если остал\w* вопрос\w* можете повторно|статус\w* заявки измен/i.test(c.content ?? '')
               const KindIcon = isClient ? User : isSystem ? Bot : Headset
               const kindLabel = isClient ? 'Клиент' : isSystem ? 'Система' : 'Сотрудник'
               return (
@@ -1731,7 +1758,9 @@ export function IssueDetail() {
                   key={c.id}
                   className={[
                     'rounded-lg px-3 py-2.5 text-xs space-y-1',
-                    isClient ? 'bg-frame border-l-2 border-info/60' : 'bg-card border-l-2 border-accent/40',
+                    isAutoNotif
+                      ? 'bg-base border-l-2 border-border opacity-70'
+                      : isClient ? 'bg-frame border-l-2 border-info/60' : 'bg-card border-l-2 border-accent/40',
                     isInternal ? 'border border-dashed border-warning/50 bg-warning/5' : '',
                   ].join(' ')}
                 >
@@ -1757,7 +1786,7 @@ export function IssueDetail() {
                     </span>
                     <span className="shrink-0 tabular-nums text-muted" title="Дата и время комментария">{formatDate(c.created_at) ?? '—'}</span>
                   </div>
-                  <p className="leading-relaxed whitespace-pre-wrap">{c.content ?? ''}</p>
+                  <p className={['leading-relaxed whitespace-pre-wrap', isAutoNotif ? 'italic text-muted/80' : ''].join(' ')}>{c.content ?? ''}</p>
                 </div>
               )
             })}

@@ -240,10 +240,10 @@ interface IssuesListProps {
 }
 
 export function IssuesList({ viewMode }: IssuesListProps) {
-  const { status, company, search, assignee, issueId, page, limit, selectedIssueId, highlightId, checkedIds, setPage, setLimit, selectIssue, toggleChecked, setChecked, clearChecked } = useIssuesStore()
+  const { status, company, search, assignee, issueId, page, limit, sort, order, selectedIssueId, highlightId, checkedIds, setPage, setLimit, setSort, selectIssue, toggleChecked, setChecked, clearChecked } = useIssuesStore()
 
   const { data, isLoading, isError } = useQuery({
-    queryKey: ['issues', { status, company, search, assignee, issueId, page, limit }],
+    queryKey: ['issues', { status, company, search, assignee, issueId, page, limit, sort, order }],
     queryFn: () => api.listIssues({
       status: status || undefined,
       company: company || undefined,
@@ -252,6 +252,8 @@ export function IssuesList({ viewMode }: IssuesListProps) {
       issue_id: issueId ? Number(issueId) : undefined,
       page,
       limit,
+      sort: sort || undefined,
+      order: order || undefined,
     }),
     placeholderData: (prev) => prev,
     staleTime: 60_000,
@@ -353,7 +355,7 @@ export function IssuesList({ viewMode }: IssuesListProps) {
 
       {pagination && (
         <div className="flex items-center justify-between px-4 py-2.5 border-t border-border text-xs text-muted shrink-0">
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             <span>{(page - 1) * limit + 1}–{Math.min(page * limit, pagination.total)} из {pagination.total}</span>
             <div className="flex items-center gap-1.5">
               <span>Показывать:</span>
@@ -370,6 +372,24 @@ export function IssuesList({ viewMode }: IssuesListProps) {
                   {n}
                 </button>
               ))}
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span>Сортировка:</span>
+              <select
+                value={`${sort}:${order}`}
+                onChange={e => {
+                  const [s, o] = e.target.value.split(':') as [string, 'asc' | 'desc']
+                  setSort(s, o)
+                }}
+                className="bg-base border border-border rounded px-2 py-0.5 text-xs focus:outline-none focus:border-accent cursor-pointer"
+              >
+                <option value="deadline_at:asc">По сроку ↑</option>
+                <option value="deadline_at:desc">По сроку ↓</option>
+                <option value="created_at:desc">По дате создания ↓</option>
+                <option value="created_at:asc">По дате создания ↑</option>
+                <option value="updated_at:desc">По дате изменения ↓</option>
+                <option value="updated_at:asc">По дате изменения ↑</option>
+              </select>
             </div>
           </div>
           <div className="flex items-center gap-1">

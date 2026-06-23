@@ -11,6 +11,8 @@ interface FiltersState {
   issueId: string
   page: number
   limit: number
+  sort: string
+  order: 'asc' | 'desc'
   selectedIssueId: number | null
   highlightId: number | null
   trackOpen: boolean
@@ -23,6 +25,7 @@ interface FiltersState {
   batchChildren: Record<number, Record<string, ChildInfo>>
   lastBatchTemplate: { name: string; content: string } | null
   setFilter: (key: 'status' | 'company' | 'search' | 'assignee' | 'issueId', value: string) => void
+  setSort: (sort: string, order: 'asc' | 'desc') => void
   setPage: (page: number) => void
   setLimit: (limit: number) => void
   selectIssue: (id: number | null) => void
@@ -48,6 +51,8 @@ export const useIssuesStore = create<FiltersState>()(
       issueId: '',
       page: 1,
       limit: 20,
+      sort: 'deadline_at',
+      order: 'asc' as const,
       selectedIssueId: null,
       highlightId: null,
       trackOpen: false,
@@ -59,6 +64,7 @@ export const useIssuesStore = create<FiltersState>()(
       lastBatchTemplate: null,
 
       setFilter: (key, value) => set({ [key]: value, page: 1, checkedIds: [] }),
+      setSort: (sort, order) => set({ sort, order, page: 1 }),
       setPage: page => set({ page, checkedIds: [] }),
       setLimit: limit => set({ limit, page: 1, checkedIds: [] }),
       toggleChecked: id => set(state => ({
@@ -80,7 +86,7 @@ export const useIssuesStore = create<FiltersState>()(
       setTrackOpen: open => set({ trackOpen: open }),
       openTrack: (plate = null, date = null) => set({ trackOpen: true, trackPlate: plate, trackDate: date }),
       setLastTemplate: content => set({ lastTemplate: content }),
-      resetFilters: () => set({ status: '', company: '', search: '', assignee: '', issueId: '', page: 1 }),
+      resetFilters: () => set({ status: '', company: '', search: '', assignee: '', issueId: '', page: 1, sort: 'deadline_at', order: 'asc' }),
       setBatchChild: (issueId, plate, info) => set(state => ({
         batchChildren: {
           ...state.batchChildren,
@@ -107,6 +113,8 @@ export const useIssuesStore = create<FiltersState>()(
         search: state.search,
         issueId: state.issueId,
         limit: state.limit,
+        sort: state.sort,
+        order: state.order,
         lastTemplate: state.lastTemplate,
         batchChildren: state.batchChildren,
         lastBatchTemplate: state.lastBatchTemplate,
