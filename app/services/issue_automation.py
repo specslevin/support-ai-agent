@@ -1792,81 +1792,38 @@ class IssueAutomationService:
         When provided, those prior answers are surfaced to the model so the new
         aggregate response stays consistent with what the client was told before.
         """
-        # Compact the objects for the prompt (only fields the answer needs).
-        compact = [
-            {
-                "плата": o.get("plate"),
-                "дата": o.get("date"),
-                "пробег_путевой_лист_км": o.get("sheet_mileage_km"),
-                "пробег_система_км": o.get("system_mileage_km"),
-                "вердикт": o.get("verdict"),
-            }
-            for o in objects
-        ]
-        # Match objects to prior answers by normalized plate (strip spaces/hyphens, upper).
-        prior_lines: list[str] = []
-        if prior:
-            def _norm(p: str | None) -> str | None:
-                if not p:
-                    return None
-                n = re.sub(r"[\s\-]", "", str(p)).upper()
-                return n or None
-            seen: set[str] = set()
-            for o in objects:
-                norm = _norm(o.get("plate"))
-                if not norm or norm in seen or norm not in prior:
-                    continue
-                seen.add(norm)
-                info = prior[norm]
-                ans = str(info.get("answer") or "").strip().replace("\n", " ")
-                if len(ans) > 200:
-                    ans = ans[:200] + "…"
-                cat = info.get("category")
-                prior_lines.append(
-                    f"- {o.get('plate')}"
-                    + (f" (ранее: {cat})" if cat else "")
-                    + f": «{ans}»"
-                )
-                if len(prior_lines) >= 30:
-                    break
-        system = (
-            "Ты — ассистент техподдержки GPSPOS. По списку транспортных средств составь ОДИН "
-            "общий, вежливый и связный ответ клиенту на русском по всем объектам сразу. "
-            "ОБЯЗАТЕЛЬНО начинай ответ с приветствия («Здравствуйте!»). "
-            "Это, как правило, МЕСЯЧНАЯ СВЕРКА: клиент прислал сводный отчёт по многим ТС, "
-            "большинство пунктов уже отработаны — отвечай как итоговую сводку по результатам, "
-            "не предлагай повторных действий без необходимости и НЕ предлагай разбивать на отдельные заявки. "
-            "Поле «вердикт» по каждому ТС — РЕШАЮЩЕЕ (его мог скорректировать оператор), опирайся на него. "
-            "Сгруппируй ТС по вердикту и используй такие формулировки: "
-            "• «Глушение» — по этим ТС в указанный период фиксировалось воздействие средств подавления "
-            "GPS-сигнала (глушение), из-за чего данные трека искажены/занижены; "
-            "• «Данные верны» — по этим ТС сбоев не обнаружено, данные корректны; "
-            "• «Не было питания» — по этим ТС отсутствовало питание терминала в указанную дату; если данные "
-            "позже возобновились — отметь, что питание восстановлено и пробег догрузился; "
-            "• «Терминал подключился» — терминал временно терял связь, данные позже догрузились из чёрного "
-            "ящика, пробег сошёлся; "
-            "• «Нет данных» — по этим ТС данные отсутствуют, требуется удалённая проверка силами НАШЕЙ "
-            "техподдержки (не пиши «силами клиента»); "
-            "• «Проверить» — по этим ТС требуется дополнительная проверка. "
-            "Указывай реальные гос.номера и числа из данных. Будь конкретным и кратким. "
-            "Если по части ТС ранее уже отвечали клиенту — придерживайся той же позиции, не противоречь "
-            "прежним ответам. "
-            'Верни СТРОГО JSON без пояснений: {"answer": "..."}'
-        )
-        prior_block = (
-            ("По этим ТС ранее уже отвечали клиенту (сохраняй ту же позицию):\n"
-             + "\n".join(prior_lines) + "\n\n")
-            if prior_lines else ""
-        )
-        user = (
-            (f"Компания-отправитель: {company}\n\n" if company else "")
-            + f"Объекты заявки (JSON):\n{json.dumps(compact, ensure_ascii=False)}\n\n"
-            + prior_block
-            + "Ответ строго в JSON."
-        )
-        raw = await self._llm.chat(system, user)
-        parsed = self._parse_llm_json(raw)
-        return _clean_answer(str(parsed.get("answer") or ""))
+        # ДЕТЕРМИНИРОВАННАЯ группировка по фактическому вердикту (включая ручные
+        # правки оператора). LLM здесь НЕ используем: он путал, какой ТС в какой
+        # группе (64435 — относил машины не в свой вердикт). Группы строим в коде —
+        # гарантирует, что гос.номер всегда в группе своего вердикта.
+        phrasing = {
+            "Данные верны": "сбоев не обнаружено, данные корректны",
+            "Терминал подключился": "терминал временно терял связь, данные позже догрузились, пробег сошёлся",
+            "Глушение": "в указанный период фиксировалось воздействие средств подавления GPS-сигнала (глушение), из-за чего данные трека искажены/занижены",
+            "Не было питания": "отсутствовало питание терминала в указанную дату (трек за период отсутствует)",
+            "Проверить": "требуется дополнительная проверка",
+            "Нет данных": "данные отсутствуют — требуется удалённая проверка силами нашей техподдержки",
+            "Объект не найден": "объект не найден в системе мониторинга",
+        }
+        order = list(phrasing.keys())
+        groups: dict[str, list[str]] = {}
+        for o in objects:
+            plate = o.get("plate")
+            verdict = o.get("verdict")
+            if not plate or verdict not in phrasing:
+                continue  # «Нет номера/даты» и т.п. в сводку не включаем
+            groups.setdefault(verdict, [])
+            if plate not in groups[verdict]:
+                groups[verdict].append(plate)
+        if not groups:
+            return ""
+        lines = ["Здравствуйте! По результатам сверки:"]
+        for verdict in order:
+            plates = groups.get(verdict)
+            if plates:
+                lines.append(f"— {verdict}: по ТС {', '.join(plates)} {phrasing[verdict]}.")
+        lines.append("Если потребуется дополнительная проверка по каким-либо ТС — обращайтесь.")
+        return "\n".join(lines)
 
     async def _analyze_object(self, plate: str, date: str | None, sheet: float | None,
                               address: str | None, file: str) -> dict[str, Any]:
