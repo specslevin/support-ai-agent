@@ -547,13 +547,30 @@ class IssueAutomationService:
             except (ValueError, IndexError):
                 return None
 
+        def _from_flex(mm: "re.Match[str] | None") -> str | None:
+            """Дата с 2- ИЛИ 4-значным годом (акты Волжского ПО: «10.06.26»)."""
+            if not mm:
+                return None
+            try:
+                y = int(mm.group(3))
+                y = y + 2000 if y < 100 else y
+                return _dt.date(y, int(mm.group(2)), int(mm.group(1))).isoformat()
+            except (ValueError, IndexError):
+                return None
+
         d = r"(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{4})"
+        d2 = r"(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{2,4})"  # год 2 или 4 цифры
         iso = r"(\d{4})-(\d{2})-(\d{2})"
         # Маркер даты неисправности: разные дочерние Россети называют поле
         # по-разному — «неисправность», «сбой», «ошибка», «отказ».
         _fault = r"дат\w*\s+(?:неисправност\w*|сбо\w*|ошибк\w*|отказ\w*)[^\d]{0,30}"
         parsed.date = (
-            _from_match(re.search(_fault + d, text, re.I | re.S))
+            # Высокий приоритет: маркеры с 2- или 4-значным годом (акты Волжского ПО:
+            # «Дата неисправности | 10.06.26», «в системе с 10.06.26»). Без этого
+            # дата неисправности (2-значный год) не ловилась и бралась дата акта/файла.
+            _from_flex(re.search(_fault + d2, text, re.I | re.S))
+            or _from_flex(re.search(r"в\s+системе(?:\s+с)?[^\d]{0,20}" + d2, text, re.I))
+            or _from_match(re.search(_fault + d, text, re.I | re.S))
             or _from_iso(re.search(_fault + iso, text, re.I | re.S))
             or _from_match(re.search(r"в\s+системе(?:\s+с)?[^\d]{0,20}" + d, text, re.I))
             or _from_match(re.search(r"(?<!период\s)за\s*" + d, text, re.I))
