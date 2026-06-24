@@ -1817,12 +1817,13 @@ class IssueAutomationService:
                 groups[verdict].append(plate)
         if not groups:
             return ""
+        # Без служебных ярлыков («Глушение:» и т.п. — это для специалистов): клиенту
+        # отдаём связные фразы по группам. Группировка по вердикту — детерминированная.
         lines = ["Здравствуйте! По результатам сверки:"]
         for verdict in order:
             plates = groups.get(verdict)
             if plates:
-                lines.append(f"— {verdict}: по ТС {', '.join(plates)} {phrasing[verdict]}.")
-        lines.append("Если потребуется дополнительная проверка по каким-либо ТС — обращайтесь.")
+                lines.append(f"По ТС {', '.join(plates)} {phrasing[verdict]}.")
         return "\n".join(lines)
 
     async def _analyze_object(self, plate: str, date: str | None, sheet: float | None,
