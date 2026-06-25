@@ -17,7 +17,9 @@ import structlog
 log = structlog.get_logger(__name__)
 
 # Cap extracted text so a huge spreadsheet/PDF can't blow up the LLM prompt.
-_MAX_CHARS = 8000
+# Многоактные сканы (Волжское ПО: ~1.1k символов на акт) при 8000 обрезались на
+# ~6 актах — подняли, чтобы пакетный разбор видел ВСЕ акты в одном PDF.
+_MAX_CHARS = 50000
 
 _TEXT_EXTS = {".txt", ".csv", ".log"}
 _PDF_EXTS = {".pdf"}
@@ -32,8 +34,12 @@ def _ext(filename: str) -> str:
 
 
 # OCR (scanned PDFs / photos). Best-effort: needs tesseract + PyMuPDF.
+# _OCR_MAX_PAGES: многоактные сканы бывают на десятки страниц (несколько актов
+# по 1-2 страницы). Подняли с 6 до 40, чтобы распознавались ВСЕ акты. OCR ~1-2 с
+# на страницу — на больших PDF первый разбор дольше, но результат кэшируется
+# (result_cache), повторные открытия мгновенны.
 _OCR_LANG = "rus+eng"
-_OCR_MAX_PAGES = 6
+_OCR_MAX_PAGES = 40
 _OCR_DPI = 200
 
 
