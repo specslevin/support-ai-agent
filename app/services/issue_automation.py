@@ -270,21 +270,47 @@ def _parse_act_blocks(text: str) -> list[tuple[str, str | None, float | None]]:
         if not plates:
             continue
         plate = plates[0]
+        # Дата акта (отчётная) повторяется в сегменте несколько раз: шапка
+        # «Акт № N от DATE», «DATE года», «Заявка № N от DATE». Дата НЕИСПРАВНОСТИ
+        # — отдельная, отличается от отчётной. Поэтому:
+        #   1) маркер «Дата неисправности <date>», если он != отчётной даты;
+        #   2) иначе первая дата сегмента, отличная от отчётной (OCR в части
+        #      актов ставит дату неисправности ПЕРЕД меткой — 64481 акт №28);
+        #   3) иначе отчётная дата.
+        hm = re.search(r"Акт\s*[№N]\s*\d+\D{0,6}(\d{1,2}[.\-/]\d{1,2}[.\-/]\d{2,4})",
+                       seg, re.I)
+        header = _iso_from_dmy(hm.group(1)) if hm else None
+        date: str | None = None
         fm = _FAULT_DATE_RE.search(seg)
-        date = _iso_from_dmy(fm.group(1)) if fm else None
+        if fm:
+            d = _iso_from_dmy(fm.group(1))
+            if d and d != header:
+                date = d
         if not date:
-            dm = _DATE_SHORT_RE.search(seg)
-            date = _parse_date_short(dm) if dm else None
+            for dm in _DATE_SHORT_RE.finditer(seg):
+                d = _parse_date_short(dm)
+                if d and d != header:
+                    date = d
+                    break
+        if not date:
+            date = header
         if (plate, date) in seen:
             continue
         seen.add((plate, date))
-        wm = _WAYBILL_KM_RE.search(seg)
+        # Пробег по путевому листу: отсекаем «числа-нечисла» (в части актов поле
+        # пустое, и regex ловил телефон ответственного лица — 64481 акт №29).
         sheet: float | None = None
+        wm = _WAYBILL_KM_RE.search(seg)
         if wm:
-            try:
-                sheet = float(wm.group(1).replace(",", "."))
-            except ValueError:
-                sheet = None
+            raw = wm.group(1)
+            intpart = re.split(r"[.,]", raw)[0]
+            if len(intpart) <= 5:  # пробег за сутки < 100000 км; телефон (11 цифр) отсеян
+                try:
+                    val = float(raw.replace(",", "."))
+                    if 0 < val < 100000:
+                        sheet = val
+                except ValueError:
+                    sheet = None
         out.append((plate, date, sheet))
     return out
 
