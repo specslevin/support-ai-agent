@@ -101,6 +101,13 @@ def _normalize_plate(raw: str | None) -> str:
     return p.translate(_PLATE_TRANSLIT)
 
 
+def _plate_dedup_key(p: str) -> str:
+    """Ключ дедупа без хвоста региона: «М469НА73» и «М469НА» — один ТС (64513:
+    номер из темы с регионом и из акта без региона давали дубль). Срезаем 2-3
+    цифры региона ТОЛЬКО после двух букв (обычный формат), спецномера не трогаем."""
+    return re.sub(r"(?<=[АВЕКМНОРСТУХ]{2})\d{2,3}$", "", p)
+
+
 @dataclass(frozen=True)
 class FormatProfile:
     """Ожидаемый формат заявки для конкретного ПО (производственного отделения).
@@ -238,12 +245,14 @@ _FAULT_DATE_RE = re.compile(
 # Россетей: «Пробег по путевому листу (км) 251», «по одометру 110 км», «показаний
 # одометра 60 км». Используется и в актах, и в теле-списках.
 _WAYBILL_KM_RE = re.compile(
-    r"(?:путево\w+\s+лист\w*|одометр\w*)[^\d]{0,25}?(\d+(?:[.,]\d+)?)", re.I | re.S)
+    r"(?:путево\w+\s+лист\w*|одометр\w*)[^\d]{0,25}?(\d+(?:[.,]\d+)?)(?!\.\d)", re.I | re.S)
 # Пробег по системе ГЛОНАСС/ССМ/СМС ОТ КЛИЕНТА (заявленный): «Пробег в системе
 # ГЛОНАСС (км) 20», «ССМ ГЛОНАСС 52,57 км», «по ГЛОНАС 0 км», «по СМС 98,10 км».
 # Это то, что клиент видит в ПК — отдельно от РЕАЛЬНОЙ телеметрии (geo.gpspos.ru).
+# (?!\.\d) — не принимать за пробег ДАТУ: «ССМ за 17.06.2026» не должно дать 17.06
+# (64455). Дата DD.MM.YYYY имеет «.digit» после первой пары — отсекаем.
 _GLONASS_KM_RE = re.compile(
-    r"(?:глонас\w*|ссм|смс)[^\d]{0,25}?(\d+(?:[.,]\d+)?)", re.I | re.S)
+    r"(?:глонас\w*|ссм|смс)[^\d]{0,25}?(\d+(?:[.,]\d+)?)(?!\.\d)", re.I | re.S)
 
 # Дата с НАЗВАНИЕМ месяца: «18 июня 2026», «18 июня» (Ульяновские/свободные акты).
 _RU_MONTHS = {
@@ -2087,6 +2096,16 @@ class IssueAutomationService:
                         for plate in plates:
                             targets.append((plate, p.date, p.sheet_mileage_km, p.declared_system_km))
 
+            # Дата документа/темы для объектов без своей даты (Чапаевское «Общая»:
+            # дата одна в шапке/имени файла/теме, не у каждого ТС в списке) — чтобы
+            # анализ телеметрии мог идти, а не упирался в «Нет номера/даты».
+            if any(d is None for _, d, _, _ in targets):
+                doc_date = (self.parse_issue(name, "", None, extra_text=text).date
+                            or (self.parse_issue(issue_title, "", None).date
+                                if issue_title else None))
+                if doc_date:
+                    targets = [(p, d or doc_date, s, g) for p, d, s, g in targets]
+
             if not targets:
                 results.append({
                     "file": name, "plate": None, "date": base_date,
@@ -2097,13 +2116,14 @@ class IssueAutomationService:
                 })
                 continue
 
-            # Дедуп по ПАРЕ (номер, дата): один объект может иметь несколько
-            # выездов по разным датам (63317/О579СХ) — каждую дату разбираем
-            # отдельно; повторы той же пары (мульти-акт PDF) отсекаем.
+            # Дедуп по ПАРЕ (номер без региона, дата): один объект может иметь
+            # несколько выездов по разным датам (63317/О579СХ) — каждую дату
+            # разбираем отдельно; повторы той же пары (мульти-акт PDF, вариант
+            # номера с регионом и без — 64513) отсекаем.
             seen_pairs: set[tuple[str, str | None]] = set()
             uniq: list[tuple[str, str | None, float | None, float | None]] = []
             for plate, pdate, psheet, pglonass in targets:
-                key = (plate, pdate)
+                key = (_plate_dedup_key(plate), pdate)
                 if key in seen_pairs:
                     continue
                 seen_pairs.add(key)
