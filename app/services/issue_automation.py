@@ -108,6 +108,46 @@ def _plate_dedup_key(p: str) -> str:
     return re.sub(r"(?<=[АВЕКМНОРСТУХ]{2})\d{2,3}$", "", p)
 
 
+# --- Правила разбора особых заявок (см. память project-overdue-rules) ----------
+# Спецтехника без км-пробега: модель из списка ИЛИ номер НЕ обычного формата
+# (буква-3цифры-2буквы). Тракторы/погрузчики/буровые/мульчеры меряются моточасами,
+# поэтому км-вердикт «Глушение/Данные верны» по пробегу для них ненадёжен.
+_SPEC_MODEL_RE = re.compile(
+    r"\b(?:мтз|беларус[ь]?|трактор|погрузчик|экскаватор|бульдозер|каток|автогрейдер|"
+    r"грейдер|буров|мульчер|bobcat|jcb|кировец|к-?70[01]|т-?150|т-?170|дэк|эо-?\d|"
+    r"тгм|мтлб|мксм|пкт|treemme)\b", re.I)
+
+
+def _is_standard_plate(p: str | None) -> bool:
+    """Обычный гражданский номер: буква + 3 цифры + 2 буквы [+ регион]."""
+    return bool(re.fullmatch(rf"[{_L}]\d{{3}}[{_L}]{{2}}\d{{0,3}}", p or ""))
+
+
+def _is_special_vehicle(plate: str | None, text: str | None = None) -> bool:
+    """Спецтехника (без км-пробега): номер спецформата ИЛИ модель из списка."""
+    if plate and not _is_standard_plate(plate):
+        return True
+    return bool(text and _SPEC_MODEL_RE.search(text))
+
+
+# «Ложный wait»: клиент подтвердил питание/массу/индикацию и/или просит удалённую
+# диагностику — мяч на НАШЕЙ стороне, заявка зависает. Стандартный шаблон «включите
+# питание» уже исчерпан → нужна удалённая диагностика по телеметрии либо выезд.
+_POWER_OK_RE = re.compile(
+    r"масс[аы]\s+(?:включена|подключена|есть)|питани[ея][^.]{0,20}(?:есть|включен|подключ)|"
+    r"индикаци[яи][^.]{0,40}(?:гори|свети|есть|мига)|клемм[ыа][^.]{0,20}подключ|"
+    r"тс\s+(?:в\s+работе|на\s+линии|работает)|терминал[^.]{0,25}(?:работает|на\s+связи)",
+    re.I)
+_REMOTE_DIAG_RE = re.compile(r"удал[её]нн\w+\s+диагностик", re.I)
+
+
+def _client_awaiting_remote_diag(comments: str | None) -> bool:
+    """True, если клиент подтвердил питание/работу ТС (наш шаблон исчерпан)."""
+    if not comments:
+        return False
+    return bool(_POWER_OK_RE.search(comments) or _REMOTE_DIAG_RE.search(comments))
+
+
 @dataclass(frozen=True)
 class FormatProfile:
     """Ожидаемый формат заявки для конкретного ПО (производственного отделения).
@@ -671,6 +711,11 @@ class AutomationResult:
     reasoning: str
     needs_review: bool = True
     error: str | None = None
+    # Клиент подтвердил питание/массу и ждёт удалённой диагностики — заявка зависает
+    # в wait, мяч на нашей стороне (не «ждём клиента»).
+    needs_remote_diagnostics: bool = False
+    # Спецтехника без км-пробега (трактор/погрузчик/буровая) — км-вердикт ненадёжен.
+    spec_vehicle: bool = False
 
 
 # Canonical answer catalogue mirroring okdesk-console templates (category -> guidance).
@@ -1688,6 +1733,46 @@ class IssueAutomationService:
                 self._apply_llm_extraction(parsed, ext)
             except Exception:  # pragma: no cover - best effort
                 log.warning("llm_extract_failed", title=(title or "")[:60])
+
+        # Правила разбора особых заявок (см. память project-overdue-rules):
+        #  • «ложный wait» — клиент подтвердил питание/работу ТС и ждёт удалённой
+        #    диагностики (наш шаблон исчерпан, мяч на нашей стороне);
+        #  • спецтехника — без км-пробега, км-вердикт ненадёжен.
+        _body_for_spec = f"{title or ''} {_strip_html(description)} {attachments_text or ''}"
+        awaiting_diag = _client_awaiting_remote_diag(comments)
+        spec = _is_special_vehicle(parsed.plate, _body_for_spec)
+        directive_lines: list[str] = []
+        if awaiting_diag:
+            directive_lines.append(
+                "ВАЖНО: клиент уже подтвердил питание/массу/работу ТС и ждёт "
+                "УДАЛЁННОЙ диагностики. НЕ повторяй шаблон про включение питания. "
+                "Дай результат удалённой диагностики по данным телеметрии за дату; "
+                "если данных нет / терминал не выходит на связь — рекомендуй ВЫЕЗД "
+                "сервисной бригады.")
+        if spec:
+            directive_lines.append(
+                "ВАЖНО: это СПЕЦТЕХНИКА (трактор/погрузчик/буровая и т.п.) без "
+                "обычного км-пробега. НЕ делай вывод о расхождении по километрам; "
+                "оценивай факт работы/выхода на связь, при необходимости — моточасы.")
+        comments_llm = (("\n".join(directive_lines) + "\n\n" + (comments or "")).strip()
+                        if directive_lines else comments)
+
+        def _finalize(res: AutomationResult) -> AutomationResult:
+            res.needs_remote_diagnostics = awaiting_diag
+            res.spec_vehicle = spec
+            notes: list[str] = []
+            if awaiting_diag:
+                notes.append("⚠ Требуется удалённая диагностика: клиент подтвердил "
+                             "питание/работу ТС — не ждать клиента; при отсутствии "
+                             "данных назначить выезд бригады.")
+            if spec:
+                notes.append("⚠ Спецтехника без км-пробега — оценивать по факту "
+                             "работы/моточасам, км-расхождение неинформативно.")
+            if notes:
+                res.reasoning = " ".join(notes) + ("\n" + res.reasoning if res.reasoning else "")
+                res.needs_review = True
+            return res
+
         telemetry = TelemetryFacts()
         # No plate, or no fault date → the mileage path can't proceed. Instead of
         # a dead-end error, hand off to the GENERAL ASSISTANT path: the AI reads
@@ -1696,22 +1781,22 @@ class IssueAutomationService:
         if not parsed.plate or not parsed.date:
             # If the type is explicitly non-mileage, the general path is the right
             # home regardless; if it's mileage but unparseable, still go general.
-            return await self._draft_general(title, description, attachments_text, sender, comments)
+            return _finalize(await self._draft_general(title, description, attachments_text, sender, comments_llm))
         # A non-mileage issue type that happens to carry a plate still belongs to
         # the general path — the mileage analysis below would be meaningless.
         if issue_type and not is_mileage:
-            return await self._draft_general(title, description, attachments_text, sender, comments)
+            return _finalize(await self._draft_general(title, description, attachments_text, sender, comments_llm))
         try:
             telemetry = await self.gather_telemetry(parsed.plate, parsed.date, parsed.date_to)
         except Exception:  # pragma: no cover - network errors
             # Telemetry/object lookup failed — fall through to the general path
             # rather than a hard error, so the operator still gets a draft.
             log.exception("gather_telemetry_failed", plate=parsed.plate)
-            return await self._draft_general(title, description, attachments_text, sender, comments)
+            return _finalize(await self._draft_general(title, description, attachments_text, sender, comments_llm))
         if "object_not_found" in telemetry.flags:
             # Plate parsed but no matching object in Geo: general path can still
             # understand the request and tell the operator what to verify.
-            return await self._draft_general(title, description, attachments_text, sender, comments)
+            return _finalize(await self._draft_general(title, description, attachments_text, sender, comments_llm))
 
         # Переоткрытие заявки: если комментарий вводит НОВУЮ дату неисправности
         # (свежее даты тела), анализируем ИМЕННО ЕЁ — дата тела уже была отвечена
@@ -1784,7 +1869,7 @@ class IssueAutomationService:
         llm = await self._draft_with_llm(
             parsed, telemetry, hint,
             attachments_text=attachments_text, sender=sender, examples=examples,
-            comments=comments,
+            comments=comments_llm,
             verify_resumed=verify_resumed,
             comment_date_facts=comment_date_facts,
         )
@@ -1811,11 +1896,11 @@ class IssueAutomationService:
         )
         if under_recording:
             confidence = min(confidence, 0.7)
-        return AutomationResult(
+        return _finalize(AutomationResult(
             parsed=parsed, telemetry=telemetry, category=category,
             confidence=confidence, draft_answer=draft, reasoning=reasoning,
             needs_review=confidence < 0.85 or bool(under_recording),
-        )
+        ))
 
     async def build_track(self, title: str | None, description: str | None,
                           max_points: int = 2500, attachments_text: str | None = None,
@@ -2218,6 +2303,7 @@ class IssueAutomationService:
             "sheet_mileage_km": sheet, "declared_system_km": declared,
             "system_mileage_km": None,
             "address": address, "flags": [], "teleport_jumps": 0,
+            "spec_vehicle": _is_special_vehicle(plate, file),
             "verdict": "Нет номера/даты",
         }
         if plate and date:
@@ -2233,10 +2319,14 @@ class IssueAutomationService:
                     item["verdict"] = "Объект не найден"
                 elif "no_data" in t.flags:
                     item["verdict"] = "Нет данных"
-                elif "jamming" in t.flags:
-                    item["verdict"] = "Глушение"
                 elif "power_off" in t.flags:
                     item["verdict"] = "Не было питания"
+                elif item["spec_vehicle"]:
+                    # Спецтехника: км-вердикт (Глушение/Данные верны) ненадёжен —
+                    # данные есть, оценивать по факту работы/моточасам вручную.
+                    item["verdict"] = "Проверить"
+                elif "jamming" in t.flags:
+                    item["verdict"] = "Глушение"
                 elif sheet and system is not None and abs(sheet - system) <= max(5.0, sheet * 0.1):
                     item["verdict"] = "Данные верны"
                 else:
@@ -2284,4 +2374,6 @@ class IssueAutomationService:
             "reasoning": r.reasoning,
             "needs_review": r.needs_review,
             "error": r.error,
+            "needs_remote_diagnostics": r.needs_remote_diagnostics,
+            "spec_vehicle": r.spec_vehicle,
         }
