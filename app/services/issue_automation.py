@@ -245,14 +245,14 @@ _FAULT_DATE_RE = re.compile(
 # Россетей: «Пробег по путевому листу (км) 251», «по одометру 110 км», «показаний
 # одометра 60 км». Используется и в актах, и в теле-списках.
 _WAYBILL_KM_RE = re.compile(
-    r"(?:путево\w+\s+лист\w*|одометр\w*)[^\d]{0,25}?(\d+(?:[.,]\d+)?)(?!\.\d)", re.I | re.S)
+    r"(?:путево\w+\s+лист\w*|одометр\w*)[^\d]{0,25}?(\d+(?:[.,]\d+)?)(?![\d.,])", re.I | re.S)
 # Пробег по системе ГЛОНАСС/ССМ/СМС ОТ КЛИЕНТА (заявленный): «Пробег в системе
 # ГЛОНАСС (км) 20», «ССМ ГЛОНАСС 52,57 км», «по ГЛОНАС 0 км», «по СМС 98,10 км».
 # Это то, что клиент видит в ПК — отдельно от РЕАЛЬНОЙ телеметрии (geo.gpspos.ru).
 # (?!\.\d) — не принимать за пробег ДАТУ: «ССМ за 17.06.2026» не должно дать 17.06
 # (64455). Дата DD.MM.YYYY имеет «.digit» после первой пары — отсекаем.
 _GLONASS_KM_RE = re.compile(
-    r"(?:глонас\w*|ссм|смс)[^\d]{0,25}?(\d+(?:[.,]\d+)?)(?!\.\d)", re.I | re.S)
+    r"(?:глонас\w*|ссм|смс)[^\d]{0,25}?(\d+(?:[.,]\d+)?)(?![\d.,])", re.I | re.S)
 
 # Дата с НАЗВАНИЕМ месяца: «18 июня 2026», «18 июня» (Ульяновские/свободные акты).
 _RU_MONTHS = {
@@ -2145,7 +2145,22 @@ class IssueAutomationService:
 
             chunk = await asyncio.gather(*(_one(p, d, s, g) for p, d, s, g in uniq))
             results.extend(r for r in chunk if r is not None)
-        return results
+        # Глобальный дедуп по (номер без региона, дата) ПОВЕРХ всех вложений: один
+        # и тот же ТС на одну дату мог прийти в РАЗНЫХ вложениях/актах либо как
+        # вариант номера с регионом и без (64513). Строки без номера сохраняем.
+        final: list[dict[str, Any]] = []
+        seen_final: set[tuple[str, str | None]] = set()
+        for r in results:
+            plate = r.get("plate")
+            if not plate:
+                final.append(r)
+                continue
+            key = (_plate_dedup_key(str(plate)), r.get("date"))
+            if key in seen_final:
+                continue
+            seen_final.add(key)
+            final.append(r)
+        return final
 
     async def compose_aggregate_answer(self, objects: list[dict[str, Any]],
                                        company: str | None = None,
