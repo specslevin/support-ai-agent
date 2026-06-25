@@ -9,6 +9,21 @@ import httpx
 from .config import OkdeskSettings
 
 
+class OkdeskAPIError(Exception):
+    """Ошибка Okdesk API с сохранённым телом ответа.
+
+    Позволяет вызывающему коду показать оператору реальную причину
+    (например, недопустимый переход статуса или отсутствие обязательного поля),
+    а не общий HTTP 500.
+    """
+
+    def __init__(self, status_code: int, body: str) -> None:
+        self.status_code = status_code
+        # усекаем тело, чтобы не тащить мегабайты HTML в сообщение
+        self.body = (body or "")[:500]
+        super().__init__(f"Okdesk API {status_code}: {self.body}")
+
+
 class OkdeskClient:
     def __init__(self, settings: OkdeskSettings) -> None:
         self._token = settings.API_TOKEN
@@ -32,6 +47,11 @@ class OkdeskClient:
         if r.status_code == 404:
             print(f"[Okdesk] Not found {r.status_code}: {r.text}")
             r.raise_for_status()
+        # 400/422 — ошибки валидации Okdesk: причина лежит в теле ответа.
+        # Пробрасываем её через OkdeskAPIError, чтобы оператор увидел реальный текст.
+        if r.status_code in (400, 422):
+            print(f"[Okdesk] Validation error {r.status_code}: {r.text}")
+            raise OkdeskAPIError(r.status_code, r.text)
         if r.status_code >= 500:
             print(f"[Okdesk] Server error {r.status_code}: {r.text}")
             r.raise_for_status()

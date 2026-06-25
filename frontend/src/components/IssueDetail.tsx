@@ -1329,6 +1329,28 @@ function ExtractedDataBlock({ issueId }: { issueId: number }) {
   )
 }
 
+// Гос.номер РФ: буква + 3 цифры + 2 буквы [+ 2-3 цифры региона], кириллица и
+// латиница-двойники. Считаем уникальные номера. Без lookbehind — он даёт
+// SyntaxError при парсинге в старых WebKit/Safari (<16.4) и валит весь бандл;
+// для подсчёта он не нужен. Нормализация совпадает с бэкендом _normalize_plate:
+// убрать пробелы/дефисы, upper-case, латиница→кириллица (иначе один и тот же ТС
+// в кириллице и латинице посчитается как два — рассинхрон с бэком, см. 64481).
+const PLATE_RE = /[АВЕКМНОРСТУХABEKMHOPCTYX]\s?\d{3}\s?[АВЕКМНОРСТУХABEKMHOPCTYX]{2}\d{0,3}/gi
+const LAT_TO_CYR: Record<string, string> = {
+  A: 'А', B: 'В', E: 'Е', K: 'К', M: 'М', H: 'Н', O: 'О',
+  P: 'Р', C: 'С', T: 'Т', Y: 'У', X: 'Х',
+}
+function normPlate(raw: string): string {
+  return raw.replace(/[\s-]/g, '').toUpperCase()
+    .replace(/[ABEKMHOPCTYX]/g, c => LAT_TO_CYR[c] || c)
+}
+function countPlates(s?: string | null): number {
+  if (!s) return 0
+  const found = new Set<string>()
+  for (const m of s.matchAll(PLATE_RE)) found.add(normPlate(m[0]))
+  return found.size
+}
+
 /**
  * Единый «мастер» ИИ-анализа карточки заявки.
  * Приводит поток к одному виду для заявок С вложениями и БЕЗ:
@@ -1351,6 +1373,9 @@ function AnalysisWizard({
   onOpenExternal: (extId: number) => void
 }) {
   const hasAttachments = extractableCount > 0
+  // Заявки без вложений, но с ≥2 гос.номерами в теме → тоже пакетный разбор.
+  const multiInSubject = countPlates(issue.subject) >= 2
+  const useBatch = hasAttachments || multiInSubject
 
   const steps: { n: number; title: string }[] = [
     { n: 1, title: 'Разбор' },
@@ -1381,7 +1406,7 @@ function AnalysisWizard({
           <span className="flex items-center justify-center w-4 h-4 rounded-full border border-border text-[10px] text-white/80">1</span>
           Разбор данных
         </div>
-        {hasAttachments ? (
+        {useBatch ? (
           <BatchAnalysis
             issueId={issue.id}
             issueTitle={issue.subject}
@@ -1399,7 +1424,7 @@ function AnalysisWizard({
           <span className="flex items-center justify-center w-4 h-4 rounded-full border border-border text-[10px] text-white/80">2</span>
           Анализ
         </div>
-        {hasAttachments ? (
+        {useBatch ? (
           <p className="text-xs text-muted leading-relaxed">
             Анализ телеметрии выполнен по каждому объекту в таблице разбора выше —
             вердикты и расчёты показаны в строках таблицы.
@@ -1422,7 +1447,7 @@ function AnalysisWizard({
         </div>
         <ComposeAnswerButton
           issueId={issue.id}
-          hasExtractable={hasAttachments}
+          hasExtractable={useBatch}
           onUseDraft={onUseDraft}
         />
         <p className="text-xs text-muted leading-relaxed">

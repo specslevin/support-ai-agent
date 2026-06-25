@@ -87,6 +87,90 @@ def _msk_date_from_ms(ms: float) -> _dt.date:
 _PLATE_TRANSLIT = str.maketrans("ABEKMHOPCTYX", "АВЕКМНОРСТУХ")
 
 
+def _normalize_plate(raw: str | None) -> str:
+    """Канонический гос.номер: убрать пробелы/дефисы, срезать суффикс RUS/RU,
+    upper-case, латиница→кириллица.
+
+    Единая нормализация для ВСЕХ путей (одиночный разбор, списки, таблицы, batch).
+    Раньше ``extract_all_plates`` не делал translit → один и тот же номер из OCR
+    распознавался и в кириллице, и в латинице (``М203УО`` vs ``M203YO``) как ДВА
+    разных объекта с противоречивыми вердиктами (64481). Суффикс RUS — частый
+    хвост в темах Северо-Восточного ПО («…ТУRUS», 64494/64228)."""
+    p = re.sub(r"[\s\-]", "", raw or "").upper()
+    p = re.sub(r"(RUS|RU)$", "", p)
+    return p.translate(_PLATE_TRANSLIT)
+
+
+@dataclass(frozen=True)
+class FormatProfile:
+    """Ожидаемый формат заявки для конкретного ПО (производственного отделения).
+
+    Помогает (а) выбрать стратегию разбора и (б) подсказать ИИ в промпте, что
+    искать. Привязка МЯГКАЯ: ключ ищется как подстрока в company_name; при
+    отсутствии совпадения возвращается None и работает обычная эвристика."""
+    key: str               # подстрока company_name (ПО)
+    data_location: str     # 'subject' | 'attachments' | 'subject_or_attachments'
+    cardinality: str       # 'single' | 'multi'
+    attachment_format: str  # 'none' | 'act_per_object' | 'one_doc_many' | 'table'
+    hint: str              # человекочитаемая подсказка для LLM-промпта
+
+
+# Закономерности по дочерним «Россети Волга» (выведены из реальных тем/авторов
+# заявок). Порядок важен: более специфичные ПО — раньше общих компаний.
+_FORMAT_PROFILES: list[FormatProfile] = [
+    FormatProfile(
+        "Волжское ПО", "subject_or_attachments", "single", "act_per_object",
+        "Форвард-письмо (FW/Отправка): один акт ГЛОНАСС = один ТС; гос.номер и "
+        "дата неисправности есть и в теме, и в акте."),
+    FormatProfile(
+        "Жигулевское ПО", "subject_or_attachments", "multi", "act_per_object",
+        "Несколько ТС: каждый — отдельный акт (Word). Тема перечисляет все "
+        "через запятую: «дата_номер_модель_Заявка№ ЖПО»."),
+    FormatProfile(
+        "Чапаевское ПО", "attachments", "multi", "one_doc_many",
+        "«Общая» заявка: ОДИН документ Word содержит НЕСКОЛЬКО ТС внутри "
+        "(в теме номеров нет, только «Общая_Заявка N_ЧПО»)."),
+    FormatProfile(
+        "Самарское ПО", "subject", "single", "none",
+        "Один ТС: гос.номер прямо в теме (часто спецтехника: 9140СУ, Н944КР)."),
+    FormatProfile(
+        "Прихоперское ПО", "subject", "multi", "none",
+        "Часто НЕСКОЛЬКО ТС перечислены прямо в теме; вложений может не быть."),
+    FormatProfile(
+        "Северное ПО", "subject", "single", "none",
+        "Один ТС: тема вида «ДД-ММ-ГГГГ ГОСНОМЕР» (Саратов, Ефимов)."),
+    FormatProfile(
+        "Северо-Восточное ПО", "subject", "single", "none",
+        "Один ТС: тема «МОДЕЛЬ ГОСНОМЕР» — часто с суффиксом RUS, спецномерами "
+        "(64СН3847) и двойными пробелами (В  175 ТУ)."),
+    FormatProfile(
+        "Ульяновское ПО", "subject_or_attachments", "multi", "table",
+        "Бывает табличный отчёт-вложение (XLSX «Группировка»: строка = ТС) либо "
+        "один гос.номер прямо в теме."),
+    FormatProfile(
+        "Пензаэнерго", "subject", "single", "none",
+        "Один ТС: гос.номер в теме (регион 58)."),
+    FormatProfile(
+        "Мордовэнерго", "subject", "single", "none",
+        "Один ТС: тема «расхождения пробега по ГОСНОМЕР»."),
+    FormatProfile(
+        "Оренбургэнерго", "subject", "single", "none",
+        "Один ТС: тема «<тип проблемы> ГОСНОМЕР» (регион 56/156)."),
+]
+
+
+def resolve_format_profile(company: str | None,
+                           contact: str | None = None) -> FormatProfile | None:
+    """Подобрать формат-профиль по company_name (подстрока ПО). Автор (contact)
+    пока используется только как контекст — жёсткой привязки к автору нет."""
+    if not company:
+        return None
+    for p in _FORMAT_PROFILES:
+        if p.key in company:
+            return p
+    return None
+
+
 def _haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     r = 6371000.0
     p1, p2 = math.radians(lat1), math.radians(lat2)
@@ -102,9 +186,10 @@ _L = "АВЕКМНОРСТУХABEKMHOPCTYX"
 # ложно склеивается в «Р175ОТ15» (где «ОТ»=«от», «15» из даты). См. 64144.
 _PLATE_RE = re.compile(
     rf"(?<![A-Za-zА-Яа-яЁё0-9.-])(?:"
-    rf"[{_L}]\s?\d{{3}}\s?[{_L}]{{2}}\d{{0,3}}"      # обычный: А123ВС[64], в т.ч. «М 396 УМ 763» (регион слитно)
-    rf"|\d{{2}}[-\s]?\d{{2}}\s?[{_L}]{{2}}"          # спецтехника: 5297СУ, 81-40РВ
-    rf"|[{_L}]{{2}}\s?\d{{2}}[-\s]?\d{{2}}"          # спецтехника (обратный порядок): СУ5297
+    rf"[{_L}]\s{{0,2}}\d{{3}}\s{{0,2}}[{_L}]{{2}}\d{{0,3}}"  # обычный: А123ВС[64]; «М 396 УМ 763»; «В  175 ТУ» (двойной пробел, 64494)
+    rf"|\d{{2}}\s{{0,2}}[{_L}]{{2}}\s{{0,2}}\d{{4}}"         # спецтехника регион+серия: 64СН3847, 56НА3151 (64228)
+    rf"|\d{{2}}[-\s]?\d{{2}}\s?[{_L}]{{2}}"                  # спецтехника: 5297СУ, 81-40РВ
+    rf"|[{_L}]{{2}}\s?\d{{2}}[-\s]?\d{{2}}"                  # спецтехника (обратный порядок): СУ5297, СВ8797
     rf")",
     re.I,
 )
@@ -123,7 +208,7 @@ def extract_all_plates(text: str, limit: int = 40) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
     for m in _PLATE_STD_RE.finditer(text or ""):
-        p = re.sub(r"[\s-]", "", m.group(0)).upper()
+        p = _normalize_plate(m.group(0))  # translit: «M203YO»→«М203УО» (64481)
         if p not in seen:
             seen.add(p)
             out.append(p)
@@ -190,7 +275,7 @@ def _parse_summary_table(text: str) -> list[tuple[str, str | None]]:
         # Switch the current plate when a new one appears on the line.
         plate_match = _PLATE_STD_RE.search(stripped)
         if plate_match:
-            current_plate = re.sub(r"[\s-]", "", plate_match.group(0)).upper().translate(_PLATE_TRANSLIT)
+            current_plate = _normalize_plate(plate_match.group(0))
             if current_plate not in plates_order:
                 plates_order.append(current_plate)
 
@@ -232,7 +317,7 @@ def _parse_grouping_table(text: str) -> list[tuple[str, float | None, float | No
         for i, cell in enumerate(cells):
             m = _PLATE_STD_RE.search(cell) or _PLATE_FALLBACK_RE.search(cell)
             if m:
-                plate = re.sub(r"[\s\-]", "", m.group(0)).upper().translate(_PLATE_TRANSLIT)
+                plate = _normalize_plate(m.group(0))
                 name_idx = i
                 break
         if not plate:
@@ -520,7 +605,7 @@ class IssueAutomationService:
         m = (_PLATE_RE.search(title) or _PLATE_FALLBACK_RE.search(title)
              or _PLATE_RE.search(text) or _PLATE_FALLBACK_RE.search(text))
         if m:
-            parsed.plate = re.sub(r"[\s-]", "", m.group(0)).upper().translate(_PLATE_TRANSLIT)
+            parsed.plate = _normalize_plate(m.group(0))
 
         # Fault-date detection. The fault date is rarely the first date in the
         # text — that's usually the report/send/act date (e.g. Волжское ПО акты:
@@ -1108,6 +1193,14 @@ class IssueAutomationService:
         sender_block = (
             f"Отправитель: {json.dumps(sender, ensure_ascii=False)}\n\n" if sender else ""
         )
+        # Формат-профиль по ПО: подсказываем ИИ, ОТКУДА брать данные и сколько ТС
+        # ожидать у этого отправителя (выведено из закономерностей по дочерним
+        # «Россети Волга»). Мягкая подсказка — не жёсткое правило.
+        profile = resolve_format_profile(
+            (sender or {}).get("компания"), (sender or {}).get("контакт"))
+        profile_block = (
+            f"Формат заявок этого отправителя: {profile.hint}\n\n" if profile else ""
+        )
         comments_block = ""
         if comments and comments.strip():
             comments_block = (
@@ -1121,6 +1214,7 @@ class IssueAutomationService:
             )
         question = (
             sender_block
+            + profile_block
             + f"Тема заявки: {title or ''}\n\n"
             + f"Описание: {body or ''}"
             + att_block
@@ -1154,7 +1248,7 @@ class IssueAutomationService:
         parsed = self.parse_issue(title, description, None, extra_text=attachments_text)
         plate = parsed.plate
         if not plate and plate_guess:
-            cand = re.sub(r"[\s-]", "", plate_guess).upper()
+            cand = _normalize_plate(plate_guess)
             if _PLATE_RE.search(cand) or _PLATE_FALLBACK_RE.search(cand):
                 plate = cand
         if not plate:
@@ -1343,7 +1437,7 @@ class IssueAutomationService:
         """Аккуратно заполнить ТОЛЬКО недостающие поля parsed данными от LLM,
         с валидацией. Никогда не перетирает то, что нашёл regex."""
         if not parsed.plate and ext.get("plate"):
-            cand = re.sub(r"[\s-]", "", str(ext["plate"])).upper()
+            cand = _normalize_plate(str(ext["plate"]))
             if _PLATE_RE.search(cand) or _PLATE_FALLBACK_RE.search(cand):
                 parsed.plate = cand
                 parsed.llm_extracted = True
@@ -1638,7 +1732,8 @@ class IssueAutomationService:
     _BATCH_MAX_ATTACHMENTS = 25
 
     async def analyze_batch(self, issue_external_id: int, attachments: list[Any],
-                            issue_title: str | None = None) -> list[dict[str, Any]]:
+                            issue_title: str | None = None,
+                            issue_description: str | None = None) -> list[dict[str, Any]]:
         """Per-object analysis of a batch/«общая» issue (one vehicle act per attachment).
 
         Returns a list of {file, plate, date, sheet_mileage_km, system_mileage_km,
@@ -1662,6 +1757,30 @@ class IssueAutomationService:
                 getattr(a, "attachment_file_name", None) or ""
             )
         ]
+        # Вложений нет, но в ТЕМЕ/ТЕЛЕ перечислено несколько ТС (Прихоперское ПО,
+        # 64455: «…В524ОА…, В191РХ…, А651НМ…»). Раньше такая заявка шла в одиночный
+        # automate и анализировался ТОЛЬКО первый номер. Разбираем КАЖДЫЙ номер:
+        # дата/пробег берём из общего разбора темы+тела (одна на всех, если своей нет).
+        if not extractable:
+            # Триггер по ТЕМЕ (как во фронте: countPlates(issue.subject)) — чтобы
+            # фронт и бэк согласованно выбирали пакетный путь. Дату/пробег берём
+            # из темы+тела ниже (parse_issue).
+            plates = extract_all_plates(issue_title or "")
+            if len(plates) >= 2:
+                p0 = self.parse_issue(issue_title, issue_description, None)
+                sem0 = asyncio.Semaphore(_BATCH_CONCURRENCY)
+
+                async def _one_subj(plate: str) -> dict[str, Any] | None:
+                    async with sem0:
+                        try:
+                            return await self._analyze_object(
+                                plate, p0.date, p0.sheet_mileage_km, None, "(из темы заявки)")
+                        except Exception:
+                            log.warning("analyze_batch_subject_failed", plate=plate)
+                            return None
+
+                chunk0 = await asyncio.gather(*(_one_subj(p) for p in plates))
+                return [r for r in chunk0 if r is not None]
         # Bound the OCR work so the request always returns in reasonable time.
         for a in extractable[: self._BATCH_MAX_ATTACHMENTS]:
             name = getattr(a, "attachment_file_name", None) or ""

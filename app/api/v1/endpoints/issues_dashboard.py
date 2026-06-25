@@ -6,6 +6,7 @@ import json
 import re
 import urllib.parse
 
+import httpx
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
@@ -28,6 +29,7 @@ from app.core.dependencies import (
     get_issue_automation_service,
     get_okdesk_service,
 )
+from app.core.okdesk.client import OkdeskAPIError
 from app.core.okdesk.models import Employee
 from app.core.okdesk.service import OkdeskService
 from app.core.services.cache_service import CacheService
@@ -650,7 +652,8 @@ async def automate_batch(
         note: str | None = None
         try:
             objects = await automation.analyze_batch(external_id, live.attachments,
-                                                     issue_title=live.title)
+                                                     issue_title=live.title,
+                                                     issue_description=live.description)
         except Exception:
             # analyze_batch is best-effort and shouldn't raise, but guard anyway
             # so a single bad attachment never turns into a 500 «Ошибка разбора».
@@ -800,7 +803,8 @@ async def compose_answer(
         else:
             live = await okdesk.get_issue(external_id)
             objects = await automation.analyze_batch(external_id, live.attachments,
-                                                     issue_title=live.title)
+                                                     issue_title=live.title,
+                                                     issue_description=live.description)
 
         # Best-effort: surface prior resolved answers for the same vehicles so
         # the aggregate stays consistent with what the client was told before.
@@ -1388,7 +1392,13 @@ async def resolve_issue(
         status_result = await okdesk.change_issue_status(external_id, status_code, comment=comment, comment_public=comment_public, delay_to=delay_to)
         status_changed = status_result.get("code") == status_code
 
-        await cache.refresh_single_issue(issue_id, external_id)
+        # Best-effort: статус УЖЕ изменён в Okdesk. Сбой обновления локального
+        # кэша не должен попасть в except OkdeskAPIError/HTTPStatusError ниже и
+        # ввести оператора в заблуждение («отклонено», хотя смена прошла).
+        try:
+            await cache.refresh_single_issue(issue_id, external_id)
+        except Exception:
+            log.warning("resolve_refresh_cache_failed", issue_id=issue_id)
 
         # Groundwork for AI training: record (telemetry → operator decision).
         # Best-effort, must never break the resolve action.
@@ -1417,6 +1427,16 @@ async def resolve_issue(
         }
     except HTTPException:
         raise
+    except OkdeskAPIError as exc:
+        # Okdesk отклонил операцию (валидация / недопустимый переход статуса).
+        # Показываем оператору реальную причину из тела ответа Okdesk.
+        log.warning("resolve_issue_okdesk_rejected", issue_id=issue_id, status=exc.status_code, body=exc.body)
+        raise HTTPException(status_code=400, detail=f"Okdesk отклонил смену статуса: {exc.body}")
+    except httpx.HTTPStatusError as exc:
+        # Прочие HTTP-ошибки от Okdesk (auth, not found, 5xx).
+        body = (exc.response.text or "")[:500] if exc.response is not None else ""
+        log.warning("resolve_issue_okdesk_http_error", issue_id=issue_id, status=exc.response.status_code if exc.response is not None else None, body=body)
+        raise HTTPException(status_code=502, detail=f"Okdesk вернул ошибку при смене статуса: {body}")
     except Exception:
         log.exception("resolve_issue_failed", issue_id=issue_id)
         raise HTTPException(status_code=500, detail="Failed to resolve issue")

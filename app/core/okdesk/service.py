@@ -113,8 +113,19 @@ class OkdeskService:
             "POST", f"issues/{issue_id}/statuses",
             json=payload,
         )
-        issue = Issue.model_validate(data)
-        return {"code": issue.status.code if issue.status else None, "name": issue.status.name if issue.status else None}
+        # Успешный ответ Okdesk не всегда совпадает с полной моделью Issue
+        # (на POST /statuses может прийти усечённый payload). Не падаем на
+        # валидации: пробуем достать код статуса напрямую из dict.
+        try:
+            issue = Issue.model_validate(data)
+            return {"code": issue.status.code if issue.status else None, "name": issue.status.name if issue.status else None}
+        except Exception:
+            status = data.get("status") if isinstance(data, dict) else None
+            if isinstance(status, dict):
+                return {"code": status.get("code"), "name": status.get("name")}
+            if isinstance(data, dict):
+                return {"code": data.get("code"), "name": data.get("name")}
+            return {"code": None, "name": None}
 
     async def list_issue_types(self) -> list[dict[str, Any]]:
         data = await self._client._request("GET", "issues/types")
