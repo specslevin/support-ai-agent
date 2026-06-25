@@ -162,6 +162,7 @@ export interface BatchObject {
   plate: string | null
   date: string | null
   sheet_mileage_km: number | null
+  declared_system_km?: number | null
   system_mileage_km: number | null
   address?: string | null
   flags: string[]

@@ -1068,7 +1068,7 @@ function BatchAnalysis({ issueId, issueTitle, onOpenExternal }: { issueId: numbe
               <thead className="text-muted/60">
                 <tr className="text-left">
                   <th className="py-1 pr-2">Гос.номер</th><th className="pr-2">Дата</th>
-                  <th className="pr-2">ПЛ</th><th className="pr-2">Система</th><th className="pr-2">Вердикт</th><th className="pr-1"></th><th></th>
+                  <th className="pr-2">ПЛ</th><th className="pr-2">ГЛОНАСС заявл.</th><th className="pr-2">По факту</th><th className="pr-2">Вердикт</th><th className="pr-1"></th><th></th>
                 </tr>
               </thead>
               <tbody>
@@ -1081,6 +1081,7 @@ function BatchAnalysis({ issueId, issueTitle, onOpenExternal }: { issueId: numbe
                       <td className="py-1 pr-2 font-mono">{o.plate ?? '—'}</td>
                       <td className="pr-2">{o.date ?? '—'}</td>
                       <td className="pr-2">{o.sheet_mileage_km ?? '—'}</td>
+                      <td className="pr-2">{o.declared_system_km ?? '—'}</td>
                       <td className="pr-2">{o.system_mileage_km ?? '—'}</td>
                       <td className="pr-2">
                         {isDemo ? (
