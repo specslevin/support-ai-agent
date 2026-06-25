@@ -816,6 +816,16 @@ function AutoAnalysis({ issueId, latestAnalysis, issueTitle, companyName }: { is
                   уверенность {conf}%{shown.needs_review ? ' · нужна проверка' : ''}
                 </span>
               </div>
+              {shown.needs_remote_diagnostics && (
+                <div className="flex items-start gap-1.5 bg-warning/10 border border-warning/30 rounded-lg px-3 py-2 text-[11px] text-warning leading-relaxed">
+                  <AlertTriangle size={13} className="shrink-0 mt-0.5" /> Требуется удалённая диагностика (клиент подтвердил питание)
+                </div>
+              )}
+              {shown.spec_vehicle && (
+                <div className="flex items-start gap-1.5 bg-warning/10 border border-warning/30 rounded-lg px-3 py-2 text-[11px] text-warning leading-relaxed">
+                  <AlertTriangle size={13} className="shrink-0 mt-0.5" /> Спецтехника — оценивать по факту работы
+                </div>
+              )}
               <p className="text-white/90 leading-relaxed bg-frame rounded-lg px-3 py-2.5 whitespace-pre-wrap">
                 {shown.draft_answer}
               </p>
@@ -1108,6 +1118,14 @@ function BatchAnalysis({ issueId, issueTitle, onOpenExternal }: { issueId: numbe
                             {isVerdictLoading && (
                               <span className="animate-spin text-muted shrink-0">↻</span>
                             )}
+                          </span>
+                        )}
+                        {o.spec_vehicle && (
+                          <span
+                            title="Спецтехника без км-пробега — оценивать по факту работы/моточасам"
+                            className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-full bg-warning/15 text-warning text-[9px] font-medium align-middle"
+                          >
+                            спецтехника
                           </span>
                         )}
                       </td>

@@ -123,6 +123,8 @@ export interface AutomationResult {
   draft_answer: string
   reasoning: string
   needs_review: boolean
+  needs_remote_diagnostics?: boolean
+  spec_vehicle?: boolean
   error: string | null
 }
 
@@ -169,6 +171,7 @@ export interface BatchObject {
   teleport_jumps: number
   verdict: string
   verdict_edited?: boolean
+  spec_vehicle?: boolean
 }
 
 export interface BatchResult {
