@@ -926,7 +926,7 @@ function ComposeAnswerButton({ issueId, hasExtractable, onUseDraft }: { issueId:
   )
 }
 
-function BatchAnalysis({ issueId, onOpenExternal }: { issueId: number; issueTitle?: string | null; companyName?: string | null; onOpenExternal: (extId: number) => void }) {
+function BatchAnalysis({ issueId, issueTitle, onOpenExternal }: { issueId: number; issueTitle?: string | null; companyName?: string | null; onOpenExternal: (extId: number) => void }) {
   const queryClient = useQueryClient()
   const isDemo = useAuthStore(s => s.user?.role === 'demo')
   const openTrack = useIssuesStore(s => s.openTrack)
@@ -955,13 +955,15 @@ function BatchAnalysis({ issueId, onOpenExternal }: { issueId: number; issueTitl
     staleTime: 5 * 60_000,
   })
   const extractable = attachments.filter(a => a.extractable)
+  // Заявка без вложений, но с >=2 гос.номерами в теме — разбираем по теме (бэк умеет automate_batch).
+  const multiInSubject = countPlates(issueTitle) >= 2
   // Подтягиваем сохранённый разбор при наличии хотя бы одного извлекаемого вложения
   // (дешёвый GET — вернёт данные только если разбор уже делали). Нужно, чтобы
   // распознать агрегатность по кешу даже без подсказки в теме/компании.
   const cachedQ = useQuery({
     queryKey: ['batch-cached', issueId],
     queryFn: () => api.getCachedBatch(issueId),
-    enabled: extractable.length >= 1,
+    enabled: extractable.length >= 1 || multiInSubject,
     staleTime: 5 * 60_000,
   })
   const cached = cachedQ.data?.cached ? cachedQ.data : null
@@ -996,7 +998,7 @@ function BatchAnalysis({ issueId, onOpenExternal }: { issueId: number; issueTitl
   // Кнопка «Разбор по объектам» доступна для любой заявки с >=1 извлекаемым вложением —
   // оператор может вручную запустить разбор (напр. 63317: 1 файл, ~40 ТС). Авто-запуск
   // OCR не делаем; таблица рисуется из результата run/кеша (>=2 объекта → мультиобъект).
-  if (extractable.length < 1) return null
+  if (extractable.length < 1 && !multiInSubject) return null
 
   const res = localBatch ?? run.data ?? (cached as BatchResult | null)
   const isCached = !localBatch && !run.data && !!cached

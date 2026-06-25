@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
-import { ChevronDown, ChevronLeft, ChevronRight, Check, X, Clock } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { ChevronDown, ChevronLeft, ChevronRight, Check, X, Clock, RefreshCw } from 'lucide-react'
 import { api } from '../api/client'
 import { useIssuesStore } from '../store/issuesStore'
 import { useAuthStore } from '../store/authStore'
@@ -20,6 +20,26 @@ export function useViewMode(): [ViewMode, (mode: ViewMode) => void] {
     setModeState(m)
   }
   return [mode, setMode]
+}
+
+const AUTO_REFRESH_OPTIONS: { value: number; label: string }[] = [
+  { value: 0, label: 'Выкл' },
+  { value: 1, label: '1 мин' },
+  { value: 5, label: '5 мин' },
+  { value: 10, label: '10 мин' },
+  { value: 15, label: '15 мин' },
+  { value: 30, label: '30 мин' },
+]
+
+function useAutoRefreshMin(): [number, (min: number) => void] {
+  const stored = Number(localStorage.getItem('autoRefreshMin'))
+  const initial = AUTO_REFRESH_OPTIONS.some(o => o.value === stored) ? stored : 5
+  const [min, setMinState] = useState<number>(initial)
+  const setMin = (m: number) => {
+    localStorage.setItem('autoRefreshMin', String(m))
+    setMinState(m)
+  }
+  return [min, setMin]
 }
 
 function formatDate(iso: string | null) {
@@ -241,6 +261,23 @@ interface IssuesListProps {
 
 export function IssuesList({ viewMode }: IssuesListProps) {
   const { status, company, search, assignee, issueId, page, limit, sort, order, selectedIssueId, highlightId, checkedIds, setPage, setLimit, selectIssue, toggleChecked, setChecked, clearChecked } = useIssuesStore()
+  const queryClient = useQueryClient()
+  const [autoRefreshMin, setAutoRefreshMin] = useAutoRefreshMin()
+  const [autoNotice, setAutoNotice] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (autoRefreshMin <= 0) return
+    const id = setInterval(async () => {
+      try {
+        const res = await api.refreshCache()
+        queryClient.invalidateQueries({ queryKey: ['issues'] })
+        setAutoNotice(`Авто-обновление: синхронизировано ${res.synced} заявок`)
+      } catch {
+        setAutoNotice('Авто-обновление: ошибка синхронизации')
+      }
+    }, autoRefreshMin * 60_000)
+    return () => clearInterval(id)
+  }, [autoRefreshMin, queryClient])
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ['issues', { status, company, search, assignee, issueId, page, limit, sort, order }],
@@ -274,6 +311,13 @@ export function IssuesList({ viewMode }: IssuesListProps) {
   return (
     <div className="flex flex-col h-full min-h-0">
       <BulkActionBar />
+
+      {autoNotice && (
+        <div className="flex items-center gap-2 px-4 py-2 bg-success/10 border-b border-success/30 text-xs text-success">
+          <Check size={14} /><span>{autoNotice}</span>
+          <button onClick={() => setAutoNotice(null)} className="ml-auto text-success/60 hover:text-success"><X size={14} /></button>
+        </div>
+      )}
 
       <div className="overflow-auto flex-1">
         {viewMode === 'table' ? (
@@ -373,6 +417,19 @@ export function IssuesList({ viewMode }: IssuesListProps) {
                 </button>
               ))}
             </div>
+            <label className="flex items-center gap-1.5">
+              <RefreshCw size={12} className={autoRefreshMin > 0 ? 'text-accent' : 'text-muted'} />
+              <span>Авто-обновление:</span>
+              <select
+                value={autoRefreshMin}
+                onChange={(e) => setAutoRefreshMin(Number(e.target.value))}
+                className="bg-card border border-border rounded px-1.5 py-0.5 text-xs text-white hover:border-accent/60 focus:border-accent outline-none cursor-pointer"
+              >
+                {AUTO_REFRESH_OPTIONS.map(o => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </label>
           </div>
           <div className="flex items-center gap-1">
             <button

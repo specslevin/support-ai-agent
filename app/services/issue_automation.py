@@ -230,6 +230,95 @@ def _split_acts(text: str) -> list[str]:
     return [p for p in parts if p.strip()]
 
 
+# Структурный акт неисправности (Волжское ПО, 64481): «Дата неисправности
+# <дата>», «Пробег по путевому листу (км) <N>», «Пробег в системе ГЛОНАСС (км) <N>».
+_FAULT_DATE_RE = re.compile(
+    r"дата\s+неисправности\D{0,30}?(\d{1,2}[.\-/]\d{1,2}[.\-/]\d{2,4})", re.I | re.S)
+_WAYBILL_KM_RE = re.compile(
+    r"путево\w+\s+лист\w*[^\d\n]{0,30}?(\d+(?:[.,]\d+)?)", re.I)
+# Одометр в теле-списке (Прихоперское ПО, 64455): «показаний одометра 60 км».
+_ODOMETER_KM_RE = re.compile(r"одометр\w*[^\d\n]{0,20}?(\d+(?:[.,]\d+)?)\s*км", re.I)
+
+
+def _iso_from_dmy(s: str | None) -> str | None:
+    """«18.06.2026»/«18.06.26» → ISO, или None."""
+    if not s:
+        return None
+    m = _DATE_SHORT_RE.search(s)
+    return _parse_date_short(m) if m else None
+
+
+def _parse_act_blocks(text: str) -> list[tuple[str, str | None, float | None]]:
+    """Структурный многоактный акт «Заявка №…Дата неисправности…Пробег по
+    путевому листу» (Волжское ПО, 64481): один «Акт №» = один ТС.
+
+    На каждый сегмент берём ОДИН гос.номер (дедуп латиница/кириллица через
+    _normalize_plate), дату неисправности (приоритет — маркер «Дата
+    неисправности», иначе первая дата сегмента) и пробег по путевому листу.
+    Дедуп по НОМЕРУ (один ТС = одна строка) — иначе тот же номер в латинице и
+    кириллице, либо повтор в шапке/таблице акта, давал дубли (64481: М203УО
+    дважды). Возвращает [(plate, date_iso|None, sheet_km|None)]."""
+    out: list[tuple[str, str | None, float | None]] = []
+    seen: set[str] = set()
+    for seg in _split_acts(text or ""):
+        plates = extract_all_plates(seg)
+        if not plates:
+            m = _PLATE_RE.search(seg)
+            if m:
+                plates = [_normalize_plate(m.group(0))]
+        if not plates or plates[0] in seen:
+            continue
+        plate = plates[0]
+        seen.add(plate)
+        fm = _FAULT_DATE_RE.search(seg)
+        date = _iso_from_dmy(fm.group(1)) if fm else None
+        if not date:
+            dm = _DATE_SHORT_RE.search(seg)
+            date = _parse_date_short(dm) if dm else None
+        wm = _WAYBILL_KM_RE.search(seg)
+        sheet: float | None = None
+        if wm:
+            try:
+                sheet = float(wm.group(1).replace(",", "."))
+            except ValueError:
+                sheet = None
+        out.append((plate, date, sheet))
+    return out
+
+
+def _parse_body_vehicles(text: str | None) -> list[tuple[str, str | None, float | None]]:
+    """Нумерованный тело-список «1. <номер> <модель>, … за <дата> … ГЛОНАСС X км,
+    … одометр Y км; 2. …» (Прихоперское ПО, 64455): у каждого ТС СВОЯ дата и свой
+    пробег по одометру (= путевой лист). Раньше всем ТС присваивалась одна дата
+    из общего разбора. Возвращает [(plate, date_iso|None, sheet_km|None)],
+    дедуп по (номер, дата)."""
+    if not text:
+        return []
+    body = _strip_html(text)
+    matches = list(_PLATE_RE.finditer(body))
+    out: list[tuple[str, str | None, float | None]] = []
+    seen: set[tuple[str, str | None]] = set()
+    for i, m in enumerate(matches):
+        plate = _normalize_plate(m.group(0))
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(body)
+        win = body[m.end(): end]
+        dm = _DATE_RE.search(win) or _DATE_SHORT_RE.search(win)
+        date = _iso_from_dmy(dm.group(0)) if dm else None
+        om = _ODOMETER_KM_RE.search(win)
+        sheet: float | None = None
+        if om:
+            try:
+                sheet = float(om.group(1).replace(",", "."))
+            except ValueError:
+                sheet = None
+        key = (plate, date)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((plate, date, sheet))
+    return out
+
+
 # Short date: DD.MM.YY  or  DD.MM.YYYY
 _DATE_SHORT_RE = re.compile(r"(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{2}(?:\d{2})?)")
 
@@ -378,25 +467,38 @@ def _detect_date_range(text: str) -> tuple[str, str] | None:
 # a number immediately followed by км/м. Used only to confirm a comment is
 # actually about a mileage discrepancy before we treat its date as analyzable.
 _COMMENT_MILEAGE_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(км|м)\b", re.I)
+# Признак, что комментарий вводит НОВУЮ дату неисправности БЕЗ числа пробега
+# (переоткрытие заявки): «За 24.06.2026 пробег не выгрузился», «возобновить
+# заявку», «не вышел на связь», «нет данных», «отсутствует трек/информация»
+# (64228 — заявку решили за 16.06, затем открыли заново с датой 24.06 без км).
+_COMMENT_FAULT_RE = re.compile(
+    r"не\s+выгруз|возобнов|не\s+вышел\s+на\s+связь|нет\s+данных|"
+    r"отсутству(?:ет|ют)\s+(?:трек|информац|данны)|пробег\s+не\b",
+    re.I,
+)
 
 
 def _scan_comment_for_new_date(comments: str | None, base_date: str | None,
                                ) -> str | None:
     """If a comment names a date DIFFERENT from ``base_date`` together with a
-    mileage figure (км/м), return that comment's date in ISO form.
+    mileage figure (км/м) OR a fault phrase, return that comment's date in ISO.
 
     Case 63301 (Нижнеломовское ПО): body fault is date A (already answered);
     later a client comment introduces date B («За 27.05.2026 пробег по путевому
-    листу 49 км по ССМ ГЛОНАСС 0 км») — a NEW date to analyze. We pick the most
-    recent such date so the analysis follows the freshest comment.
-    Bounded: returns at most one extra date. Never raises.
+    листу 49 км по ССМ ГЛОНАСС 0 км») — a NEW date to analyze.
+    Case 64228 (Северо-Восточное): заявка решена за 16.06, затем переоткрыта
+    комментарием «За 24.06.2026 пробег не выгрузился. Прошу возобновить заявку»
+    — новая дата БЕЗ числа пробега. Поэтому строку считаем «несущей дату», если
+    в ней есть либо число км/м, либо фраза-признак неисправности.
+    We pick the most recent such date so the analysis follows the freshest
+    comment. Bounded: returns at most one extra date. Never raises.
     """
     if not comments or not comments.strip():
         return None
     try:
         candidates: list[str] = []
         for line in comments.splitlines():
-            if not _COMMENT_MILEAGE_RE.search(line):
+            if not (_COMMENT_MILEAGE_RE.search(line) or _COMMENT_FAULT_RE.search(line)):
                 continue
             for dm in _DATE_RE.finditer(line):
                 try:
@@ -1767,19 +1869,29 @@ class IssueAutomationService:
             # из темы+тела ниже (parse_issue).
             plates = extract_all_plates(issue_title or "")
             if len(plates) >= 2:
+                # Каждый ТС — СВОЯ дата и свой пробег из нумерованного тела (64455).
+                # Если для номера тело не разобралось — общая дата/ПЛ из разбора
+                # темы+тела (fallback).
+                body_map = {p: (d, s) for p, d, s in _parse_body_vehicles(issue_description)}
                 p0 = self.parse_issue(issue_title, issue_description, None)
+                targets_subj = [
+                    (plate, *body_map.get(plate, (p0.date, p0.sheet_mileage_km)))
+                    for plate in plates
+                ]
                 sem0 = asyncio.Semaphore(_BATCH_CONCURRENCY)
 
-                async def _one_subj(plate: str) -> dict[str, Any] | None:
+                async def _one_subj(plate: str, pdate: str | None,
+                                    psheet: float | None) -> dict[str, Any] | None:
                     async with sem0:
                         try:
                             return await self._analyze_object(
-                                plate, p0.date, p0.sheet_mileage_km, None, "(из темы заявки)")
+                                plate, pdate, psheet, None, "(из текста заявки)")
                         except Exception:
                             log.warning("analyze_batch_subject_failed", plate=plate)
                             return None
 
-                chunk0 = await asyncio.gather(*(_one_subj(p) for p in plates))
+                chunk0 = await asyncio.gather(
+                    *(_one_subj(p, d, s) for p, d, s in targets_subj))
                 return [r for r in chunk0 if r is not None]
         # Bound the OCR work so the request always returns in reasonable time.
         for a in extractable[: self._BATCH_MAX_ATTACHMENTS]:
@@ -1841,6 +1953,18 @@ class IssueAutomationService:
                     base_date = p0.date
                     for plate in extract_all_plates(text):
                         targets.append((plate, p0.date, p0.sheet_mileage_km))
+            elif "дата неисправности" in text.lower() and "путево" in text.lower():
+                # Структурный многоактный акт (Волжское ПО, 64481): один «Акт №» =
+                # один ТС с датой неисправности и пробегом по путевому листу.
+                # Дедуп по номеру внутри _parse_act_blocks убирает дубли (тот же
+                # номер в латинице/кириллице/повтор в шапке акта).
+                for plate, pdate, psheet in _parse_act_blocks(text):
+                    targets.append((plate, pdate, psheet))
+                if not targets:
+                    p = self.parse_issue(name, "", None, extra_text=text)
+                    base_date = p.date
+                    for plate in extract_all_plates(text):
+                        targets.append((plate, p.date, p.sheet_mileage_km))
             else:
                 acts = _split_acts(text)
                 if len(acts) >= 2:
