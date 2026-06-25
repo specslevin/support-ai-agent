@@ -1034,7 +1034,7 @@ function BatchAnalysis({ issueId, issueTitle, onOpenExternal }: { issueId: numbe
         ) : res ? (
           <><RefreshCw size={14} /> Обновить разбор</>
         ) : (
-          <><Layers size={14} /> Разбор по вложениям</>
+          <><Layers size={14} /> Разбор заявки</>
         )}
       </button>
       {isCached && (
@@ -1380,9 +1380,9 @@ function AnalysisWizard({
   const useBatch = hasAttachments || multiInSubject
 
   const steps: { n: number; title: string }[] = [
-    { n: 1, title: 'Разбор' },
-    { n: 2, title: 'Анализ' },
-    { n: 3, title: 'Ответ' },
+    { n: 1, title: 'Разбор заявки' },
+    { n: 2, title: 'Анализ заявки' },
+    { n: 3, title: 'Составить ответ' },
   ]
 
   return (
@@ -1406,7 +1406,7 @@ function AnalysisWizard({
       <div className="space-y-2">
         <div className="flex items-center gap-2 text-xs font-semibold text-muted uppercase tracking-wide">
           <span className="flex items-center justify-center w-4 h-4 rounded-full border border-border text-[10px] text-white/80">1</span>
-          Разбор данных
+          Разбор заявки
         </div>
         {useBatch ? (
           <BatchAnalysis
@@ -1424,7 +1424,7 @@ function AnalysisWizard({
       <div className="space-y-2">
         <div className="flex items-center gap-2 text-xs font-semibold text-muted uppercase tracking-wide">
           <span className="flex items-center justify-center w-4 h-4 rounded-full border border-border text-[10px] text-white/80">2</span>
-          Анализ
+          Анализ заявки
         </div>
         {useBatch ? (
           <p className="text-xs text-muted leading-relaxed">
@@ -1445,7 +1445,7 @@ function AnalysisWizard({
       <div className="space-y-2">
         <div className="flex items-center gap-2 text-xs font-semibold text-muted uppercase tracking-wide">
           <span className="flex items-center justify-center w-4 h-4 rounded-full border border-border text-[10px] text-white/80">3</span>
-          Предложение ответа
+          Составить ответ
         </div>
         <ComposeAnswerButton
           issueId={issue.id}

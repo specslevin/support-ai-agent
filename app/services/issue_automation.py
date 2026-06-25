@@ -252,29 +252,32 @@ def _parse_act_blocks(text: str) -> list[tuple[str, str | None, float | None]]:
     """Структурный многоактный акт «Заявка №…Дата неисправности…Пробег по
     путевому листу» (Волжское ПО, 64481): один «Акт №» = один ТС.
 
-    На каждый сегмент берём ОДИН гос.номер (дедуп латиница/кириллица через
-    _normalize_plate), дату неисправности (приоритет — маркер «Дата
+    На каждый сегмент («Акт №») берём ОДИН гос.номер (дедуп латиница/кириллица
+    через _normalize_plate), дату неисправности (приоритет — маркер «Дата
     неисправности», иначе первая дата сегмента) и пробег по путевому листу.
-    Дедуп по НОМЕРУ (один ТС = одна строка) — иначе тот же номер в латинице и
-    кириллице, либо повтор в шапке/таблице акта, давал дубли (64481: М203УО
-    дважды). Возвращает [(plate, date_iso|None, sheet_km|None)]."""
+    Дедуп по ПАРЕ (номер, дата): один ТС может фигурировать в НЕСКОЛЬКИХ актах с
+    РАЗНЫМИ датами неисправности (64481: М203УО в актах №27 и №30, В836МН в №28 и
+    №29) — это отдельные записи. Отсекаем лишь повтор той же пары (латиница/
+    кириллица одного акта). Возвращает [(plate, date_iso|None, sheet_km|None)]."""
     out: list[tuple[str, str | None, float | None]] = []
-    seen: set[str] = set()
+    seen: set[tuple[str, str | None]] = set()
     for seg in _split_acts(text or ""):
         plates = extract_all_plates(seg)
         if not plates:
             m = _PLATE_RE.search(seg)
             if m:
                 plates = [_normalize_plate(m.group(0))]
-        if not plates or plates[0] in seen:
+        if not plates:
             continue
         plate = plates[0]
-        seen.add(plate)
         fm = _FAULT_DATE_RE.search(seg)
         date = _iso_from_dmy(fm.group(1)) if fm else None
         if not date:
             dm = _DATE_SHORT_RE.search(seg)
             date = _parse_date_short(dm) if dm else None
+        if (plate, date) in seen:
+            continue
+        seen.add((plate, date))
         wm = _WAYBILL_KM_RE.search(seg)
         sheet: float | None = None
         if wm:
@@ -1634,6 +1637,23 @@ class IssueAutomationService:
             # Plate parsed but no matching object in Geo: general path can still
             # understand the request and tell the operator what to verify.
             return await self._draft_general(title, description, attachments_text, sender, comments)
+
+        # Переоткрытие заявки: если комментарий вводит НОВУЮ дату неисправности
+        # (свежее даты тела), анализируем ИМЕННО ЕЁ — дата тела уже была отвечена
+        # (64228: решили за 16.06, затем открыли заново «За 24.06 пробег не
+        # выгрузился. Прошу возобновить заявку»). Делаем свежую дату ОСНОВНОЙ:
+        # переснимаем телеметрию, и весь дальнейший разбор идёт по ней.
+        _fresh = _scan_comment_for_new_date(comments, parsed.date)
+        if _fresh and _fresh != parsed.date:
+            try:
+                ct0 = await self.gather_telemetry(parsed.plate, _fresh)
+                if "object_not_found" not in ct0.flags:
+                    parsed.date = _fresh
+                    parsed.date_to = None
+                    telemetry = ct0
+            except Exception:  # pragma: no cover - best effort
+                log.warning("comment_date_reanalyze_failed",
+                            plate=parsed.plate, date=_fresh)
 
         hint = self._heuristic_category(parsed, telemetry)
         # RAG: fetch similar past resolved cases as few-shot examples. The
