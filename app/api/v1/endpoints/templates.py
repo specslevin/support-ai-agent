@@ -7,6 +7,7 @@ the legacy okdesk-console DB until ``POST /templates/migrate`` has been run.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from pathlib import Path
 
@@ -174,13 +175,63 @@ def _our_read_all_for_category() -> list[dict] | None:
 
 
 # --------------------------------------------------------------------------- #
+# Display helpers — dedup + default sort
+# --------------------------------------------------------------------------- #
+_WS_RE = re.compile(r"\s+")
+
+
+def _normalize_content(content: str | None) -> str:
+    """Normalize template body for duplicate detection: trim, collapse runs of
+    whitespace to a single space, lowercase. Empty/None -> ""."""
+    if not content:
+        return ""
+    return _WS_RE.sub(" ", content.strip()).lower()
+
+
+def _dedupe_templates(rows: list[dict]) -> list[dict]:
+    """Collapse templates with the same normalized content to one row, keeping
+    the instance with the highest ``usage_count`` (ties keep the first seen).
+    Rows with empty content are passed through untouched (never merged)."""
+    best: dict[str, dict] = {}
+    out: list[dict] = []
+    for r in rows:
+        key = _normalize_content(r.get("content"))
+        if not key:
+            out.append(r)
+            continue
+        prev = best.get(key)
+        if prev is None:
+            best[key] = r
+            out.append(r)
+        elif int(r.get("usage_count") or 0) > int(prev.get("usage_count") or 0):
+            # Replace the kept instance in-place to preserve overall order.
+            idx = out.index(prev)
+            out[idx] = r
+            best[key] = r
+    return out
+
+
+def _sort_by_usage(rows: list[dict]) -> list[dict]:
+    """Favorites first, then by usage_count desc, then name (stable, display-only)."""
+    return sorted(
+        rows,
+        key=lambda r: (
+            0 if r.get("is_favorite") else 1,
+            -int(r.get("usage_count") or 0),
+            (r.get("name") or "").lower(),
+        ),
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Public read helpers — prefer OUR DB, fall back to console DB
 # --------------------------------------------------------------------------- #
-def _read_templates() -> list[dict]:
+def _read_templates(dedupe: bool = True) -> list[dict]:
     ours = _our_read_templates()
-    if ours is not None:
-        return ours
-    return _console_read_templates()
+    rows = ours if ours is not None else _console_read_templates()
+    if dedupe:
+        rows = _dedupe_templates(rows)
+    return _sort_by_usage(rows)
 
 
 def _read_categories() -> list[dict]:
@@ -239,10 +290,17 @@ def fetch_templates_for_category(
 # Endpoints
 # --------------------------------------------------------------------------- #
 @router.get("")
-async def list_templates() -> list[dict]:
-    """Active templates (our DB, console fallback). Same shape the UI consumes."""
+async def list_templates(dedupe: bool = True) -> list[dict]:
+    """Active templates (our DB, console fallback). Same shape the UI consumes.
+
+    Sorted favorites-first, then by ``usage_count`` desc (popular on top).
+    ``dedupe=true`` (default) collapses templates with identical normalized
+    content to a single instance (the most-used one); pass ``dedupe=false`` to
+    get every row (e.g. for admin auditing). Dedup is display-only — nothing is
+    deleted from the DB.
+    """
     try:
-        return _read_templates()
+        return _read_templates(dedupe=dedupe)
     except Exception:
         log.exception("list_templates_failed")
         return []

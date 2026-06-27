@@ -16,7 +16,7 @@ import { useAuthStore } from '../store/authStore'
 import { StatusBadge } from './StatusBadge'
 import { EmployeeMenu, TypeMenu } from './pickers'
 import type { OkdeskDetail, Template, AutomationResult, Analysis, BatchResult } from '../types'
-import { extractPlaceholders, hasPlaceholders, renderTemplate, todayRu, isTodayPlaceholder } from '../lib/templates'
+import { extractPlaceholders, hasPlaceholders, renderTemplate, computedPlaceholderValue } from '../lib/templates'
 
 function formatDate(iso: string | null | undefined) {
   if (!iso) return null
@@ -273,6 +273,7 @@ const CATEGORY_COLORS: Record<string, string> = {
 export function TemplatePicker({ onSelect, onSelectFull, issueId }: { onSelect: (content: string) => void; onSelectFull?: (t: { name: string; content: string }) => void; issueId?: number }) {
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
+  const [catFilter, setCatFilter] = useState('')
   // Fill step for dynamic templates: holds the chosen template + per-placeholder values.
   const [fill, setFill] = useState<{ tpl: Template; values: Record<string, string> } | null>(null)
   const setLastTemplate = useIssuesStore(s => s.setLastTemplate)
@@ -293,11 +294,18 @@ export function TemplatePicker({ onSelect, onSelectFull, issueId }: { onSelect: 
     staleTime: 60_000,
   })
 
+  // Bump usage_count server-side (fire-and-forget; non-blocking, ignores errors).
+  const bumpUsage = (id: number | undefined) => {
+    if (typeof id !== 'number') return
+    api.incrementTemplateUsage(id).catch(() => {})
+  }
+
   // Emit the final content (already substituted) through the existing callbacks.
-  const emit = (name: string, content: string) => {
+  const emit = (tpl: Template, content: string) => {
+    bumpUsage(tpl.id)
     setLastTemplate(content)
     if (onSelectFull) {
-      onSelectFull({ name, content })
+      onSelectFull({ name: tpl.name, content })
     } else {
       onSelect(content)
     }
@@ -314,8 +322,9 @@ export function TemplatePicker({ onSelect, onSelectFull, issueId }: { onSelect: 
       for (const [k, v] of Object.entries(sugg)) suggLower[k.toLowerCase()] = v
       const init: Record<string, string> = {}
       for (const name of extractPlaceholders(t.content)) {
-        if (isTodayPlaceholder(name)) {
-          init[name] = todayRu()
+        const computed = computedPlaceholderValue(name)
+        if (computed !== null) {
+          init[name] = computed
         } else {
           const hit = suggLower[name.trim().toLowerCase()]
           init[name] = hit ?? ''
@@ -324,32 +333,35 @@ export function TemplatePicker({ onSelect, onSelectFull, issueId }: { onSelect: 
       setFill({ tpl: t, values: init })
       return
     }
-    emit(t.name, t.content)
+    emit(t, t.content)
   }
 
-  // Categories ordered by their most-used template; items within by usage desc.
-  const grouped = useMemo(() => {
-    const filtered = search
-      ? templates.filter(t =>
-          t.name.toLowerCase().includes(search.toLowerCase()) ||
-          t.content.toLowerCase().includes(search.toLowerCase())
-        )
-      : templates
+  // Distinct category names present (for the optional filter dropdown).
+  const categoryNames = useMemo(() => {
+    const set = new Set<string>()
+    for (const t of templates) if (t.category_name) set.add(t.category_name)
+    return [...set].sort((a, b) => a.localeCompare(b))
+  }, [templates])
 
-    const byCat = filtered.reduce<Record<string, Template[]>>((acc, t) => {
-      const key = t.category_name ?? 'Другое'
-      ;(acc[key] ??= []).push(t)
-      return acc
-    }, {})
-    for (const items of Object.values(byCat)) {
-      items.sort((a, b) => b.usage_count - a.usage_count)
-    }
-    return Object.fromEntries(
-      Object.entries(byCat).sort(
-        ([, a], [, b]) => (b[0]?.usage_count ?? 0) - (a[0]?.usage_count ?? 0),
-      ),
-    )
-  }, [templates, search])
+  // Flat list: optional text search + optional category filter, favorites first
+  // then usage_count desc. No mandatory category grouping.
+  const visible = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    return templates
+      .filter(t => {
+        if (catFilter && t.category_name !== catFilter) return false
+        if (!q) return true
+        return (
+          t.name.toLowerCase().includes(q) ||
+          t.content.toLowerCase().includes(q)
+        )
+      })
+      .sort(
+        (a, b) =>
+          Number(b.is_favorite) - Number(a.is_favorite) ||
+          b.usage_count - a.usage_count,
+      )
+  }, [templates, search, catFilter])
 
   if (!open) {
     return (
@@ -406,7 +418,7 @@ export function TemplatePicker({ onSelect, onSelectFull, issueId }: { onSelect: 
               Назад
             </button>
             <button
-              onClick={() => emit(fill.tpl.name, renderTemplate(fill.tpl.content, fill.values))}
+              onClick={() => emit(fill.tpl, renderTemplate(fill.tpl.content, fill.values))}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-accent text-black rounded-lg hover:opacity-90 transition-opacity"
             >
               <Check size={14} /> Вставить
@@ -425,50 +437,61 @@ export function TemplatePicker({ onSelect, onSelectFull, issueId }: { onSelect: 
           <span className="text-sm font-semibold">Шаблоны ответов</span>
           <button onClick={() => setOpen(false)} className="text-muted hover:text-white"><X size={18} /></button>
         </div>
-        <div className="px-4 py-2 border-b border-border shrink-0">
+        <div className="px-4 py-2 border-b border-border shrink-0 flex items-center gap-2">
           <input
             autoFocus
             type="text"
             placeholder="Поиск..."
             value={search}
             onChange={e => setSearch(e.target.value)}
-            className="w-full bg-frame border border-border rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:border-accent"
+            className="flex-1 bg-frame border border-border rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:border-accent"
           />
+          {categoryNames.length > 0 && (
+            <select
+              value={catFilter}
+              onChange={e => setCatFilter(e.target.value)}
+              title="Фильтр по категории"
+              className="shrink-0 max-w-[40%] bg-frame border border-border rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-accent"
+            >
+              <option value="">Все категории</option>
+              {categoryNames.map(c => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+          )}
         </div>
         <div className="overflow-y-auto flex-1 py-2">
-          {Object.keys(grouped).length === 0 && (
+          {visible.length === 0 && (
             <p className="text-xs text-muted px-4 py-3">Шаблоны не найдены</p>
           )}
-          {Object.entries(grouped).map(([cat, items]) => {
-            const color = CATEGORY_COLORS[items[0]?.category_color ?? ''] ?? 'text-gray-400'
+          {visible.map(t => {
+            const catColor = CATEGORY_COLORS[t.category_color ?? ''] ?? 'text-gray-400'
             return (
-              <div key={cat}>
-                <div className={`px-4 py-1 text-[10px] uppercase tracking-widest font-semibold ${color}`}>{cat}</div>
-                {items.map(t => (
-                  <button
-                    key={t.id}
-                    onClick={() => handleSelect(t)}
-                    className="w-full text-left px-4 py-2 hover:bg-white/5 transition-colors"
-                  >
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-white flex-1">{t.name}</span>
-                      {(t.is_dynamic || hasPlaceholders(t.content)) && (
-                        <span
-                          title="Динамический шаблон — запросит значения"
-                          className="inline-flex items-center gap-0.5 text-[9px] uppercase tracking-wide text-accent bg-accent/10 border border-accent/30 rounded px-1 py-px"
-                        >
-                          <Sparkles size={9} /> дин.
-                        </span>
-                      )}
-                      {t.is_favorite && <Star size={11} className="text-warning fill-warning" />}
-                      {t.usage_count > 0 && (
-                        <span className="text-[10px] text-muted">{t.usage_count}</span>
-                      )}
-                    </div>
-                    <p className="text-[11px] text-muted mt-0.5 line-clamp-2 leading-relaxed">{t.content}</p>
-                  </button>
-                ))}
-              </div>
+              <button
+                key={t.id}
+                onClick={() => handleSelect(t)}
+                className="w-full text-left px-4 py-2 hover:bg-white/5 transition-colors"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-white flex-1 truncate">{t.name}</span>
+                  {t.category_name && (
+                    <span className={`text-[9px] uppercase tracking-wide ${catColor} shrink-0`}>{t.category_name}</span>
+                  )}
+                  {(t.is_dynamic || hasPlaceholders(t.content)) && (
+                    <span
+                      title="Динамический шаблон — запросит значения"
+                      className="inline-flex items-center gap-0.5 text-[9px] uppercase tracking-wide text-accent bg-accent/10 border border-accent/30 rounded px-1 py-px shrink-0"
+                    >
+                      <Sparkles size={9} /> дин.
+                    </span>
+                  )}
+                  {t.is_favorite && <Star size={11} className="text-warning fill-warning shrink-0" />}
+                  {t.usage_count > 0 && (
+                    <span className="text-[10px] text-muted shrink-0">{t.usage_count}</span>
+                  )}
+                </div>
+                <p className="text-[11px] text-muted mt-0.5 line-clamp-2 leading-relaxed">{t.content}</p>
+              </button>
             )
           })}
         </div>

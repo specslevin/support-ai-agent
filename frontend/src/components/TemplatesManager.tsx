@@ -5,7 +5,7 @@ import {
 } from 'lucide-react'
 import { api, authApi } from '../api/client'
 import { useAuthStore } from '../store/authStore'
-import type { Template, TemplateCreate } from '../types'
+import type { TemplateCreate } from '../types'
 import { hasPlaceholders } from '../lib/templates'
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -18,7 +18,7 @@ const CATEGORY_COLORS: Record<string, string> = {
   dark: 'text-gray-500',
 }
 
-const DYN_HINT = 'Используйте [плейсхолдеры] в тексте — при вставке шаблон запросит их значения.'
+const DYN_HINT = 'Используйте [плейсхолдеры] в тексте — при вставке шаблон запросит их значения. [сегодня], [вчера], [завтра] подставляются автоматически (МСК).'
 
 type FormState = {
   id: number | null
@@ -370,6 +370,7 @@ export function TemplatesManager() {
   const isDemo = useAuthStore(s => s.user?.role === 'demo')
   const isAdmin = useAuthStore(s => s.user?.role === 'admin')
   const [search, setSearch] = useState('')
+  const [catFilter, setCatFilter] = useState('')
   const [form, setForm] = useState<FormState | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null)
 
@@ -392,22 +393,24 @@ export function TemplatesManager() {
     onSuccess: invalidate,
   })
 
-  const grouped = useMemo(() => {
-    const filtered = search
-      ? templates.filter(t =>
-          t.name.toLowerCase().includes(search.toLowerCase()) ||
-          t.content.toLowerCase().includes(search.toLowerCase()))
-      : templates
-    const byCat = filtered.reduce<Record<string, Template[]>>((acc, t) => {
-      const key = t.category_name ?? 'Без категории'
-      ;(acc[key] ??= []).push(t)
-      return acc
-    }, {})
-    for (const items of Object.values(byCat)) {
-      items.sort((a, b) => Number(b.is_favorite) - Number(a.is_favorite) || b.usage_count - a.usage_count)
-    }
-    return Object.entries(byCat).sort(([a], [b]) => a.localeCompare(b))
-  }, [templates, search])
+  const categoryNames = useMemo(() => {
+    const set = new Set<string>()
+    for (const t of templates) if (t.category_name) set.add(t.category_name)
+    return [...set].sort((a, b) => a.localeCompare(b))
+  }, [templates])
+
+  // Flat list, favorites first then usage_count desc (popular on top). Category
+  // is a tag/filter, not a mandatory grouping divider.
+  const visible = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    return templates
+      .filter(t => {
+        if (catFilter && t.category_name !== catFilter) return false
+        if (!q) return true
+        return t.name.toLowerCase().includes(q) || t.content.toLowerCase().includes(q)
+      })
+      .sort((a, b) => Number(b.is_favorite) - Number(a.is_favorite) || b.usage_count - a.usage_count)
+  }, [templates, search, catFilter])
 
   return (
     <div className="flex-1 min-h-0 overflow-y-auto px-6 py-5">
@@ -427,91 +430,102 @@ export function TemplatesManager() {
           </button>
         </div>
 
-        <div className="relative">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
-          <input
-            type="text"
-            placeholder="Поиск по названию или тексту..."
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            className="w-full bg-frame border border-border rounded-lg pl-9 pr-3 py-2 text-xs focus:outline-none focus:border-accent"
-          />
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+            <input
+              type="text"
+              placeholder="Поиск по названию или тексту..."
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              className="w-full bg-frame border border-border rounded-lg pl-9 pr-3 py-2 text-xs focus:outline-none focus:border-accent"
+            />
+          </div>
+          {categoryNames.length > 0 && (
+            <select
+              value={catFilter}
+              onChange={e => setCatFilter(e.target.value)}
+              title="Фильтр по категории"
+              className="shrink-0 max-w-[40%] bg-frame border border-border rounded-lg px-2 py-2 text-xs focus:outline-none focus:border-accent"
+            >
+              <option value="">Все категории</option>
+              {categoryNames.map(c => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+          )}
         </div>
 
         {isLoading && (
           <p className="flex items-center gap-2 text-xs text-muted"><Loader2 size={14} className="animate-spin" /> Загрузка…</p>
         )}
-        {!isLoading && grouped.length === 0 && (
+        {!isLoading && visible.length === 0 && (
           <p className="text-xs text-muted py-6 text-center">Шаблоны не найдены</p>
         )}
 
-        <div className="space-y-5">
-          {grouped.map(([cat, items]) => {
-            const color = CATEGORY_COLORS[items[0]?.category_color ?? ''] ?? 'text-gray-400'
+        <div className="space-y-2">
+          {visible.map(t => {
+            const isDyn = t.is_dynamic || hasPlaceholders(t.content)
+            const catColor = CATEGORY_COLORS[t.category_color ?? ''] ?? 'text-gray-400'
             return (
-              <div key={cat} className="space-y-2">
-                <div className={`text-[10px] uppercase tracking-widest font-semibold ${color}`}>{cat}</div>
-                {items.map(t => {
-                  const isDyn = t.is_dynamic || hasPlaceholders(t.content)
-                  return (
-                    <div key={t.id} className="bg-card border border-border rounded-lg px-3 py-2.5 space-y-1.5">
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => !isDemo && favMut.mutate({ id: t.id, value: !t.is_favorite })}
-                          title={isDemo ? 'Недоступно в демо-режиме' : (t.is_favorite ? 'Убрать из избранного' : 'В избранное')}
-                          disabled={isDemo}
-                          className={`shrink-0 text-muted hover:text-warning transition-colors ${isDemo ? 'cursor-not-allowed' : ''}`}
-                        >
-                          <Star size={14} className={t.is_favorite ? 'text-warning fill-warning' : ''} />
-                        </button>
-                        <span className="text-xs text-white font-medium flex-1 truncate">{t.name}</span>
-                        {isDyn && (
-                          <span
-                            title="Динамический шаблон — запросит значения плейсхолдеров"
-                            className="inline-flex items-center gap-0.5 text-[9px] uppercase tracking-wide text-accent bg-accent/10 border border-accent/30 rounded px-1 py-px"
-                          >
-                            <Sparkles size={9} /> дин.
-                          </span>
-                        )}
-                        {t.usage_count > 0 && <span className="text-[10px] text-muted shrink-0">{t.usage_count}</span>}
-                        {!isDemo && (
-                          <button
-                            onClick={() => setForm({
-                              id: t.id, name: t.name, content: t.content,
-                              category_id: t.category_id ?? null,
-                              is_dynamic: t.is_dynamic, is_favorite: t.is_favorite,
-                            })}
-                            title="Редактировать"
-                            className="shrink-0 text-muted hover:text-accent transition-colors"
-                          >
-                            <Pencil size={13} />
-                          </button>
-                        )}
-                        {!isDemo && (confirmDelete === t.id ? (
-                          <span className="flex items-center gap-1 shrink-0">
-                            <button
-                              onClick={() => deleteMut.mutate(t.id)}
-                              disabled={deleteMut.isPending}
-                              className="text-[10px] text-orange-400 hover:underline"
-                            >
-                              Удалить?
-                            </button>
-                            <button onClick={() => setConfirmDelete(null)} className="text-muted hover:text-white"><X size={12} /></button>
-                          </span>
-                        ) : (
-                          <button
-                            onClick={() => setConfirmDelete(t.id)}
-                            title="Удалить"
-                            className="shrink-0 text-muted hover:text-orange-400 transition-colors"
-                          >
-                            <Trash2 size={13} />
-                          </button>
-                        ))}
-                      </div>
-                      <p className="text-[11px] text-muted line-clamp-2 leading-relaxed whitespace-pre-wrap">{t.content}</p>
-                    </div>
-                  )
-                })}
+              <div key={t.id} className="bg-card border border-border rounded-lg px-3 py-2.5 space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => !isDemo && favMut.mutate({ id: t.id, value: !t.is_favorite })}
+                    title={isDemo ? 'Недоступно в демо-режиме' : (t.is_favorite ? 'Убрать из избранного' : 'В избранное')}
+                    disabled={isDemo}
+                    className={`shrink-0 text-muted hover:text-warning transition-colors ${isDemo ? 'cursor-not-allowed' : ''}`}
+                  >
+                    <Star size={14} className={t.is_favorite ? 'text-warning fill-warning' : ''} />
+                  </button>
+                  <span className="text-xs text-white font-medium flex-1 truncate">{t.name}</span>
+                  {t.category_name && (
+                    <span className={`text-[9px] uppercase tracking-wide ${catColor} shrink-0`}>{t.category_name}</span>
+                  )}
+                  {isDyn && (
+                    <span
+                      title="Динамический шаблон — запросит значения плейсхолдеров"
+                      className="inline-flex items-center gap-0.5 text-[9px] uppercase tracking-wide text-accent bg-accent/10 border border-accent/30 rounded px-1 py-px shrink-0"
+                    >
+                      <Sparkles size={9} /> дин.
+                    </span>
+                  )}
+                  {t.usage_count > 0 && <span className="text-[10px] text-muted shrink-0">{t.usage_count}</span>}
+                  {!isDemo && (
+                    <button
+                      onClick={() => setForm({
+                        id: t.id, name: t.name, content: t.content,
+                        category_id: t.category_id ?? null,
+                        is_dynamic: t.is_dynamic, is_favorite: t.is_favorite,
+                      })}
+                      title="Редактировать"
+                      className="shrink-0 text-muted hover:text-accent transition-colors"
+                    >
+                      <Pencil size={13} />
+                    </button>
+                  )}
+                  {!isDemo && (confirmDelete === t.id ? (
+                    <span className="flex items-center gap-1 shrink-0">
+                      <button
+                        onClick={() => deleteMut.mutate(t.id)}
+                        disabled={deleteMut.isPending}
+                        className="text-[10px] text-orange-400 hover:underline"
+                      >
+                        Удалить?
+                      </button>
+                      <button onClick={() => setConfirmDelete(null)} className="text-muted hover:text-white"><X size={12} /></button>
+                    </span>
+                  ) : (
+                    <button
+                      onClick={() => setConfirmDelete(t.id)}
+                      title="Удалить"
+                      className="shrink-0 text-muted hover:text-orange-400 transition-colors"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[11px] text-muted line-clamp-2 leading-relaxed whitespace-pre-wrap">{t.content}</p>
               </div>
             )
           })}

@@ -201,6 +201,10 @@ export const api = {
     return http.delete(`/templates/${id}`).then(r => r.data)
   },
 
+  incrementTemplateUsage(id: number): Promise<{ ok: boolean; usage_count: number }> {
+    return http.post(`/templates/${id}/usage`).then(r => r.data)
+  },
+
   createTemplateCategory(name: string, color?: string): Promise<TemplateCategory> {
     return http.post('/templates/categories', { name, ...(color ? { color } : {}) }).then(r => r.data)
   },
