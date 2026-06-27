@@ -11,7 +11,7 @@ import structlog
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.db.models import AnalysisCache, IssueCache, Object, Company, TrainingSample, ResultCache
+from app.core.db.models import AnalysisCache, IssueCache, Object, Company, TrainingSample, ResultCache, AiFeedback
 from app.core.okdesk.service import OkdeskService
 
 log = structlog.get_logger(__name__)
@@ -415,6 +415,48 @@ class CacheService:
         except (ValueError, TypeError):
             return None
         return {"data": data, "created_at": row.created_at.isoformat()}
+
+    async def save_ai_feedback(self, external_id: int, rating: str,
+                               error_kind: str | None = None, comment: str | None = None,
+                               ai_category: str | None = None,
+                               correct_category: str | None = None,
+                               created_by: str | None = None) -> dict[str, Any]:
+        """Сохранить оценку оператора качества ИИ-разбора (новая запись на каждую оценку)."""
+        row = AiFeedback(
+            issue_external_id=external_id, rating=rating, error_kind=error_kind,
+            comment=comment, ai_category=ai_category, correct_category=correct_category,
+            created_by=created_by,
+        )
+        self.db.add(row)
+        await self.db.commit()
+        return {"id": row.id, "rating": rating}
+
+    async def get_latest_ai_feedback(self, external_id: int) -> dict[str, Any] | None:
+        res = await self.db.execute(
+            select(AiFeedback).where(AiFeedback.issue_external_id == external_id)
+            .order_by(AiFeedback.created_at.desc())
+        )
+        row = res.scalars().first()
+        if not row:
+            return None
+        return {
+            "rating": row.rating, "error_kind": row.error_kind, "comment": row.comment,
+            "ai_category": row.ai_category, "correct_category": row.correct_category,
+            "created_by": row.created_by, "created_at": row.created_at.isoformat(),
+        }
+
+    async def list_ai_feedback(self, rating: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+        """Список оценок (для экрана «хорошо разобрано / с ошибками»), новые сверху."""
+        stmt = select(AiFeedback).order_by(AiFeedback.created_at.desc()).limit(limit)
+        if rating in ("good", "bad"):
+            stmt = stmt.where(AiFeedback.rating == rating)
+        rows = list((await self.db.execute(stmt)).scalars().all())
+        return [{
+            "issue_external_id": r.issue_external_id, "rating": r.rating,
+            "error_kind": r.error_kind, "comment": r.comment, "ai_category": r.ai_category,
+            "correct_category": r.correct_category, "created_by": r.created_by,
+            "created_at": r.created_at.isoformat(),
+        } for r in rows]
 
     async def find_similar_resolved(
         self,

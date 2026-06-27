@@ -5,7 +5,7 @@ import {
   Lightbulb, Map, FilePlus, ExternalLink, Pause, Send,
   Layers, Power, RadioTower, Scissors, HelpCircle, FileText, Sheet,
   Image as ImageIcon, Paperclip, PanelRightClose, Info, MessageSquare, Sparkles, Wand2,
-  Loader2, Lock, User, Headset, Play,
+  Loader2, Lock, User, Headset, Play, ThumbsUp, ThumbsDown,
   type LucideIcon,
 } from 'lucide-react'
 import { api } from '../api/client'
@@ -1505,6 +1505,177 @@ function AnalysisWizard({
   )
 }
 
+const AI_ERROR_KINDS: { value: import('../types').AiFeedbackErrorKind; label: string }[] = [
+  { value: 'wrong_verdict', label: 'Неверный вердикт' },
+  { value: 'wrong_plate', label: 'Неверный гос.номер' },
+  { value: 'wrong_date', label: 'Неверная дата' },
+  { value: 'wrong_mileage', label: 'Неверный пробег' },
+  { value: 'other', label: 'Другое' },
+]
+
+const AI_ERROR_KIND_LABEL: Record<string, string> = Object.fromEntries(
+  AI_ERROR_KINDS.map(k => [k.value, k.label]),
+)
+
+/**
+ * Оценка качества ИИ-разбора заявки (петля обратной связи).
+ * Показывает текущую оценку (если есть) и форму для её выставления/изменения.
+ */
+function AiFeedbackPanel({ issueId }: { issueId: number }) {
+  const queryClient = useQueryClient()
+  const isDemo = useAuthStore(s => s.user?.role === 'demo')
+  const [showBadForm, setShowBadForm] = useState(false)
+  const [errorKind, setErrorKind] = useState<import('../types').AiFeedbackErrorKind>('wrong_verdict')
+  const [fbComment, setFbComment] = useState('')
+  const [correctCategory, setCorrectCategory] = useState('')
+
+  useEffect(() => {
+    setShowBadForm(false)
+    setErrorKind('wrong_verdict')
+    setFbComment('')
+    setCorrectCategory('')
+  }, [issueId])
+
+  const { data: fbData } = useQuery({
+    queryKey: ['ai-feedback', issueId],
+    queryFn: () => api.getAiFeedback(issueId),
+    enabled: issueId != null,
+    staleTime: 30_000,
+  })
+  const feedback = fbData?.feedback ?? null
+
+  const submit = useMutation({
+    mutationFn: (body: import('../types').AiFeedbackBody) => api.addAiFeedback(issueId, body),
+    onSuccess: () => {
+      setShowBadForm(false)
+      queryClient.invalidateQueries({ queryKey: ['ai-feedback', issueId] })
+    },
+  })
+
+  const saveGood = () => submit.mutate({ rating: 'good' })
+  const saveBad = () =>
+    submit.mutate({
+      rating: 'bad',
+      error_kind: errorKind,
+      ...(fbComment.trim() ? { comment: fbComment.trim() } : {}),
+      ...(correctCategory.trim() ? { correct_category: correctCategory.trim() } : {}),
+    })
+
+  return (
+    <div className="space-y-2 pt-3 border-t border-border">
+      <div className="flex items-center gap-2 text-xs font-semibold text-muted uppercase tracking-wide">
+        <Sparkles size={12} className="text-accent" /> Оценка разбора
+      </div>
+
+      {/* Текущая оценка */}
+      {feedback && (
+        <div className="bg-frame rounded-lg px-3 py-2 space-y-1 text-[11px]">
+          <div className="flex items-center gap-2">
+            {feedback.rating === 'good' ? (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-green-500/15 text-green-400 font-medium">
+                <Check size={11} /> верно
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-orange-500/15 text-orange-400 font-medium">
+                <X size={11} /> с ошибкой
+              </span>
+            )}
+            {feedback.rating === 'bad' && feedback.error_kind && (
+              <span className="text-warning">{AI_ERROR_KIND_LABEL[feedback.error_kind] ?? feedback.error_kind}</span>
+            )}
+          </div>
+          {feedback.comment && (
+            <p className="text-white/80 leading-relaxed whitespace-pre-wrap">{feedback.comment}</p>
+          )}
+          {feedback.correct_category && (
+            <p className="text-muted">Правильная категория: <span className="text-white/80">{feedback.correct_category}</span></p>
+          )}
+          {(feedback.created_by || feedback.created_at) && (
+            <p className="text-muted/70">
+              {feedback.created_by ?? '—'}{feedback.created_at ? `, ${formatDate(feedback.created_at)}` : ''}
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Кнопки оценки */}
+      <div className="flex gap-2">
+        <button
+          onClick={saveGood}
+          disabled={submit.isPending || isDemo}
+          title={isDemo ? 'Недоступно в демо-режиме' : 'Разобрано верно'}
+          className={`flex items-center justify-center gap-1.5 flex-1 text-xs font-semibold py-1.5 rounded-lg border transition-colors disabled:opacity-40 ${
+            feedback?.rating === 'good'
+              ? 'border-green-500/60 bg-green-500/10 text-green-400'
+              : 'border-border text-muted hover:text-green-400 hover:border-green-500/50'
+          } ${isDemo ? 'cursor-not-allowed' : ''}`}
+        >
+          <ThumbsUp size={14} /> Разобрано верно
+        </button>
+        <button
+          onClick={() => setShowBadForm(v => !v)}
+          disabled={submit.isPending || isDemo}
+          title={isDemo ? 'Недоступно в демо-режиме' : 'Ошибка разбора'}
+          className={`flex items-center justify-center gap-1.5 flex-1 text-xs font-semibold py-1.5 rounded-lg border transition-colors disabled:opacity-40 ${
+            feedback?.rating === 'bad' || showBadForm
+              ? 'border-orange-500/60 bg-orange-500/10 text-orange-400'
+              : 'border-border text-muted hover:text-orange-400 hover:border-orange-500/50'
+          } ${isDemo ? 'cursor-not-allowed' : ''}`}
+        >
+          <ThumbsDown size={14} /> Ошибка разбора
+        </button>
+      </div>
+
+      {/* Форма «ошибка разбора» */}
+      {showBadForm && !isDemo && (
+        <div className="bg-frame border border-border rounded-lg px-3 py-2.5 space-y-2">
+          <div>
+            <label className="block text-[10px] uppercase tracking-widest text-muted/60 mb-1">Тип ошибки</label>
+            <select
+              value={errorKind}
+              onChange={e => setErrorKind(e.target.value as import('../types').AiFeedbackErrorKind)}
+              className="w-full bg-card border border-border rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-accent"
+            >
+              {AI_ERROR_KINDS.map(k => (
+                <option key={k.value} value={k.value} className="bg-card text-primary">{k.label}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-[10px] uppercase tracking-widest text-muted/60 mb-1">Комментарий</label>
+            <textarea
+              value={fbComment}
+              onChange={e => setFbComment(e.target.value)}
+              rows={2}
+              placeholder="Что именно не так…"
+              className="w-full bg-card border border-border rounded-lg px-2 py-1.5 text-xs resize-none focus:outline-none focus:border-accent leading-relaxed"
+            />
+          </div>
+          <div>
+            <label className="block text-[10px] uppercase tracking-widest text-muted/60 mb-1">Правильная категория (необязательно)</label>
+            <input
+              type="text"
+              value={correctCategory}
+              onChange={e => setCorrectCategory(e.target.value)}
+              placeholder="напр. Глушение"
+              className="w-full bg-card border border-border rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-accent"
+            />
+          </div>
+          <button
+            onClick={saveBad}
+            disabled={submit.isPending}
+            className={`flex items-center justify-center gap-1.5 w-full bg-orange-600/90 hover:bg-orange-500 text-white text-xs font-semibold py-1.5 rounded-lg transition-colors disabled:opacity-50 ${submit.isPending ? 'animate-pulse cursor-wait' : ''}`}
+          >
+            {submit.isPending ? <Working label="Сохраняю…" /> : <><Check size={14} /> Сохранить</>}
+          </button>
+        </div>
+      )}
+
+      {submit.isError && <p className="text-xs text-orange-400">Не удалось сохранить оценку. Попробуйте снова.</p>}
+    </div>
+  )
+}
+
 export function IssueDetail() {
   const { selectedIssueId, selectIssue, trackOpen, setTrackOpen, openTrack, lastTemplate } = useIssuesStore()
   const isDemo = useAuthStore(s => s.user?.role === 'demo')
@@ -1698,6 +1869,7 @@ export function IssueDetail() {
             onUseDraft={(text) => { setComment(text); setCommentPublic(true) }}
             onOpenExternal={openExternal}
           />
+          <AiFeedbackPanel issueId={issue.id} />
         </Block>
 
         {/* ── 4. Комментарии ───────────────────────────────────── */}

@@ -1177,9 +1177,16 @@ class IssueAutomationService:
         # на стоянке), а не глушение. Иначе припаркованное авто с потерей питания
         # среди дня ложно помечалось «Глушение» (64275). Телепорты (явный спуфинг)
         # остаются признаком глушения независимо от движения (``moving`` выше).
+        # Пороги откалиброваны на 159 «глушений» vs 58 «не-глушений» из training_samples
+        # (recall 73%→78%, ложные срабатывания не растут, ~10%):
+        #  • implied-speed >500 при teleport_jumps>=1 (было >=2) — у не-глушений
+        #    max_implied_kmh>500 практически не встречается, ловим +7 пропущенных;
+        #  • всплески скорости speed_spike_count>=100 (порог именно 100: на 90
+        #    стоит пограничное не-глушение) — ещё +1 без ложных.
         jamming = (
             f.teleport_jumps >= 5
-            or (f.max_implied_kmh is not None and f.max_implied_kmh > 500 and f.teleport_jumps >= 2)
+            or (f.max_implied_kmh is not None and f.max_implied_kmh > 500 and f.teleport_jumps >= 1)
+            or (moving and f.speed_spike_count is not None and f.speed_spike_count >= 100)
             or (moving and f.low_sat_ratio is not None and f.low_sat_ratio > 0.08)
             or (moving and f.zero_coord_moving_ratio is not None and f.zero_coord_moving_ratio > 0.15)
         )
@@ -1332,7 +1339,11 @@ class IssueAutomationService:
             "выгружаются позже, пробег потом сходится. В этом случае НЕ выбирай «Данные верны», ставь умеренную "
             "уверенность (≤0.7) и рекомендуй перепроверить пробег после выгрузки. "
             "Если в фактах есть большой обрыв трека (макс_разрыв_трека_мин велик) или признак track_gap — "
-            "терминал терял связь, данные за этот период догрузятся из чёрного ящика; выбирай «Терминал подключился». "
+            "СНАЧАЛА проверь признаки глушения: прострелы трека (телепорты), потеря спутников, скачки расчётной "
+            "скорости. При наличии таких признаков это ГЛУШЕНИЕ (по данным операторов разрыв трека в ~3/4 случаев "
+            "оказывается глушением, а не буферизацией). Только если трек в остальном ЧИСТЫЙ (нет телепортов/потери "
+            "спутников/скачков) — это возможна временная потеря связи с догрузкой из чёрного ящика («Терминал "
+            "подключился»), но ставь невысокую уверенность (≤0.6) и рекомендуй проверку оператором. "
             "Учитывай отправителя (поле «отправитель»): дочерние компании Россетей оформляют заявки "
             "по-разному — Оренбургэнерго (Восточное/Центральное ПО) обычно указывают гос.номер и дату в теме; "
             "Волжское ПО присылает табличный «Акт» с полем «Дата неисправности»; Самарские РС (Чапаевское ПО) — "
@@ -1896,10 +1907,14 @@ class IssueAutomationService:
         )
         if under_recording:
             confidence = min(confidence, 0.7)
+        # «Терминал подключился» при разрыве трека ненадёжен (~27% точности по данным
+        # операторов): чаще это глушение. Всегда отправляем на проверку оператором.
+        force_review = category == "Терминал подключился"
         return _finalize(AutomationResult(
             parsed=parsed, telemetry=telemetry, category=category,
-            confidence=confidence, draft_answer=draft, reasoning=reasoning,
-            needs_review=confidence < 0.85 or bool(under_recording),
+            confidence=min(confidence, 0.6) if force_review else confidence,
+            draft_answer=draft, reasoning=reasoning,
+            needs_review=confidence < 0.85 or bool(under_recording) or force_review,
         ))
 
     async def build_track(self, title: str | None, description: str | None,

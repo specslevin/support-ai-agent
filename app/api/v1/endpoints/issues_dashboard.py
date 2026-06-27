@@ -785,6 +785,76 @@ async def update_batch_verdict(
     return {"ok": True, "updated": updated, **data}
 
 
+class AiFeedbackBody(BaseModel):
+    rating: str  # 'good' | 'bad'
+    error_kind: str | None = None  # 'wrong_verdict' | 'wrong_plate' | 'wrong_date' | 'wrong_mileage' | 'other'
+    comment: str | None = None
+    correct_category: str | None = None
+
+
+async def _ai_category_of(cache: CacheService, external_id: int) -> str | None:
+    """Категория, которую выдал ИИ (для записи рядом с оценкой оператора)."""
+    for kind in ("automate", "batch"):
+        cached = await cache.get_result_cache(external_id, kind)
+        d = (cached or {}).get("data") if cached else None
+        if isinstance(d, dict):
+            if d.get("category"):
+                return str(d.get("category"))
+            objs = d.get("objects")
+            if objs:  # batch: сводно по вердиктам
+                verdicts = sorted({str(o.get("verdict")) for o in objs if o.get("verdict")})
+                return ", ".join(verdicts) if verdicts else None
+    return None
+
+
+@router.post("/{issue_id}/ai_feedback")
+async def add_ai_feedback(
+    issue_id: int,
+    body: AiFeedbackBody,
+    request: Request,
+    cache: CacheService = Depends(get_cache_service),
+) -> dict[str, object]:
+    """Оценка оператором качества ИИ-разбора: 'good' (верно) / 'bad' (ошибка)+комментарий."""
+    if body.rating not in ("good", "bad"):
+        raise HTTPException(status_code=400, detail="rating must be 'good' or 'bad'")
+    issue_data = await cache.get_issue_with_analysis(issue_id)
+    if not issue_data:
+        raise HTTPException(status_code=404, detail="Issue not found")
+    external_id = issue_data["issue"].external_id
+    user = getattr(request.state, "user", None)
+    ai_cat = await _ai_category_of(cache, external_id)
+    res = await cache.save_ai_feedback(
+        external_id, body.rating, error_kind=body.error_kind, comment=body.comment,
+        ai_category=ai_cat, correct_category=body.correct_category,
+        created_by=(user.get("u") if user else None),
+    )
+    return {"ok": True, **res}
+
+
+@router.get("/{issue_id}/ai_feedback")
+async def get_ai_feedback(
+    issue_id: int,
+    cache: CacheService = Depends(get_cache_service),
+) -> dict[str, object]:
+    """Последняя оценка ИИ-разбора по заявке (для подсветки в карточке)."""
+    issue_data = await cache.get_issue_with_analysis(issue_id)
+    if not issue_data:
+        raise HTTPException(status_code=404, detail="Issue not found")
+    external_id = issue_data["issue"].external_id
+    fb = await cache.get_latest_ai_feedback(external_id)
+    return {"feedback": fb}
+
+
+@router.get("/ai_feedback/list")
+async def list_ai_feedback(
+    rating: str | None = Query(None, description="'good' | 'bad' | None=все"),
+    cache: CacheService = Depends(get_cache_service),
+) -> dict[str, object]:
+    """Список оценок ИИ-разбора (экран «хорошо разобрано / с ошибками»)."""
+    items = await cache.list_ai_feedback(rating=rating)
+    return {"items": items, "count": len(items)}
+
+
 @router.post("/{issue_id}/compose_answer")
 async def compose_answer(
     issue_id: int,

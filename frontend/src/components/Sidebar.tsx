@@ -6,12 +6,13 @@ import {
   Truck,
   BarChart3,
   Settings,
+  ThumbsUp,
   PanelLeftClose,
   PanelLeftOpen,
   type LucideIcon,
 } from 'lucide-react'
 
-export type Section = 'issues' | 'chat' | 'mango' | 'installers' | 'analytics' | 'settings'
+export type Section = 'issues' | 'chat' | 'ai_feedback' | 'mango' | 'installers' | 'analytics' | 'settings'
 
 type NavEntry = {
   id: Section
@@ -24,6 +25,7 @@ type NavEntry = {
 const NAV: NavEntry[] = [
   { id: 'issues', label: 'Заявки', icon: ClipboardList },
   { id: 'chat', label: 'ИИ-чат', icon: MessageSquare },
+  { id: 'ai_feedback', label: 'Оценки ИИ', icon: ThumbsUp },
   { id: 'mango', label: 'Mango — звонки', icon: Phone, stub: true },
   { id: 'installers', label: 'Выезды монтажников', icon: Truck, stub: true },
   { id: 'analytics', label: 'Аналитика', icon: BarChart3, stub: true },

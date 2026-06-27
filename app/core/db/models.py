@@ -177,6 +177,34 @@ class TrainingSample(Base):
     )
 
 
+class AiFeedback(Base):
+    """Оценка оператором качества ИИ-разбора заявки (петля обратной связи).
+
+    rating: 'good' — разобрано верно; 'bad' — ошибка разбора. Для 'bad' оператор
+    указывает тип ошибки и комментарий, опц. правильную категорию. Используется
+    для (а) экрана «хорошо разобрано / с ошибками», (б) роста few-shot из верных
+    разборов и точечного исправления промпта/правил по ошибкам.
+    """
+
+    __tablename__ = "ai_feedback"
+    __table_args__ = (
+        Index("ix_ai_feedback_issue", "issue_external_id"),
+        Index("ix_ai_feedback_rating", "rating"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    issue_external_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    rating: Mapped[str] = mapped_column(String(8), nullable=False)  # 'good' | 'bad'
+    error_kind: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ai_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    correct_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+
+
 class ObjectResolveCache(Base):
     """Cached plate→GPSPOS-object resolution so we don't re-scan the Objects list
     on every lookup. Keyed by normalized plate. Foundation for reliable

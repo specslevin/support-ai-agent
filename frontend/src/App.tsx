@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
-import { RefreshCw, ClipboardList, MessageSquare, Phone, Truck, BarChart3, Settings, LogOut, UserCircle, type LucideIcon } from 'lucide-react'
+import { RefreshCw, ClipboardList, MessageSquare, Phone, Truck, BarChart3, Settings, ThumbsUp, LogOut, UserCircle, type LucideIcon } from 'lucide-react'
 import { IssueFilters } from './components/IssueFilters'
 import { IssuesList, useViewMode } from './components/IssuesList'
 import { IssueDetail } from './components/IssueDetail'
@@ -9,6 +9,7 @@ import { ChatPanel } from './components/ChatPanel'
 import { Sidebar, type Section } from './components/Sidebar'
 import { StubSection } from './components/StubSection'
 import { TemplatesManager } from './components/TemplatesManager'
+import { AiFeedbackReview } from './components/AiFeedbackReview'
 import { Login } from './components/Login'
 import { DemoBanner } from './components/DemoBanner'
 import { DemoToast } from './components/DemoToast'
@@ -185,10 +186,12 @@ function Dashboard() {
               )}
             </div>
           </>
+        ) : section === 'ai_feedback' ? (
+          <AiFeedbackReview onOpenIssue={() => setSection('issues')} />
         ) : section === 'settings' ? (
           <TemplatesManager />
         ) : (
-          <StubSection section={section as Exclude<Section, 'issues' | 'chat' | 'settings'>} />
+          <StubSection section={section as Exclude<Section, 'issues' | 'chat' | 'ai_feedback' | 'settings'>} />
         )}
       </div>
     </div>
@@ -196,13 +199,14 @@ function Dashboard() {
 }
 
 const SECTION_ICON: Record<Section, LucideIcon> = {
-  issues: ClipboardList, chat: MessageSquare, mango: Phone, installers: Truck, analytics: BarChart3, settings: Settings,
+  issues: ClipboardList, chat: MessageSquare, ai_feedback: ThumbsUp, mango: Phone, installers: Truck, analytics: BarChart3, settings: Settings,
 }
 
 function sectionTitle(s: Section): string {
   const map: Record<Section, string> = {
     issues: 'Заявки',
     chat: 'ИИ-чат',
+    ai_feedback: 'Оценки ИИ',
     mango: 'Mango — звонки',
     installers: 'Выезды монтажников',
     analytics: 'Аналитика',

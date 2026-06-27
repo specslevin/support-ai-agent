@@ -234,3 +234,38 @@ export interface TemplateUpdate {
   is_favorite?: boolean
   active?: boolean
 }
+
+// Петля обратной связи по качеству ИИ-разбора заявки.
+export type AiFeedbackRating = 'good' | 'bad'
+export type AiFeedbackErrorKind = 'wrong_verdict' | 'wrong_plate' | 'wrong_date' | 'wrong_mileage' | 'other'
+
+/** Тело запроса POST /issues/{id}/ai_feedback */
+export interface AiFeedbackBody {
+  rating: AiFeedbackRating
+  error_kind?: AiFeedbackErrorKind
+  comment?: string
+  correct_category?: string
+}
+
+/** Сохранённая оценка ИИ-разбора (GET /issues/{id}/ai_feedback → feedback). */
+export interface AiFeedback {
+  rating: AiFeedbackRating
+  error_kind: AiFeedbackErrorKind | null
+  comment: string | null
+  ai_category: string | null
+  correct_category: string | null
+  created_by: string | null
+  created_at: string | null
+}
+
+/** Элемент списка GET /issues/ai_feedback/list */
+export interface AiFeedbackListItem {
+  issue_external_id: number
+  rating: AiFeedbackRating
+  error_kind: AiFeedbackErrorKind | null
+  comment: string | null
+  ai_category: string | null
+  correct_category: string | null
+  created_by: string | null
+  created_at: string | null
+}

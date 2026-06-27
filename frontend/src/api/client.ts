@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { IssuesListResponse, IssueDetail, Comment, Analysis, Template, TemplateCategory, TemplateCreate, TemplateUpdate, AutomationResult, TrackData, IssueAttachment, BatchResult, TemplateValues, ChatResponse } from '../types'
+import type { IssuesListResponse, IssueDetail, Comment, Analysis, Template, TemplateCategory, TemplateCreate, TemplateUpdate, AutomationResult, TrackData, IssueAttachment, BatchResult, TemplateValues, ChatResponse, AiFeedback, AiFeedbackBody, AiFeedbackListItem, AiFeedbackRating } from '../types'
 
 const http = axios.create({
   baseURL: '/api/v1',
@@ -254,6 +254,19 @@ export const api = {
 
   getExtracted(id: number): Promise<ExtractedData> {
     return http.get(`/issues/${id}/extracted`).then(r => r.data)
+  },
+
+  // Петля обратной связи по качеству ИИ-разбора заявки.
+  addAiFeedback(id: number, body: AiFeedbackBody): Promise<{ ok: boolean }> {
+    return http.post(`/issues/${id}/ai_feedback`, body).then(r => r.data)
+  },
+
+  getAiFeedback(id: number): Promise<{ feedback: AiFeedback | null }> {
+    return http.get(`/issues/${id}/ai_feedback`).then(r => r.data)
+  },
+
+  listAiFeedback(rating?: AiFeedbackRating): Promise<{ items: AiFeedbackListItem[]; count: number }> {
+    return http.get('/issues/ai_feedback/list', { params: rating ? { rating } : undefined }).then(r => r.data)
   },
 }
 
