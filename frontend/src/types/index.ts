@@ -206,6 +206,8 @@ export interface Template {
   usage_count: number
   is_favorite: boolean
   is_dynamic: boolean
+  /** NULL = shared (visible to everyone); a username = personal (owner only). */
+  user_id: string | null
 }
 
 export interface TemplateCategory {
@@ -220,6 +222,8 @@ export interface TemplateCreate {
   category_id?: number | null
   is_dynamic?: boolean
   is_favorite?: boolean
+  /** When true the template is owned by the current user (personal). */
+  is_personal?: boolean
 }
 
 export interface TemplateUpdate {

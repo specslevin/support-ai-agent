@@ -243,6 +243,9 @@ class Template(Base):
     usage_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     is_dynamic: Mapped[bool] = mapped_column(Integer, default=0, nullable=False)
     is_favorite: Mapped[bool] = mapped_column(Integer, default=0, nullable=False)
+    # Ownership: NULL = shared (visible to everyone), a username = personal
+    # (visible only to that user). Added via lightweight migration in init_db.
+    user_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     source: Mapped[str] = mapped_column(
         String(32), default="console", nullable=False
     )

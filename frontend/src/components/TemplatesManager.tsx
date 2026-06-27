@@ -27,10 +27,11 @@ type FormState = {
   category_id: number | null
   is_dynamic: boolean
   is_favorite: boolean
+  is_personal: boolean
 }
 
 const EMPTY_FORM: FormState = {
-  id: null, name: '', content: '', category_id: null, is_dynamic: false, is_favorite: false,
+  id: null, name: '', content: '', category_id: null, is_dynamic: false, is_favorite: false, is_personal: false,
 }
 
 function TemplateForm({
@@ -88,6 +89,7 @@ function TemplateForm({
         category_id: form.category_id ?? undefined,
         is_dynamic: form.is_dynamic,
         is_favorite: form.is_favorite,
+        is_personal: form.is_personal,
       })
     }
   }
@@ -163,6 +165,19 @@ function TemplateForm({
                 className="w-3.5 h-3.5 accent-accent"
               />
               <span className="text-xs text-muted">Избранное</span>
+            </label>
+            <label
+              className={`flex items-center gap-2 select-none ${isEdit ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
+              title={isEdit ? 'Тип шаблона задаётся при создании' : 'Личный — виден только вам; общий — всем'}
+            >
+              <input
+                type="checkbox"
+                checked={form.is_personal}
+                disabled={isEdit}
+                onChange={e => setForm(f => ({ ...f, is_personal: e.target.checked }))}
+                className="w-3.5 h-3.5 accent-accent"
+              />
+              <span className="text-xs text-muted">Личный шаблон</span>
             </label>
           </div>
 
@@ -369,8 +384,10 @@ export function TemplatesManager() {
   const queryClient = useQueryClient()
   const isDemo = useAuthStore(s => s.user?.role === 'demo')
   const isAdmin = useAuthStore(s => s.user?.role === 'admin')
+  const username = useAuthStore(s => s.user?.username ?? null)
   const [search, setSearch] = useState('')
   const [catFilter, setCatFilter] = useState('')
+  const [onlyMine, setOnlyMine] = useState(false)
   const [form, setForm] = useState<FormState | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null)
 
@@ -405,12 +422,13 @@ export function TemplatesManager() {
     const q = search.trim().toLowerCase()
     return templates
       .filter(t => {
+        if (onlyMine && !(t.user_id && t.user_id === username)) return false
         if (catFilter && t.category_name !== catFilter) return false
         if (!q) return true
         return t.name.toLowerCase().includes(q) || t.content.toLowerCase().includes(q)
       })
       .sort((a, b) => Number(b.is_favorite) - Number(a.is_favorite) || b.usage_count - a.usage_count)
-  }, [templates, search, catFilter])
+  }, [templates, search, catFilter, onlyMine, username])
 
   return (
     <div className="flex-1 min-h-0 overflow-y-auto px-6 py-5">
@@ -454,6 +472,13 @@ export function TemplatesManager() {
               ))}
             </select>
           )}
+          <button
+            onClick={() => setOnlyMine(v => !v)}
+            title="Показывать только мои личные шаблоны"
+            className={`shrink-0 px-3 py-2 text-xs rounded-lg border transition-colors ${onlyMine ? 'bg-accent text-black border-accent' : 'border-border text-muted hover:text-white'}`}
+          >
+            {onlyMine ? 'Только мои' : 'Все'}
+          </button>
         </div>
 
         {isLoading && (
@@ -479,6 +504,21 @@ export function TemplatesManager() {
                     <Star size={14} className={t.is_favorite ? 'text-warning fill-warning' : ''} />
                   </button>
                   <span className="text-xs text-white font-medium flex-1 truncate">{t.name}</span>
+                  {t.user_id ? (
+                    <span
+                      title={t.user_id === username ? 'Ваш личный шаблон' : `Личный шаблон: ${t.user_id}`}
+                      className="text-[9px] uppercase tracking-wide text-purple-300 bg-purple-500/10 border border-purple-500/30 rounded px-1 py-px shrink-0"
+                    >
+                      {t.user_id === username ? 'мой' : 'личный'}
+                    </span>
+                  ) : (
+                    <span
+                      title="Общий шаблон — виден всем"
+                      className="text-[9px] uppercase tracking-wide text-muted/70 border border-border rounded px-1 py-px shrink-0"
+                    >
+                      общий
+                    </span>
+                  )}
                   {t.category_name && (
                     <span className={`text-[9px] uppercase tracking-wide ${catColor} shrink-0`}>{t.category_name}</span>
                   )}
@@ -497,6 +537,7 @@ export function TemplatesManager() {
                         id: t.id, name: t.name, content: t.content,
                         category_id: t.category_id ?? null,
                         is_dynamic: t.is_dynamic, is_favorite: t.is_favorite,
+                        is_personal: t.user_id != null,
                       })}
                       title="Редактировать"
                       className="shrink-0 text-muted hover:text-accent transition-colors"

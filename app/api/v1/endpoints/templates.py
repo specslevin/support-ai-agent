@@ -12,7 +12,7 @@ import sqlite3
 from pathlib import Path
 
 import structlog
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, HTTPException, Request
 from sqlalchemy import select
 
 from app.core.db.database import AsyncSessionLocal
@@ -105,25 +105,46 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
     return cur.fetchone() is not None
 
 
-def _our_read_templates() -> list[dict] | None:
-    """Return templates from OUR DB, or None if our tables are empty/missing."""
+def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(r["name"] == column for r in rows)
+
+
+def _our_read_templates(current_user: str | None = None) -> list[dict] | None:
+    """Return templates from OUR DB, or None if our tables are empty/missing.
+
+    Visibility filter: shared templates (``user_id IS NULL``) are returned to
+    everyone; personal templates only to their owner. When ``current_user`` is
+    None, only shared templates are returned.
+    """
     conn = _our_db_conn()
     if conn is None:
         return None
     try:
         if not _table_exists(conn, "app_templates"):
             return None
+        has_owner = _column_exists(conn, "app_templates", "user_id")
+        owner_select = "t.user_id" if has_owner else "NULL AS user_id"
+        if has_owner:
+            visibility = "AND (t.user_id IS NULL OR t.user_id = ?)"
+            params: tuple = (current_user,) if current_user else ()
+            if not current_user:
+                visibility = "AND t.user_id IS NULL"
+        else:
+            visibility = ""
+            params = ()
         cur = conn.execute(
-            """
+            f"""
             SELECT t.original_id AS id, t.name, t.content, t.category_id,
-                   t.usage_count, t.is_favorite, t.is_dynamic,
+                   t.usage_count, t.is_favorite, t.is_dynamic, {owner_select},
                    c.name AS category_name, c.color AS category_color
             FROM app_templates t
             LEFT JOIN app_template_categories c
                    ON c.original_id = t.category_id
-            WHERE t.active = 1
+            WHERE t.active = 1 {visibility}
             ORDER BY t.category_id, t.is_favorite DESC, t.usage_count DESC
-            """
+            """,
+            params,
         )
         rows = [dict(r) for r in cur.fetchall()]
         return rows or None
@@ -191,14 +212,19 @@ def _normalize_content(content: str | None) -> str:
 def _dedupe_templates(rows: list[dict]) -> list[dict]:
     """Collapse templates with the same normalized content to one row, keeping
     the instance with the highest ``usage_count`` (ties keep the first seen).
-    Rows with empty content are passed through untouched (never merged)."""
-    best: dict[str, dict] = {}
+    Rows with empty content are passed through untouched (never merged).
+
+    Deduplication is scoped by owner (``user_id``): a personal template is never
+    collapsed into a shared one (or another user's), so each visibility bucket
+    keeps its own copy."""
+    best: dict[tuple, dict] = {}
     out: list[dict] = []
     for r in rows:
-        key = _normalize_content(r.get("content"))
-        if not key:
+        content_key = _normalize_content(r.get("content"))
+        if not content_key:
             out.append(r)
             continue
+        key = (r.get("user_id"), content_key)
         prev = best.get(key)
         if prev is None:
             best[key] = r
@@ -226,12 +252,21 @@ def _sort_by_usage(rows: list[dict]) -> list[dict]:
 # --------------------------------------------------------------------------- #
 # Public read helpers — prefer OUR DB, fall back to console DB
 # --------------------------------------------------------------------------- #
-def _read_templates(dedupe: bool = True) -> list[dict]:
-    ours = _our_read_templates()
+def _read_templates(dedupe: bool = True, current_user: str | None = None) -> list[dict]:
+    ours = _our_read_templates(current_user=current_user)
     rows = ours if ours is not None else _console_read_templates()
     if dedupe:
         rows = _dedupe_templates(rows)
     return _sort_by_usage(rows)
+
+
+def _current_user(request: Request) -> str | None:
+    """Username from the auth-middleware payload on ``request.state.user``
+    (``{"u": username, "r": role}``), or None if unauthenticated."""
+    user = getattr(request.state, "user", None)
+    if isinstance(user, dict):
+        return user.get("u") or None
+    return None
 
 
 def _read_categories() -> list[dict]:
@@ -290,7 +325,7 @@ def fetch_templates_for_category(
 # Endpoints
 # --------------------------------------------------------------------------- #
 @router.get("")
-async def list_templates(dedupe: bool = True) -> list[dict]:
+async def list_templates(request: Request, dedupe: bool = True) -> list[dict]:
     """Active templates (our DB, console fallback). Same shape the UI consumes.
 
     Sorted favorites-first, then by ``usage_count`` desc (popular on top).
@@ -298,9 +333,12 @@ async def list_templates(dedupe: bool = True) -> list[dict]:
     content to a single instance (the most-used one); pass ``dedupe=false`` to
     get every row (e.g. for admin auditing). Dedup is display-only — nothing is
     deleted from the DB.
+
+    Visibility: shared templates (``user_id IS NULL``) are returned to everyone;
+    personal templates only to their owner (the authenticated user).
     """
     try:
-        return _read_templates(dedupe=dedupe)
+        return _read_templates(dedupe=dedupe, current_user=_current_user(request))
     except Exception:
         log.exception("list_templates_failed")
         return []
@@ -434,6 +472,7 @@ async def _shape_template(session, tpl: Template) -> dict:
         "usage_count": tpl.usage_count,
         "is_favorite": tpl.is_favorite,
         "is_dynamic": tpl.is_dynamic,
+        "user_id": tpl.user_id,
         "category_name": category_name,
         "category_color": category_color,
     }
@@ -458,16 +497,23 @@ async def _get_template_or_404(session, template_id: int) -> Template:
 
 
 @router.post("")
-async def create_template(payload: dict = Body(...)) -> dict:
+async def create_template(request: Request, payload: dict = Body(...)) -> dict:
     """Create a template in OUR DB.
 
-    Body: ``{name, content, category_id?, is_dynamic?, is_favorite?}``.
-    Inserts into ``app_templates`` with ``active=1, usage_count=0,
-    source="local"``. Returns the created row in the ``GET /templates`` shape.
+    Body: ``{name, content, category_id?, is_dynamic?, is_favorite?,
+    is_personal?}``. Inserts into ``app_templates`` with ``active=1,
+    usage_count=0, source="local"``. If ``is_personal`` is truthy the template
+    is owned by the authenticated user (``user_id`` set); otherwise it is shared
+    (``user_id`` NULL). Returns the created row in the ``GET /templates`` shape.
     """
     name = (payload.get("name") or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="name is required")
+    owner = _current_user(request) if payload.get("is_personal") else None
+    if payload.get("is_personal") and not owner:
+        raise HTTPException(
+            status_code=401, detail="Личный шаблон требует авторизации"
+        )
     try:
         async with AsyncSessionLocal() as session:
             tpl = Template(
@@ -479,6 +525,7 @@ async def create_template(payload: dict = Body(...)) -> dict:
                 usage_count=0,
                 is_dynamic=1 if payload.get("is_dynamic") else 0,
                 is_favorite=1 if payload.get("is_favorite") else 0,
+                user_id=owner,
                 source="local",
             )
             session.add(tpl)
@@ -492,14 +539,29 @@ async def create_template(payload: dict = Body(...)) -> dict:
         raise HTTPException(status_code=500, detail="Failed to create template")
 
 
+def _assert_can_modify(tpl: Template, current_user: str | None) -> None:
+    """Forbid modifying/deleting someone else's personal template.
+
+    Shared templates (``user_id`` NULL) stay editable for everyone (as before);
+    a personal template can only be changed by its owner.
+    """
+    if tpl.user_id is not None and tpl.user_id != current_user:
+        raise HTTPException(
+            status_code=403, detail="Чужой личный шаблон нельзя изменить"
+        )
+
+
 @router.put("/{template_id}")
-async def update_template(template_id: int, payload: dict = Body(...)) -> dict:
+async def update_template(
+    request: Request, template_id: int, payload: dict = Body(...)
+) -> dict:
     """Partial update of a template (name/content/category_id/is_dynamic/
     is_favorite/active). Returns the updated row in the ``GET`` shape. 404 if
-    not found."""
+    not found. 403 if it is another user's personal template."""
     try:
         async with AsyncSessionLocal() as session:
             tpl = await _get_template_or_404(session, template_id)
+            _assert_can_modify(tpl, _current_user(request))
             if "name" in payload:
                 new_name = (payload.get("name") or "").strip()
                 if not new_name:
@@ -528,12 +590,13 @@ async def update_template(template_id: int, payload: dict = Body(...)) -> dict:
 
 
 @router.delete("/{template_id}")
-async def delete_template(template_id: int) -> dict:
+async def delete_template(request: Request, template_id: int) -> dict:
     """Soft delete: set ``active=0`` so it disappears from ``GET /templates``.
-    404 if not found."""
+    404 if not found. 403 if it is another user's personal template."""
     try:
         async with AsyncSessionLocal() as session:
             tpl = await _get_template_or_404(session, template_id)
+            _assert_can_modify(tpl, _current_user(request))
             tpl.active = 0
             await session.commit()
             return {"ok": True}
