@@ -428,6 +428,19 @@ def _extract_address(parameters: list, description: str | None) -> str | None:
     return None
 
 
+def _param_value(parameters: list, pattern: str) -> str | None:
+    """Значение параметра заявки по совпадению имени/кода с regex. Параметры
+    Okdesk у структурированных заявок содержат «Номер телефона»/«Контактное лицо»/
+    «Местоположение техники» — это самый надёжный источник для монтажника (64239)."""
+    rx = re.compile(pattern, re.I)
+    for p in parameters or []:
+        name = f"{getattr(p, 'name', '') or ''} {getattr(p, 'code', '') or ''}"
+        val = getattr(p, "value", None)
+        if val and str(val).strip() and rx.search(name):
+            return str(val).strip()
+    return None
+
+
 @router.get("/{issue_id}/installer_export")
 async def installer_export(
     issue_id: int,
@@ -448,11 +461,14 @@ async def installer_export(
         external_id = cached_issue.external_id
         live = await okdesk.get_issue(external_id)
 
-        # Телефон контакта — в самой заявке его нет, тянем через get_contact.
-        phone: str | None = None
-        contact_name = live.contact.name if live.contact else None
+        # Приоритет — ПАРАМЕТРЫ заявки (у структурированных заявок есть «Номер
+        # телефона»/«Контактное лицо»/«Местоположение техники» — ровно то, что нужно
+        # монтажнику, 64239). Фолбэк телефона — get_contact (в самой заявке его нет).
+        phone = _param_value(live.parameters, r"телефон|тел\b|моб")
+        contact_name = (_param_value(live.parameters, r"контактн|ответственн|контакт")
+                        or (live.contact.name if live.contact else None))
         contact_id = live.contact.id if live.contact else None
-        if contact_id:
+        if not phone and contact_id:
             try:
                 contact = await okdesk.get_contact(contact_id)
                 phone = contact.mobile_phone or contact.phone
