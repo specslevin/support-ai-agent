@@ -1377,7 +1377,8 @@ async def training_stats(
 async def resolve_issue(
     issue_id: int,
     status_code: str = Query(..., description="Target status code: completed or delayed"),
-    comment: str = Query(..., min_length=1),
+    comment: str | None = Query(None),  # необязателен: для «В работе»/«Открыть» нужна
+                                        # только смена статуса без ответа клиенту
     comment_public: bool = Query(True),
     delay_to: str | None = Query(None, description="Required when status_code=delayed (ISO datetime)"),
     cache: CacheService = Depends(get_cache_service),
@@ -1415,10 +1416,12 @@ async def resolve_issue(
         # Groundwork for AI training: record (telemetry → operator decision).
         # Best-effort, must never break the resolve action.
         try:
-            live = await okdesk.get_issue(external_id)
-            sample = await automation.build_training_sample(
+            # Обучающий образец имеет смысл только когда оператор дал ответ (комментарий).
+            # Смена статуса без комментария («В работе»/«Открыть») — образец не пишем.
+            live = await okdesk.get_issue(external_id) if comment else None
+            sample = (await automation.build_training_sample(
                 live.title, live.description, comment, status_code
-            )
+            )) if (comment and live) else None
             if sample:
                 latest = (issue_data.get("latest_analysis"))
                 await cache.save_training_sample(

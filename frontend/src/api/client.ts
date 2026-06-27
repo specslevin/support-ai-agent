@@ -136,8 +136,8 @@ export const api = {
     return http.post(`/issues/${id}/create_children`, { objects: payload }).then(r => r.data)
   },
 
-  updateBatchVerdict(id: number, plate: string, verdict: string, file?: string): Promise<BatchResult> {
-    return http.post(`/issues/${id}/batch/verdict`, { plate, verdict, ...(file ? { file } : {}) }).then(r => r.data)
+  updateBatchVerdict(id: number, plate: string, verdict: string, file?: string, date?: string): Promise<BatchResult> {
+    return http.post(`/issues/${id}/batch/verdict`, { plate, verdict, ...(file ? { file } : {}), ...(date ? { date } : {}) }).then(r => r.data)
   },
 
   composeAnswer(id: number): Promise<{ answer: string }> {
@@ -213,8 +213,8 @@ export const api = {
     return http.patch(`/issues/${id}/type`, null, { params: { type_code } }).then(r => r.data)
   },
 
-  resolveIssue(id: number, status_code: string, comment: string, delay_to?: string, comment_public = true): Promise<{ ok: boolean; status_changed: boolean }> {
-    return http.post(`/issues/${id}/resolve`, null, { params: { status_code, comment, comment_public, ...(delay_to ? { delay_to } : {}) } }).then(r => r.data)
+  resolveIssue(id: number, status_code: string, comment?: string, delay_to?: string, comment_public = true): Promise<{ ok: boolean; status_changed: boolean }> {
+    return http.post(`/issues/${id}/resolve`, null, { params: { status_code, comment_public, ...(comment ? { comment } : {}), ...(delay_to ? { delay_to } : {}) } }).then(r => r.data)
   },
 
   bulkAssign(issue_ids: number[], assignee_id: number): Promise<BulkResult> {

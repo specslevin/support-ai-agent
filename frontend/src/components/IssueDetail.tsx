@@ -5,7 +5,7 @@ import {
   Lightbulb, Map, FilePlus, ExternalLink, Pause, Send,
   Layers, Power, RadioTower, Scissors, HelpCircle, FileText, Sheet,
   Image as ImageIcon, Paperclip, PanelRightClose, Info, MessageSquare, Sparkles, Wand2,
-  Loader2, Lock, User, Headset,
+  Loader2, Lock, User, Headset, Play,
   type LucideIcon,
 } from 'lucide-react'
 import { api } from '../api/client'
@@ -1018,11 +1018,13 @@ function BatchAnalysis({ issueId, issueTitle, onOpenExternal }: { issueId: numbe
 
   const handleVerdictChange = async (o: import('../types').BatchObject, newVerdict: string) => {
     if (!o.plate) return
-    const key = o.plate
+    // Ключ строки = номер|дата|файл — у одного ТС за разные даты разные вердикты
+    // (63617), правка применяется только к этой строке (и спиннер только на ней).
+    const key = `${o.plate}|${o.date ?? ''}|${o.file ?? ''}`
     setVerdictLoading(prev => new Set([...prev, key]))
     setVerdictError(null)
     try {
-      const updated = await api.updateBatchVerdict(issueId, o.plate, newVerdict, o.file || undefined)
+      const updated = await api.updateBatchVerdict(issueId, o.plate, newVerdict, o.file || undefined, o.date || undefined)
       setLocalBatch(updated)
     } catch {
       setVerdictError(`Не удалось сохранить вердикт для ${o.plate}`)
@@ -1085,7 +1087,7 @@ function BatchAnalysis({ issueId, issueTitle, onOpenExternal }: { issueId: numbe
                 {res.objects.map((o, idx) => {
                   const rc = o.plate ? rowCreated[o.plate] : null
                   const isLoading = !!o.plate && loadingPlates.has(o.plate)
-                  const isVerdictLoading = !!o.plate && verdictLoading.has(o.plate)
+                  const isVerdictLoading = !!o.plate && verdictLoading.has(`${o.plate}|${o.date ?? ''}|${o.file ?? ''}`)
                   return (
                     <tr key={idx} className={`border-t border-border/50 ${trackOpen && trackPlate === o.plate && trackDate === o.date ? 'bg-accent/10 border-l-2 border-l-accent/60' : ''}`}>
                       <td className="py-1 pr-2 font-mono">{o.plate ?? '—'}</td>
@@ -1547,11 +1549,13 @@ export function IssueDetail() {
   })
 
   const quickResolve = useMutation({
-    mutationFn: (statusCode: 'completed' | 'delayed') => {
+    mutationFn: (statusCode: 'completed' | 'delayed' | 'wait') => {
       const delayTo = statusCode === 'delayed'
         ? (() => { const d = new Date(); d.setDate(d.getDate() + 3); return d.toISOString().slice(0, 16) })()
         : undefined
-      return api.resolveIssue(selectedIssueId!, statusCode, comment, delayTo, commentPublic)
+      // «В работе» (wait) — смена статуса без обязательного ответа клиенту: комментарий
+      // отправляем, только если оператор его написал.
+      return api.resolveIssue(selectedIssueId!, statusCode, comment || undefined, delayTo, commentPublic)
     },
     onSuccess: (data) => {
       setComment('')
@@ -1768,6 +1772,15 @@ export function IssueDetail() {
 
             {/* Быстрое решение: комментарий + смена статуса одним кликом */}
             <div className="flex items-center gap-2">
+              <button
+                disabled={quickResolve.isPending || isDemo}
+                onClick={() => quickResolve.mutate('wait')}
+                title={isDemo ? 'Недоступно в демо-режиме' : 'Перевести в «В работе» (комментарий необязателен)'}
+                style={{ background: '#2bb3c0' }}
+                className={`flex items-center justify-center gap-1.5 flex-1 text-white text-xs font-semibold py-1.5 rounded-lg transition-all hover:brightness-110 disabled:opacity-50 ${quickResolve.isPending && quickResolve.variables === 'wait' ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
+              >
+                {quickResolve.isPending && quickResolve.variables === 'wait' ? <Working label="Меняю…" /> : <><Play size={14} /> В работе</>}
+              </button>
               <button
                 disabled={!comment || quickResolve.isPending || isDemo}
                 onClick={() => quickResolve.mutate('delayed')}

@@ -95,11 +95,21 @@ function BulkActionBar() {
   const isDemo = useAuthStore(s => s.user?.role === 'demo')
   const queryClient = useQueryClient()
   const [comment, setComment] = useState('')
-  const [notice, setNotice] = useState<string | null>(null)
+  const [notice, setNotice] = useState<{ text: string; kind: 'success' | 'error' } | null>(null)
+
+  // Авто-скрытие только успешных уведомлений; ошибки висят до ручного закрытия.
+  useEffect(() => {
+    if (!notice || notice.kind !== 'success') return
+    const t = setTimeout(() => setNotice(null), 4500)
+    return () => clearTimeout(t)
+  }, [notice])
 
   const done = (label: string) => (res: { succeeded: number; failed: number }) => {
     queryClient.invalidateQueries({ queryKey: ['issues'] })
-    setNotice(`${label}: успешно ${res.succeeded}${res.failed ? `, ошибок ${res.failed}` : ''}`)
+    setNotice({
+      text: `${label}: успешно ${res.succeeded}${res.failed ? `, ошибок ${res.failed}` : ''}`,
+      kind: res.failed ? 'error' : 'success',
+    })
     clearChecked()
     setComment('')
   }
@@ -119,12 +129,18 @@ function BulkActionBar() {
   const busy = assign.isPending || setType.isPending || setStatus.isPending
 
   if (checkedIds.length === 0) {
-    return notice ? (
+    if (!notice) return null
+    return notice.kind === 'success' ? (
       <div className="flex items-center gap-2 px-4 py-2 bg-success/10 border-b border-success/30 text-xs text-success">
-        <Check size={14} /><span>{notice}</span>
+        <Check size={14} /><span>{notice.text}</span>
         <button onClick={() => setNotice(null)} className="ml-auto text-success/60 hover:text-success"><X size={14} /></button>
       </div>
-    ) : null
+    ) : (
+      <div className="flex items-center gap-2 px-4 py-2 bg-red-500/10 border-b border-red-500/30 text-xs text-red-400">
+        <X size={14} /><span>{notice.text}</span>
+        <button onClick={() => setNotice(null)} className="ml-auto text-red-400/60 hover:text-red-400"><X size={14} /></button>
+      </div>
+    )
   }
 
   return (
@@ -263,7 +279,7 @@ export function IssuesList({ viewMode }: IssuesListProps) {
   const { status, company, search, assignee, issueId, page, limit, sort, order, selectedIssueId, highlightId, checkedIds, setPage, setLimit, selectIssue, toggleChecked, setChecked, clearChecked } = useIssuesStore()
   const queryClient = useQueryClient()
   const [autoRefreshMin, setAutoRefreshMin] = useAutoRefreshMin()
-  const [autoNotice, setAutoNotice] = useState<string | null>(null)
+  const [autoNotice, setAutoNotice] = useState<{ text: string; kind: 'success' | 'error' } | null>(null)
 
   useEffect(() => {
     if (autoRefreshMin <= 0) return
@@ -271,13 +287,20 @@ export function IssuesList({ viewMode }: IssuesListProps) {
       try {
         const res = await api.refreshCache()
         queryClient.invalidateQueries({ queryKey: ['issues'] })
-        setAutoNotice(`Авто-обновление: синхронизировано ${res.synced} заявок`)
+        setAutoNotice({ text: `Авто-обновление: синхронизировано ${res.synced} заявок`, kind: 'success' })
       } catch {
-        setAutoNotice('Авто-обновление: ошибка синхронизации')
+        setAutoNotice({ text: 'Авто-обновление: ошибка синхронизации', kind: 'error' })
       }
     }, autoRefreshMin * 60_000)
     return () => clearInterval(id)
   }, [autoRefreshMin, queryClient])
+
+  // Авто-скрытие только успешных уведомлений авто-обновления; ошибки висят до ручного закрытия.
+  useEffect(() => {
+    if (!autoNotice || autoNotice.kind !== 'success') return
+    const t = setTimeout(() => setAutoNotice(null), 4500)
+    return () => clearTimeout(t)
+  }, [autoNotice])
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ['issues', { status, company, search, assignee, issueId, page, limit, sort, order }],
@@ -312,12 +335,17 @@ export function IssuesList({ viewMode }: IssuesListProps) {
     <div className="flex flex-col h-full min-h-0">
       <BulkActionBar />
 
-      {autoNotice && (
+      {autoNotice && (autoNotice.kind === 'success' ? (
         <div className="flex items-center gap-2 px-4 py-2 bg-success/10 border-b border-success/30 text-xs text-success">
-          <Check size={14} /><span>{autoNotice}</span>
+          <Check size={14} /><span>{autoNotice.text}</span>
           <button onClick={() => setAutoNotice(null)} className="ml-auto text-success/60 hover:text-success"><X size={14} /></button>
         </div>
-      )}
+      ) : (
+        <div className="flex items-center gap-2 px-4 py-2 bg-red-500/10 border-b border-red-500/30 text-xs text-red-400">
+          <X size={14} /><span>{autoNotice.text}</span>
+          <button onClick={() => setAutoNotice(null)} className="ml-auto text-red-400/60 hover:text-red-400"><X size={14} /></button>
+        </div>
+      ))}
 
       <div className="overflow-auto flex-1">
         {viewMode === 'table' ? (
