@@ -725,6 +725,9 @@ class VerdictUpdate(BaseModel):
     plate: str
     verdict: str
     file: str | None = None
+    date: str | None = None  # ISO-дата выезда/неисправности: один ТС может иметь
+                             # РАЗНЫЕ вердикты за разные даты (63617) — правим строку,
+                             # а не весь объект.
 
 
 # Вердикты, которые оператор может выставить вручную в таблице разбора.
@@ -762,7 +765,11 @@ async def update_batch_verdict(
     target = _norm_plate(body.plate)
     updated = 0
     for o in objects:
-        if _norm_plate(o.get("plate")) == target and (not body.file or o.get("file") == body.file):
+        if (_norm_plate(o.get("plate")) == target
+                and (not body.file or o.get("file") == body.file)
+                # Если дата передана — правим ТОЛЬКО строку этой даты (у одного ТС
+                # за разные даты могут быть разные вердикты, 63617).
+                and (not body.date or o.get("date") == body.date)):
             o["verdict"] = body.verdict
             o["verdict_edited"] = True
             updated += 1
@@ -1378,11 +1385,16 @@ async def resolve_issue(
     automation: IssueAutomationService = Depends(get_issue_automation_service),
 ) -> dict[str, object]:
     """Send a comment and change issue status in one action."""
-    ALLOWED = {"completed", "delayed", "opened", "closed"}
+    # Полный набор кодов статусов Okdesk этого аккаунта (см. диагностику 64453):
+    # opened, wait(=В работе), delayed(=Ожидание ответа), no_time(=Отложить),
+    # completed(=Решена), inst_fin(=Завершена), closed. Хедер-дропдаун шлёт wait/
+    # no_time — раньше их не было в ALLOWED → HTTP 400 (баг 64453/64306).
+    ALLOWED = {"completed", "delayed", "opened", "closed", "wait", "no_time", "inst_fin"}
     if status_code not in ALLOWED:
         raise HTTPException(status_code=400, detail=f"status_code must be one of {ALLOWED}")
-    if status_code == "delayed" and not delay_to:
-        raise HTTPException(status_code=400, detail="delay_to is required for status 'delayed'")
+    # delayed/no_time («Ожидание ответа»/«Отложить») в Okdesk требуют срок delay_to.
+    if status_code in ("delayed", "no_time") and not delay_to:
+        raise HTTPException(status_code=400, detail=f"delay_to is required for status '{status_code}'")
     try:
         issue_data = await cache.get_issue_with_analysis(issue_id)
         if not issue_data:
