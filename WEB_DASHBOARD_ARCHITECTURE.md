@@ -1,8 +1,18 @@
 # Web Dashboard Architecture Plan
 
 **Date Created:** 2026-06-13
+**Status check:** 2026-06-27 — все 4 фазы MVP реализованы и в проде; план развития
+живёт в [ПЛАН_РАЗВИТИЯ.md](ПЛАН_РАЗВИТИЯ.md). Этот документ — исходный архитектурный план.
 **Project:** support-ai-agent web panel for techsupport
 **Purpose:** Analyze GPS mileage discrepancy issues with Okdesk integration + GPSPOS Geo API
+
+> **Готовность фаз (проверка плана):** Phase 1 (бэкенд-кэш) ✅, Phase 1.5 (фоновый
+> refresh каждые 5 мин) ✅, Phase 2 (фронт React) ✅, Phase 3 (детали + Geo + карта +
+> анализ + комментарии + действия) ✅, Phase 4 (UI lime-accent, build в static, опт.
+> React Query) ✅. Сверх MVP: ИИ-автоанализ, вложения/OCR, разбор «общих» заявок по
+> форматам вложений, массовое редактирование, сроки/SLA, единый мастер ИИ.
+> Не сделано из «Future/Risk»: Okdesk webhook, Redis, WebSocket, RBAC (есть простая
+> файловая авторизация admin/demo).
 
 ---
 
@@ -126,27 +136,27 @@ Dashboard
 - ✅ CacheService — refresh (page[number]/page[size]), query, save_analysis
 - ✅ 6 dashboard endpoints: list, detail, refresh, analysis, comments GET/POST
 - ✅ Задеплоен: 1000 заявок синхронизировано за ~25 сек
-- ⬜ Phase 1.5: фоновый refresh каждые 5 мин (APScheduler)
+- ✅ Phase 1.5: фоновый refresh (lifespan-задача в `app/main.py`)
 
-### Phase 2: Frontend Setup 🚧 В РАБОТЕ
-- React 18 + TypeScript + Vite
-- TanStack Query + Zustand + Tailwind CSS dark theme
-- API client (axios → /api/v1/issues)
-- Issues list с фильтрами и пагинацией
-- Issue detail panel
+### Phase 2: Frontend Setup ✅ ЗАВЕРШЁН
+- ✅ React 18 + TypeScript + Vite
+- ✅ TanStack Query + Zustand + Tailwind CSS dark theme
+- ✅ API client (axios → /api/v1/issues)
+- ✅ Issues list с фильтрами и пагинацией (+ режим карточек)
+- ✅ Issue detail panel
 
-### Phase 3: Core Features
-- Issue Details (с Geo данными + карта Leaflet)
-- Analysis Form (ввод пробега → AI suggestion от DeepSeek)
-- Comments section
-- Actions (смена статуса)
+### Phase 3: Core Features ✅ ЗАВЕРШЁН
+- ✅ Issue Details (с Geo данными + карта Leaflet, TrackPanel + uPlot)
+- ✅ Analysis Form → ИИ-автоанализ (DeepSeek) + черновик ответа
+- ✅ Comments section (REST)
+- ✅ Actions (смена статуса/типа/ответственного, resolve)
 
-### Phase 4: Polish & Deploy
-- UI lime-green #99d52a accent, Inter font
-- Build + serve через FastAPI static files
-- Оптимизация React Query (staleTime, cacheTime)
+### Phase 4: Polish & Deploy ✅ ЗАВЕРШЁН
+- ✅ UI lime-green #99d52a accent, Inter font
+- ✅ Build + serve через FastAPI static files (`app/static/`)
+- ✅ Оптимизация React Query (staleTime, cacheTime)
 
-**Total:** MVP v1.0 ≈ 4-6 недель от Phase 1
+**Total:** MVP v1.0 — выполнен; развитие см. ПЛАН_РАЗВИТИЯ.md
 
 ---
 
