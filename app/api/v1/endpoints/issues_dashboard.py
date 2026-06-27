@@ -365,6 +365,172 @@ async def get_issue_details(
         raise HTTPException(status_code=500, detail="Failed to fetch issue")
 
 
+def _short_company(company_name: str | None) -> str:
+    """«ПАО "Россети Волга" Самарские РС Самарское ПО» → «Россети\\nСамарское».
+
+    Возвращает короткую строку: бренд («Россети») + название ПО/РС/города.
+    Если распарсить не удалось — отдаём company_name как есть.
+    """
+    if not company_name:
+        return ""
+    name = company_name.strip()
+    # Бренд: первое вхождение «Россети» (с возможным регионом в кавычках).
+    brand = "Россети" if re.search(r"россет", name, re.I) else None
+    # Название ПО / РС / города — берём слово(а) перед «ПО»/«РС».
+    unit: str | None = None
+    m = re.search(r"([A-ZА-ЯЁ][\wа-яё-]+(?:\s+[A-ZА-ЯЁ][\wа-яё-]+)?)\s+ПО\b", name)
+    if m:
+        unit = m.group(1).strip()
+    else:
+        m = re.search(r"([A-ZА-ЯЁ][\wа-яё-]+(?:\s+[A-ZА-ЯЁ][\wа-яё-]+)?)\s+РС\b", name)
+        if m:
+            unit = m.group(1).strip()
+    if brand and unit:
+        return f"{brand}\n{unit}"
+    if brand:
+        return brand
+    return name
+
+
+def _extract_vehicle(title: str | None, description: str | None,
+                     plate: str | None) -> str:
+    """Строка «модель + номер» для монтажника.
+
+    Тема заявки обычно содержит «МОДЕЛЬ НОМЕР» — берём её как основу (это самый
+    надёжный человекочитаемый вид). Если темы нет — собираем из распознанного
+    номера. Возвращаем пустую строку, если ничего нет."""
+    t = (title or "").strip()
+    if t:
+        # Уберём служебные префиксы вроде «Расхождение пробега:» если есть.
+        t = re.sub(r"^\s*(расхождение пробега|заявка)\s*[:\-]?\s*", "", t, flags=re.I).strip()
+        if t:
+            return t
+    return plate or ""
+
+
+def _extract_address(parameters: list, description: str | None) -> str | None:
+    """Адрес/местоположение из параметров заявки; эвристика из описания опц."""
+    from app.core.okdesk.models import IssueParameter
+
+    addr_re = re.compile(r"адрес|мест[оа]|располож|локац", re.I)
+    for p in parameters:
+        param: IssueParameter = p  # type: ignore[assignment]
+        name = f"{param.name or ''} {param.code or ''}"
+        if param.value and addr_re.search(name):
+            v = param.value.strip()
+            if len(v) >= 3:
+                return v
+    # Эвристика из описания: строка после «адрес ...»/«местоположение ...».
+    body = re.sub(r"<[^>]+>", " ", description or "")
+    m = re.search(r"(?:адрес|местоположени\w*|мест\w*\s+техник\w*)[^\wа-яё]{0,3}([^\n]{5,120})", body, re.I)
+    if m:
+        return m.group(1).strip()
+    return None
+
+
+@router.get("/{issue_id}/installer_export")
+async def installer_export(
+    issue_id: int,
+    cache: CacheService = Depends(get_cache_service),
+    okdesk: OkdeskService = Depends(get_okdesk_service),
+    automation: IssueAutomationService = Depends(get_issue_automation_service),
+) -> dict[str, object]:
+    """Готовые тексты «для монтажника» (КАЛЕНДАРЬ + МЕССЕНДЖЕР) для копирования.
+
+    Read-only: собирает поля из живой заявки Okdesk, кэша (название компании) и
+    контакта (телефон). Любое недостающее поле заменяется плейсхолдером — запрос
+    не падает. Доступно всем авторизованным (включая demo) — это просмотр."""
+    try:
+        issue_data = await cache.get_issue_with_analysis(issue_id)
+        if not issue_data:
+            raise HTTPException(status_code=404, detail="Issue not found")
+        cached_issue = issue_data["issue"]
+        external_id = cached_issue.external_id
+        live = await okdesk.get_issue(external_id)
+
+        # Телефон контакта — в самой заявке его нет, тянем через get_contact.
+        phone: str | None = None
+        contact_name = live.contact.name if live.contact else None
+        contact_id = live.contact.id if live.contact else None
+        if contact_id:
+            try:
+                contact = await okdesk.get_contact(contact_id)
+                phone = contact.mobile_phone or contact.phone
+            except Exception:
+                log.warning("installer_export_contact_failed", issue_id=issue_id, contact_id=contact_id)
+
+        # Компания: в live она часто пустая — берём из кэша.
+        company_name = (getattr(cached_issue, "company_name", None)
+                        or (live.company.name if live.company else None))
+        company_short = _short_company(company_name)
+
+        # Номер + дата неисправности из разбора темы/описания.
+        parsed = automation.parse_issue(live.title, live.description, None)
+        plate = parsed.plate
+        date_ru: str | None = None
+        if parsed.date:
+            try:
+                import datetime as _d
+                date_ru = _d.date.fromisoformat(parsed.date[:10]).strftime("%d.%m.%Y")
+            except ValueError:
+                date_ru = parsed.date
+
+        vehicle = _extract_vehicle(live.title, live.description, plate)
+        address = _extract_address(live.parameters, live.description)
+
+        # «не в сети с ДАТА» (без даты — плейсхолдер для ручного заполнения).
+        status_line = f"не в сети с {date_ru}" if date_ru else "не в сети с ____"
+        # Компонент города для КАЛЕНДАРЯ: вторая строка company_short («Самарское»).
+        city = company_short.split("\n", 1)[1] if "\n" in company_short else ""
+
+        ph_phone = phone or "____"
+        ph_vehicle = vehicle or "____"
+        ph_addr = address or "____"
+        ph_contact = contact_name or "____"
+
+        # КАЛЕНДАРЬ
+        calendar = (
+            f"{ph_phone}\n\n"
+            f"{company_short or '____'}\n\n"
+            f"{ph_vehicle}\n\n"
+            f"{status_line}"
+        )
+
+        # МЕССЕНДЖЕР
+        messenger = (
+            f"Добрый день. Новая заявка. Терминал {status_line}\n"
+            f"Объект обслуживания:\n"
+            f"   {ph_vehicle}\n"
+            f"Местоположение техники\n"
+            f"   {ph_addr}\n"
+            f"Контактное лицо\n"
+            f"   {ph_contact}\n"
+            f"Номер телефона\n"
+            f"   {ph_phone}"
+        )
+
+        return {
+            "calendar": calendar,
+            "messenger": messenger,
+            "fields": {
+                "phone": phone,
+                "company_short": company_short or None,
+                "city": city or None,
+                "vehicle": vehicle or None,
+                "plate": plate,
+                "date": date_ru,
+                "status_line": status_line,
+                "contact_name": contact_name,
+                "address": address,
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        log.exception("installer_export_failed", issue_id=issue_id)
+        raise HTTPException(status_code=500, detail="Failed to build installer export")
+
+
 @router.post("/{issue_id}/automate")
 async def automate_issue(
     issue_id: int,

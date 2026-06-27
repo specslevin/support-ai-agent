@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { IssuesListResponse, IssueDetail, Comment, Analysis, Template, TemplateCategory, TemplateCreate, TemplateUpdate, AutomationResult, TrackData, IssueAttachment, BatchResult, TemplateValues, ChatResponse, AiFeedback, AiFeedbackBody, AiFeedbackListItem, AiFeedbackRating } from '../types'
+import type { IssuesListResponse, IssueDetail, Comment, Analysis, Template, TemplateCategory, TemplateCreate, TemplateUpdate, AutomationResult, TrackData, IssueAttachment, BatchResult, TemplateValues, ChatResponse, AiFeedback, AiFeedbackBody, AiFeedbackListItem, AiFeedbackRating, InstallerExport } from '../types'
 
 const http = axios.create({
   baseURL: '/api/v1',
@@ -254,6 +254,11 @@ export const api = {
 
   getExtracted(id: number): Promise<ExtractedData> {
     return http.get(`/issues/${id}/extracted`).then(r => r.data)
+  },
+
+  // «Передать монтажнику»: готовые тексты КАЛЕНДАРЬ/МЕССЕНДЖЕР для копирования.
+  installerExport(id: number): Promise<InstallerExport> {
+    return http.get(`/issues/${id}/installer_export`).then(r => r.data)
   },
 
   // Петля обратной связи по качеству ИИ-разбора заявки.

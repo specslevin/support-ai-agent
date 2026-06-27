@@ -6,6 +6,7 @@ import {
   Layers, Power, RadioTower, Scissors, HelpCircle, FileText, Sheet,
   Image as ImageIcon, Paperclip, PanelRightClose, Info, MessageSquare, Sparkles, Wand2,
   Loader2, Lock, User, Headset, Play, ThumbsUp, ThumbsDown,
+  Copy, Calendar, Truck,
   type LucideIcon,
 } from 'lucide-react'
 import { api } from '../api/client'
@@ -82,6 +83,121 @@ function Block({ icon: Icon, title, count, right, children }: {
       </div>
       {children}
     </section>
+  )
+}
+
+/** Копирование текста с фоллбэком для незащищённого контекста (app по HTTP). */
+function copyToClipboard(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    return navigator.clipboard.writeText(text).catch(() => fallbackCopyText(text))
+  }
+  fallbackCopyText(text)
+  return Promise.resolve()
+}
+
+function fallbackCopyText(text: string) {
+  const ta = document.createElement('textarea')
+  ta.value = text
+  ta.style.position = 'fixed'
+  ta.style.opacity = '0'
+  document.body.appendChild(ta)
+  ta.select()
+  try { document.execCommand('copy') } catch { /* ignore */ }
+  document.body.removeChild(ta)
+}
+
+/** «Передать монтажнику»: два формата (КАЛЕНДАРЬ / МЕССЕНДЖЕР) в один клик. */
+function InstallerExportSection({ issueId }: { issueId: number }) {
+  const [copied, setCopied] = useState<'calendar' | 'messenger' | null>(null)
+  const [showPreview, setShowPreview] = useState(false)
+
+  const { data, isPending, isError, refetch } = useQuery({
+    queryKey: ['installer-export', issueId],
+    queryFn: () => api.installerExport(issueId),
+    enabled: false, // загружаем лениво — только когда оператору это нужно
+  })
+
+  const ensure = async () => {
+    if (data) return data
+    const res = await refetch()
+    return res.data
+  }
+
+  const handleCopy = async (kind: 'calendar' | 'messenger') => {
+    const d = await ensure()
+    if (!d) return
+    await copyToClipboard(kind === 'calendar' ? d.calendar : d.messenger)
+    setShowPreview(true)
+    setCopied(kind)
+    setTimeout(() => setCopied(null), 1800)
+  }
+
+  return (
+    <Block icon={Truck} title="Передать монтажнику">
+      <div className="space-y-2">
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => handleCopy('calendar')}
+            disabled={isPending}
+            className="flex items-center gap-1.5 bg-frame border border-border hover:border-accent rounded-lg px-3 py-1.5 text-xs text-muted hover:text-accent transition-colors disabled:opacity-50"
+          >
+            {copied === 'calendar' ? <Check size={14} className="text-success" /> : <Calendar size={14} />}
+            {copied === 'calendar' ? 'Скопировано' : 'Копировать (календарь)'}
+          </button>
+          <button
+            onClick={() => handleCopy('messenger')}
+            disabled={isPending}
+            className="flex items-center gap-1.5 bg-frame border border-border hover:border-accent rounded-lg px-3 py-1.5 text-xs text-muted hover:text-accent transition-colors disabled:opacity-50"
+          >
+            {copied === 'messenger' ? <Check size={14} className="text-success" /> : <Send size={14} />}
+            {copied === 'messenger' ? 'Скопировано' : 'Копировать (мессенджер)'}
+          </button>
+          {isPending && <Working label="Собираю…" className="text-muted" />}
+        </div>
+
+        {isError && (
+          <p className="text-[11px] text-red-400">Не удалось собрать данные. Попробуйте ещё раз.</p>
+        )}
+
+        {data && (
+          <>
+            <button
+              onClick={() => setShowPreview(v => !v)}
+              className="flex items-center gap-1 text-[11px] text-muted hover:text-accent transition-colors"
+            >
+              <ChevronDown size={12} className={`transition-transform ${showPreview ? 'rotate-180' : ''}`} />
+              {showPreview ? 'Скрыть предпросмотр' : 'Показать предпросмотр'}
+            </button>
+            {showPreview && (
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <PreviewCard icon={Calendar} title="Календарь" text={data.calendar} onCopy={() => handleCopy('calendar')} />
+                <PreviewCard icon={Send} title="Мессенджер" text={data.messenger} onCopy={() => handleCopy('messenger')} />
+              </div>
+            )}
+            <p className="text-[10px] text-muted/70">
+              Прочерки «____» — поля не найдены в заявке, дозаполните вручную перед отправкой.
+            </p>
+          </>
+        )}
+      </div>
+    </Block>
+  )
+}
+
+function PreviewCard({ icon: Icon, title, text, onCopy }: {
+  icon: LucideIcon; title: string; text: string; onCopy: () => void
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-frame p-2.5 space-y-1.5">
+      <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-muted">
+        <Icon size={11} className="text-accent" />
+        <span>{title}</span>
+        <button onClick={onCopy} title="Копировать" className="ml-auto text-muted hover:text-accent transition-colors">
+          <Copy size={12} />
+        </button>
+      </div>
+      <pre className="whitespace-pre-wrap break-words text-[11px] leading-relaxed text-white/80 font-sans">{text}</pre>
+    </div>
   )
 }
 
@@ -1859,6 +1975,9 @@ export function IssueDetail() {
 
         {/* ── 2. Вложения (перед анализом — ИИ читает их) ───────── */}
         <AttachmentsSection issueId={issue.id} />
+
+        {/* ── 2.5. Передать монтажнику (готовые тексты в буфер) ──── */}
+        <InstallerExportSection issueId={issue.id} />
 
         {/* ── 3. Анализ заявки (единый мастер: Разбор → Анализ → Ответ) ── */}
         <Block icon={Sparkles} title="Анализ заявки">

@@ -182,6 +182,23 @@ export interface BatchResult {
   objects: BatchObject[]
 }
 
+// «Передать монтажнику»: два готовых текста (КАЛЕНДАРЬ + МЕССЕНДЖЕР) + поля.
+export interface InstallerExport {
+  calendar: string
+  messenger: string
+  fields: {
+    phone: string | null
+    company_short: string | null
+    city: string | null
+    vehicle: string | null
+    plate: string | null
+    date: string | null
+    status_line: string
+    contact_name: string | null
+    address: string | null
+  }
+}
+
 // Этап 2: suggested placeholder->value map for dynamic templates.
 export interface TemplateValues {
   values: Record<string, string>
