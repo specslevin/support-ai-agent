@@ -48,7 +48,7 @@ class LLMClient:
     def __init__(self):
         api_key = os.getenv("DEEPSEEK_API_KEY", "sk-placeholder")
         base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
-        model = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+        model = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
 
         key_preview = f"{api_key[:8]}..." if api_key else "MISSING"
         log.info(

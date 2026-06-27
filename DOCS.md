@@ -202,6 +202,6 @@ journalctl -u support-ai-agent -f
 | Backend | FastAPI, Python 3.12, SQLAlchemy async, SQLite, httpx |
 | Frontend | React 18, TypeScript, Vite, Tailwind CSS, TanStack Query, Zustand, Axios, Leaflet, uPlot |
 | Вложения/OCR | pypdf, python-docx, openpyxl, PyMuPDF, pytesseract + tesseract-ocr (rus+eng) |
-| AI | DeepSeek LLM (`deepseek-chat`, env `DEEPSEEK_MODEL`) |
+| AI | DeepSeek LLM (`deepseek-v4-flash`, env `DEEPSEEK_MODEL`) |
 | Bot | aiogram 3.x, Telegram |
 | Infra | Ubuntu VPS, systemd, Nginx (если нужен) |
