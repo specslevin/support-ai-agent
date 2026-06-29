@@ -200,6 +200,33 @@ class OkdeskService:
         data = await self._client._request("POST", "issues", json={"issue": fields})
         return Issue.model_validate(data)
 
+    async def update_issue_parameters(
+        self,
+        issue_id: int,
+        address: str | None = None,
+        contact_person: str | None = None,
+        tel_person: str | None = None,
+    ) -> Issue:
+        """Обновить кастом-параметры заявки (Местоположение техники / Контактное
+        лицо / Номер телефона). Шлём только переданные (не-None) поля.
+
+        Okdesk: PATCH /api/v1/issues/{issue_id} с телом
+        ``{"issue": {"custom_parameters": {...}}}`` (см. «Редактирование заявки»
+        в apidocs.okdesk.ru). Пустые обязательные параметры мешают переводу
+        заявки в статус «В работе» — этот метод их заполняет."""
+        custom: dict[str, Any] = {}
+        if address is not None:
+            custom["address"] = address
+        if contact_person is not None:
+            custom["contact_person"] = contact_person
+        if tel_person is not None:
+            custom["tel_person"] = tel_person
+        data = await self._client._request(
+            "PATCH", f"issues/{issue_id}",
+            json={"issue": {"custom_parameters": custom}},
+        )
+        return Issue.model_validate(data)
+
     async def list_equipment(self, **params: Any) -> list[Equipment]:
         data = await self._client._request("GET", "equipments/list", params=params)
         rows = _ensure_list(data)

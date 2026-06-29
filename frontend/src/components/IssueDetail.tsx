@@ -296,6 +296,91 @@ function TypeSection({ issueId, typeName, typeCode }: { issueId: number; typeNam
   )
 }
 
+// Редактируемые кастом-параметры заявки. Okdesk требует их заполненными для
+// перевода заявки в статус «В работе» (баг 64197). Сопоставляем по имени
+// параметра, т.к. фронту приходят только {name, value}.
+const EDITABLE_PARAMS: { code: 'address' | 'contact_person' | 'tel_person'; label: string; match: RegExp }[] = [
+  { code: 'address', label: 'Местоположение техники', match: /местоположен|адрес/i },
+  { code: 'contact_person', label: 'Контактное лицо', match: /контактн|ответственн/i },
+  { code: 'tel_person', label: 'Номер телефона', match: /телефон|тел\b|моб/i },
+]
+
+function EditableParameters({ d, issueId }: { d: OkdeskDetail; issueId: number }) {
+  const isDemo = useAuthStore(s => s.user?.role === 'demo')
+  const queryClient = useQueryClient()
+
+  const initial = useMemo(() => {
+    const out: Record<string, string> = { address: '', contact_person: '', tel_person: '' }
+    for (const ep of EDITABLE_PARAMS) {
+      const hit = d.parameters.find(p => ep.match.test(p.name))
+      out[ep.code] = hit?.value ?? ''
+    }
+    return out
+  }, [d.parameters])
+
+  const [vals, setVals] = useState<Record<string, string>>(initial)
+  useEffect(() => { setVals(initial) }, [initial])
+
+  const dirty = EDITABLE_PARAMS.some(ep => (vals[ep.code] ?? '') !== (initial[ep.code] ?? ''))
+
+  const mutation = useMutation({
+    mutationFn: () => {
+      const payload: Record<string, string> = {}
+      for (const ep of EDITABLE_PARAMS) {
+        if ((vals[ep.code] ?? '') !== (initial[ep.code] ?? '')) payload[ep.code] = vals[ep.code] ?? ''
+      }
+      return api.updateIssueParameters(issueId, payload)
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['issue', issueId] })
+    },
+  })
+
+  // Параметры, которые не входят в редактируемую тройку — показываем как есть.
+  const otherParams = d.parameters.filter(p => !EDITABLE_PARAMS.some(ep => ep.match.test(p.name)))
+
+  return (
+    <Section title="Параметры заявки">
+      <div className="space-y-2">
+        {EDITABLE_PARAMS.map(ep => (
+          <div key={ep.code} className="grid grid-cols-[140px_1fr] items-center gap-x-3 gap-y-1">
+            <span className="text-muted">{ep.label}</span>
+            <input
+              type="text"
+              value={vals[ep.code] ?? ''}
+              onChange={e => setVals(v => ({ ...v, [ep.code]: e.target.value }))}
+              disabled={isDemo || mutation.isPending}
+              placeholder="—"
+              className="bg-frame border border-border rounded-lg px-2 py-1 text-xs text-white placeholder:text-muted/50 focus:border-accent outline-none disabled:opacity-50 disabled:cursor-not-allowed"
+            />
+          </div>
+        ))}
+        {otherParams.length > 0 && (
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 pt-1">
+            {otherParams.map(p => (
+              <MetaRow key={p.name} label={p.name}>{p.value}</MetaRow>
+            ))}
+          </div>
+        )}
+      </div>
+      {mutation.isError && (
+        <p className="text-danger text-[11px]">
+          {(mutation.error as { response?: { data?: { detail?: string } } })?.response?.data?.detail || 'Не удалось сохранить параметры'}
+        </p>
+      )}
+      <button
+        onClick={() => mutation.mutate()}
+        disabled={isDemo || mutation.isPending || !dirty}
+        title={isDemo ? 'Недоступно в демо-режиме' : 'Сохранить параметры в Okdesk'}
+        className={`flex items-center justify-center gap-1.5 w-full bg-card border border-border hover:border-accent text-xs font-semibold py-1.5 rounded-lg transition-colors disabled:opacity-40 text-muted hover:text-accent ${mutation.isPending ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
+      >
+        {mutation.isPending ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
+        {mutation.isPending ? 'Сохраняю…' : 'Сохранить параметры'}
+      </button>
+    </Section>
+  )
+}
+
 function OkdeskInfo({ d, issueId, assigneeName, onOpenExternal }: { d: OkdeskDetail; issueId: number; assigneeName: string | null; onOpenExternal: (extId: number) => void }) {
   const deadline = formatDate(d.deadline_at)
   const overdue = isOverdue(d.deadline_at)
@@ -336,16 +421,8 @@ function OkdeskInfo({ d, issueId, assigneeName, onOpenExternal }: { d: OkdeskDet
         </div>
       </Section>
 
-      {/* Параметры (custom fields) */}
-      {d.parameters.length > 0 && (
-        <Section title="Параметры">
-          <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
-            {d.parameters.map(p => (
-              <MetaRow key={p.name} label={p.name}>{p.value}</MetaRow>
-            ))}
-          </div>
-        </Section>
-      )}
+      {/* Параметры заявки (редактируемые custom fields) */}
+      <EditableParameters d={d} issueId={issueId} />
 
       {/* Описание (вопрос клиента) */}
       <Section title="Вопрос клиента">

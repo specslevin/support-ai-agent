@@ -1483,6 +1483,72 @@ async def change_issue_type(
         raise HTTPException(status_code=500, detail="Failed to change issue type")
 
 
+class IssueParametersUpdate(BaseModel):
+    """Кастом-параметры заявки, которые оператор может править вручную.
+
+    Все поля опциональны: шлём в Okdesk только переданные. Пустые обязательные
+    параметры (Местоположение техники / Контактное лицо / Номер телефона)
+    блокируют перевод заявки в статус «В работе» (баг 64197)."""
+    address: str | None = None
+    contact_person: str | None = None
+    tel_person: str | None = None
+
+
+@router.post("/{issue_id}/parameters")
+async def update_issue_parameters(
+    issue_id: int,
+    body: IssueParametersUpdate,
+    cache: CacheService = Depends(get_cache_service),
+    okdesk: OkdeskService = Depends(get_okdesk_service),
+) -> dict[str, object]:
+    """Обновить кастом-параметры заявки в Okdesk и кэш.
+
+    Нужно, чтобы заполнить обязательные поля (Местоположение техники /
+    Контактное лицо / Номер телефона) и затем перевести заявку «В работе».
+    Доступно только не-demo (POST блокируется middleware для demo)."""
+    if body.address is None and body.contact_person is None and body.tel_person is None:
+        raise HTTPException(status_code=400, detail="Нужно передать хотя бы один параметр")
+    try:
+        issue_data = await cache.get_issue_with_analysis(issue_id)
+        if not issue_data:
+            raise HTTPException(status_code=404, detail="Issue not found")
+        external_id = issue_data["issue"].external_id
+
+        await okdesk.update_issue_parameters(
+            external_id,
+            address=body.address,
+            contact_person=body.contact_person,
+            tel_person=body.tel_person,
+        )
+
+        # Параметры в Okdesk уже обновлены: сбой обновления локального кэша
+        # не должен выглядеть как ошибка записи.
+        try:
+            await cache.refresh_single_issue(issue_id, external_id)
+        except Exception:
+            log.warning("update_params_refresh_cache_failed", issue_id=issue_id)
+
+        # Возвращаем актуальные параметры из свежей выгрузки заявки.
+        try:
+            live = await okdesk.get_issue(external_id)
+            parameters = _build_parameters(live.parameters)
+        except Exception:
+            parameters = []
+        return {"ok": True, "parameters": parameters}
+    except HTTPException:
+        raise
+    except OkdeskAPIError as exc:
+        log.warning("update_params_okdesk_rejected", issue_id=issue_id, status=exc.status_code, body=exc.body)
+        raise HTTPException(status_code=400, detail=f"Okdesk отклонил изменение параметров: {exc.body}")
+    except httpx.HTTPStatusError as exc:
+        body_txt = (exc.response.text or "")[:500] if exc.response is not None else ""
+        log.warning("update_params_okdesk_http_error", issue_id=issue_id, body=body_txt)
+        raise HTTPException(status_code=502, detail=f"Okdesk вернул ошибку при изменении параметров: {body_txt}")
+    except Exception:
+        log.exception("update_issue_parameters_failed", issue_id=issue_id)
+        raise HTTPException(status_code=500, detail="Failed to update issue parameters")
+
+
 @router.patch("/{issue_id}/assignee")
 async def assign_issue(
     issue_id: int,

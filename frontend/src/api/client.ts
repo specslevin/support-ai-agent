@@ -221,6 +221,10 @@ export const api = {
     return http.post(`/issues/${id}/resolve`, null, { params: { status_code, comment_public, ...(comment ? { comment } : {}), ...(delay_to ? { delay_to } : {}) } }).then(r => r.data)
   },
 
+  updateIssueParameters(id: number, params: { address?: string; contact_person?: string; tel_person?: string }): Promise<{ ok: boolean; parameters: { name: string; value: string }[] }> {
+    return http.post(`/issues/${id}/parameters`, params).then(r => r.data)
+  },
+
   bulkAssign(issue_ids: number[], assignee_id: number): Promise<BulkResult> {
     return http.post('/issues/bulk/assignee', { issue_ids, assignee_id }).then(r => r.data)
   },
