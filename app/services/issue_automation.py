@@ -1611,6 +1611,31 @@ class IssueAutomationService:
             log.warning("general_answer_failed", title=(title or "")[:60])
         confidence = max(0.0, min(confidence, 1.0))
 
+        # Фолбэк: если LLM не дал ответа, но гос.номер РАСПОЗНАН — формируем
+        # детерминированный черновик с распознанным объектом и его статусом, чтобы
+        # оператор не видел пустой результат / «номер не найден» (64577: заявка
+        # «не выходит на связь» без даты — номер В876ТР распознан, объект найден).
+        if not answer and plate:
+            if obj is None:
+                answer = (f"По гос.номеру {plate} объект в системе мониторинга не найден — "
+                          f"проверьте корректность номера и привязку терминала к объекту.")
+            else:
+                nm = object_name or plate
+                st_d = facts.get("status") if isinstance(facts.get("status"), dict) else None
+                online = st_d.get("online") if st_d else None
+                last_iso = None
+                if st_d and st_d.get("last_time_unix"):
+                    try:
+                        last_iso = _msk_date_from_ms(st_d["last_time_unix"]).isoformat()
+                    except Exception:
+                        last_iso = None
+                status_txt = "на связи" if online else "не на связи"
+                tail = f" Последний выход на связь: {last_iso}." if last_iso else ""
+                answer = (f"Объект {nm} (гос.номер {plate}): по данным системы мониторинга "
+                          f"терминал {status_txt}.{tail} Для детального разбора уточните дату "
+                          f"возникновения неисправности.")
+            confidence = confidence or 0.3
+
         # ---- assemble reasoning + result --------------------------------
         parts: list[str] = [f"Намерение: {_INTENT_CATEGORY.get(intent, intent)}"]
         if problem:

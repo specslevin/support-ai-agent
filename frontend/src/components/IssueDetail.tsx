@@ -111,7 +111,10 @@ function InstallerExportSection({ issueId }: { issueId: number }) {
   const [copied, setCopied] = useState<'calendar' | 'messenger' | null>(null)
   const [showPreview, setShowPreview] = useState(false)
 
-  const { data, isPending, isError, refetch } = useQuery({
+  // isFetching, а НЕ isPending: у query с enabled:false статус всегда 'pending'
+  // (данных ещё нет), из-за чего спиннер «Собираю…» висел вечно. isFetching=true
+  // только во время фактической загрузки по кнопке.
+  const { data, isFetching, isError, refetch } = useQuery({
     queryKey: ['installer-export', issueId],
     queryFn: () => api.installerExport(issueId),
     enabled: false, // загружаем лениво — только когда оператору это нужно
@@ -138,7 +141,7 @@ function InstallerExportSection({ issueId }: { issueId: number }) {
         <div className="flex flex-wrap gap-2">
           <button
             onClick={() => handleCopy('calendar')}
-            disabled={isPending}
+            disabled={isFetching}
             className="flex items-center gap-1.5 bg-frame border border-border hover:border-accent rounded-lg px-3 py-1.5 text-xs text-muted hover:text-accent transition-colors disabled:opacity-50"
           >
             {copied === 'calendar' ? <Check size={14} className="text-success" /> : <Calendar size={14} />}
@@ -146,13 +149,13 @@ function InstallerExportSection({ issueId }: { issueId: number }) {
           </button>
           <button
             onClick={() => handleCopy('messenger')}
-            disabled={isPending}
+            disabled={isFetching}
             className="flex items-center gap-1.5 bg-frame border border-border hover:border-accent rounded-lg px-3 py-1.5 text-xs text-muted hover:text-accent transition-colors disabled:opacity-50"
           >
             {copied === 'messenger' ? <Check size={14} className="text-success" /> : <Send size={14} />}
             {copied === 'messenger' ? 'Скопировано' : 'Копировать (мессенджер)'}
           </button>
-          {isPending && <Working label="Собираю…" className="text-muted" />}
+          {isFetching && <Working label="Собираю…" className="text-muted" />}
         </div>
 
         {isError && (
@@ -2009,7 +2012,8 @@ export function IssueDetail() {
                   className={[
                     'rounded-lg px-3 py-2.5 text-xs space-y-1',
                     isAutoNotif
-                      ? 'bg-base border-l-2 border-border opacity-70'
+                      ? 'bg-purple-500/5 border-l-2 border-purple-500/40 opacity-80'
+                      : isSystem ? 'bg-purple-500/10 border-l-2 border-purple-500/60'
                       : isClient ? 'bg-frame border-l-2 border-info/60' : 'bg-card border-l-2 border-accent/40',
                     isInternal ? 'border border-dashed border-warning/50 bg-warning/5' : '',
                   ].join(' ')}
@@ -2019,7 +2023,7 @@ export function IssueDetail() {
                       <span
                         title={kindLabel}
                         className={`inline-flex items-center gap-1 shrink-0 px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wide ${
-                          isClient ? 'bg-info/15 text-info' : isSystem ? 'bg-frame text-muted' : 'bg-accent/15 text-accent'
+                          isClient ? 'bg-info/15 text-info' : isSystem ? 'bg-purple-500/20 text-purple-300' : 'bg-accent/15 text-accent'
                         }`}
                       >
                         <KindIcon size={10} /> {kindLabel}
