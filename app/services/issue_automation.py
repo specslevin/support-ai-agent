@@ -452,22 +452,24 @@ def _parse_date_short(m: "re.Match[str]") -> str | None:
         return None
 
 
-def _parse_summary_table(text: str) -> list[tuple[str, str | None]]:
+def _parse_summary_table(text: str) -> list[tuple[str, str | None, float | None, float | None]]:
     """Parse a «сводное письмо» table (header contains «Дата выезда»).
 
     Each ТС occupies one or more rows; one row = one «выезд» on its own date
     (incl. «нет данных» rows, which still carry a date). One ТС may have SEVERAL
     dates → SEVERAL records (по одному объекту несколько выездов по разным датам,
-    63317/О579СХ). We therefore emit ONE ``(plate, date)`` per distinct date row.
+    63317/О579СХ). We therefore emit ONE record per distinct date row.
 
-    Returns a list of ``(plate, date_iso | None)`` pairs, deduped by
-    ``(plate, date)``. A plate that has no parseable date in any of its rows is
-    still emitted once as ``(plate, None)`` so it isn't silently dropped.
+    Колонки строки: «… | Дата выезда | Пробег по Глонасс | Пробег по 1С(ПЛ) |
+    Разница% ». После даты берём ДВА первых числа: 1-е = пробег по ГЛОНАСС
+    (declared_system_km), 2-е = пробег по 1С/путевому листу (sheet_km); 3-е
+    (разница%) игнорируем (63317 — клиент даёт оба пробега в таблице).
 
-    Strategy: line-by-line scan; ``_PLATE_STD_RE`` switches the «current plate»,
-    every parseable date under the current plate becomes a record.
+    Returns list of ``(plate, date_iso|None, glonass_km|None, sheet_km|None)``,
+    deduped by ``(plate, date)``. A plate with no parseable date is still emitted
+    once as ``(plate, None, None, None)`` so it isn't silently dropped.
     """
-    results: list[tuple[str, str | None]] = []
+    results: list[tuple[str, str | None, float | None, float | None]] = []
     seen_pairs: set[tuple[str, str | None]] = set()
     plates_order: list[str] = []
     plates_with_date: set[str] = set()
@@ -495,13 +497,21 @@ def _parse_summary_table(text: str) -> list[tuple[str, str | None]]:
                     key = (current_plate, iso)
                     if key not in seen_pairs:
                         seen_pairs.add(key)
-                        results.append((current_plate, iso))
+                        # Числа ПОСЛЕ даты: убираем время в скобках «(19:00)» и
+                        # хвостовые даты интервала, берём первые два числа.
+                        tail = stripped[dm.end():]
+                        tail = re.sub(r"\([^)]*\)", " ", tail)
+                        tail = re.sub(r"\d{1,2}[.\-/]\d{1,2}[.\-/]\d{2,4}", " ", tail)
+                        nums = re.findall(r"\d+(?:[.,]\d+)?", tail)
+                        glonass = _safe_km(nums[0]) if len(nums) >= 1 else None
+                        sheet = _safe_km(nums[1]) if len(nums) >= 2 else None
+                        results.append((current_plate, iso, glonass, sheet))
                         plates_with_date.add(current_plate)
 
     # Plates that appeared but never had a parseable date → emit once as None.
     for p in plates_order:
         if p not in plates_with_date:
-            results.append((p, None))
+            results.append((p, None, None, None))
 
     return results
 
@@ -548,6 +558,10 @@ _RANGE_RE = re.compile(
     r"\s*(?:[–—-]|\bпо\b|\bдо\b)\s*"
     r"(\d{1,2})[.\-/](\d{1,2})(?:[.\-/](\d{2,4}))?"
 )
+# Интервал с ОБЩИМ месяцем: «26-28.06.2026», «26 - 28.06» (64680) — у первого дня
+# нет своего «.MM», месяц/год общий для обоих дней.
+_RANGE_DDMM_RE = re.compile(
+    r"(?<!\d)(\d{1,2})\s*[–—-]\s*(\d{1,2})[.\-/](\d{1,2})(?:[.\-/](\d{2,4}))?(?!\d)")
 
 
 def _norm_year(y: str | None, fallback: int) -> int:
@@ -563,6 +577,17 @@ def _detect_date_range(text: str) -> tuple[str, str] | None:
     Год берётся из явного (любого из двух), иначе текущий (МСК). Возвращаем только
     валидный интервал: start<=end и длиной до 31 дня (иначе это не «дата неисправности»)."""
     cur = _msk_today().year
+    # Сначала интервал с общим месяцем «DD-DD.MM[.YYYY]» (64680).
+    for m in _RANGE_DDMM_RE.finditer(text or ""):
+        d1, d2, mo, y = m.groups()
+        try:
+            yr = _norm_year(y, cur)
+            start = _dt.date(yr, int(mo), int(d1))
+            end = _dt.date(yr, int(mo), int(d2))
+        except (ValueError, TypeError):
+            continue
+        if start <= end and (end - start).days <= 7:
+            return start.isoformat(), end.isoformat()
     for m in _RANGE_RE.finditer(text or ""):
         d1, mo1, y1, d2, mo2, y2 = m.groups()
         try:
@@ -1189,6 +1214,12 @@ class IssueAutomationService:
             or (moving and f.speed_spike_count is not None and f.speed_spike_count >= 100)
             or (moving and f.low_sat_ratio is not None and f.low_sat_ratio > 0.08)
             or (moving and f.zero_coord_moving_ratio is not None and f.zero_coord_moving_ratio > 0.15)
+            # СТОЯЧЕЕ глушение (64657 В791МН): пакеты ИДУТ и питание В НОРМЕ, но
+            # спутников почти нет (low_sat≈1.0) — это подавление GPS, а не стоянка
+            # без обзора неба (там потеря частичная). Требуем норм. питание, чтобы
+            # не путать с отключённым/разряженным терминалом.
+            or (f.packets > 0 and f.low_sat_ratio is not None and f.low_sat_ratio > 0.9
+                and (f.avg_power_v is None or f.avg_power_v >= _POWER_OFF_V))
         )
         if jamming:
             f.flags.append("jamming")
@@ -1330,6 +1361,10 @@ class IssueAutomationService:
             "отвечай по интервалу (укажи его), а не по одному дню. "
             "ЗНАНИЯ о данных, питании и напряжении (применяй при выводе): "
             "(1) если за дату ЕСТЬ данные/пакеты — значит питание на терминале БЫЛО; "
+            "(1а) НЕ выбирай «Не было питания», если доля_без_питания (power_off_ratio)≈0 и/или "
+            "среднее напряжение в норме и есть пакеты/движение — питание было, причина в другом "
+            "(глушение/связь/расхождение пробега); «Не было питания» — только при реально низком "
+            "напряжении на СТОЯЩЕМ ТС или полном отсутствии данных из-за обесточивания; "
             "(2) если данных НЕТ — либо не было питания на терминале, либо проблема со связью (напр. не работает SIM-карта); "
             "(3) «напряжение» — это бортовая сеть ОБЪЕКТА: норма для легковых ≥12 В, для грузовых ≥24 В; низкое "
             "напряжение указывает на проблему питания/АКБ, но если данные идут — терминал запитан; "
@@ -1748,6 +1783,27 @@ class IssueAutomationService:
                 log.warning("attachment_read_failed", issue=issue_external_id, name=name)
         return "\n\n".join(parts)
 
+    async def _resolve_alt_plate(self, current: str | None, text: str) -> str | None:
+        """Среди распознанных в тексте гос.номеров вернуть первый, КОТОРЫЙ ЕСТЬ в
+        гео (кроме current). Для случаев, когда номер из темы неточный/опечатка, а
+        в теле есть валидный (64655: Х871НХ→Т871НХ64). Best-effort, вызывается
+        только когда объект по основному номеру не найден."""
+        try:
+            cands = extract_all_plates(text)
+        except Exception:
+            return None
+        seen: set[str] = set()
+        for p in cands:
+            if not p or p == current or p in seen:
+                continue
+            seen.add(p)
+            try:
+                if await self._geo.find_object_by_plate(p):
+                    return p
+            except Exception:  # pragma: no cover - geo may fail
+                continue
+        return None
+
     async def automate(self, title: str | None, description: str | None,
                        params: list[dict[str, Any]] | None = None,
                        issue_type: str | None = None,
@@ -1830,9 +1886,22 @@ class IssueAutomationService:
             log.exception("gather_telemetry_failed", plate=parsed.plate)
             return _finalize(await self._draft_general(title, description, attachments_text, sender, comments_llm))
         if "object_not_found" in telemetry.flags:
-            # Plate parsed but no matching object in Geo: general path can still
-            # understand the request and tell the operator what to verify.
-            return _finalize(await self._draft_general(title, description, attachments_text, sender, comments_llm))
+            # Номер из ТЕМЫ мог быть неточным/опечаткой (64655: «Х871НХ» в теме vs
+            # «Т871НХ64» в теле — в гео есть второй). Пробуем другие распознанные
+            # номера и берём первый, который реально находится в гео.
+            alt = await self._resolve_alt_plate(
+                parsed.plate, f"{title or ''} {_strip_html(description)} {attachments_text or ''}")
+            if alt and alt != parsed.plate:
+                parsed.plate = alt
+                try:
+                    telemetry = await self.gather_telemetry(parsed.plate, parsed.date, parsed.date_to)
+                except Exception:  # pragma: no cover
+                    log.exception("gather_telemetry_failed", plate=parsed.plate)
+                    return _finalize(await self._draft_general(title, description, attachments_text, sender, comments_llm))
+            if "object_not_found" in telemetry.flags:
+                # Plate parsed but no matching object in Geo: general path can still
+                # understand the request and tell the operator what to verify.
+                return _finalize(await self._draft_general(title, description, attachments_text, sender, comments_llm))
 
         # Переоткрытие заявки: если комментарий вводит НОВУЮ дату неисправности
         # (свежее даты тела), анализируем ИМЕННО ЕЁ — дата тела уже была отвечена
@@ -2123,7 +2192,10 @@ class IssueAutomationService:
             except Exception:
                 log.warning("analyze_batch_extract_failed", file=name)
                 text = ""
-            if not text or not text.strip():
+            # Пустые/мусорные вложения (подпись письма image001.jpg → OCR в пару
+            # символов) НЕ дают данных, но через title-fallback плодили ложный
+            # объект «Нет номера/даты» (64657). Порог 15 символов отсекает шум.
+            if not text or len(text.strip()) < 15:
                 continue
             try:
                 addr_m = re.search(r"по\s+адресу[:\s]+(.{5,120}?)(?:\s+и\s+состав|\s+наход|\.|$)", text, re.I | re.S)
@@ -2159,8 +2231,9 @@ class IssueAutomationService:
                 # Сводное письмо-таблица (Саратовские РС, 63317):
                 # «Автомобиль, г/н | Дата выезда | Пробег по Глонасс | Пробег по 1С».
                 summary_pairs = _parse_summary_table(text)
-                for plate, pdate in summary_pairs:
-                    targets.append((plate, pdate, None, None))
+                for plate, pdate, glonass, sheet in summary_pairs:
+                    # targets: (plate, date, sheet=ПЛ/1С, glonass=заявл. система)
+                    targets.append((plate, pdate, sheet, glonass))
                 if not targets:
                     p = self.parse_issue(name, "", None, extra_text=text)
                     base_date = p.date
