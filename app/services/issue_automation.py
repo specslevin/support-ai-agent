@@ -1214,10 +1214,13 @@ class IssueAutomationService:
             or (moving and f.speed_spike_count is not None and f.speed_spike_count >= 100)
             or (moving and f.low_sat_ratio is not None and f.low_sat_ratio > 0.08)
             or (moving and f.zero_coord_moving_ratio is not None and f.zero_coord_moving_ratio > 0.15)
-            # СТОЯЧЕЕ глушение (64657 В791МН): пакеты ИДУТ и питание В НОРМЕ, но
-            # спутников почти нет (low_sat≈1.0) — это подавление GPS, а не стоянка
-            # без обзора неба (там потеря частичная). Требуем норм. питание, чтобы
-            # не путать с отключённым/разряженным терминалом.
+            # Глушение, при котором ТС ВЫГЛЯДИТ «стоячим» (нет скорости/трека) — но
+            # это СЛЕДСТВИЕ подавления GPS, а не реальная стоянка: спутников почти
+            # нет (low_sat≈1.0), поэтому ни координат, ни скорости, ни трека не
+            # зафиксировано; при этом по напряжению (питание в норме, пакеты идут)
+            # терминал работал и ТС, скорее всего, было В ДВИЖЕНИИ (64657 В791МН).
+            # Поэтому здесь НЕ требуем moving (его обнулило само глушение); требуем
+            # лишь норм. питание, чтобы не спутать с обесточенным терминалом.
             or (f.packets > 0 and f.low_sat_ratio is not None and f.low_sat_ratio > 0.9
                 and (f.avg_power_v is None or f.avg_power_v >= _POWER_OFF_V))
         )

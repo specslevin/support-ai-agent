@@ -1,7 +1,7 @@
 # Web Dashboard Architecture Plan
 
 **Date Created:** 2026-06-13
-**Status check:** 2026-06-27 — все 4 фазы MVP реализованы и в проде; план развития
+**Status check:** 2026-06-29 — все 4 фазы MVP реализованы и в проде; план развития
 живёт в [ПЛАН_РАЗВИТИЯ.md](ПЛАН_РАЗВИТИЯ.md). Этот документ — исходный архитектурный план.
 **Project:** support-ai-agent web panel for techsupport
 **Purpose:** Analyze GPS mileage discrepancy issues with Okdesk integration + GPSPOS Geo API
@@ -10,7 +10,10 @@
 > refresh каждые 5 мин) ✅, Phase 2 (фронт React) ✅, Phase 3 (детали + Geo + карта +
 > анализ + комментарии + действия) ✅, Phase 4 (UI lime-accent, build в static, опт.
 > React Query) ✅. Сверх MVP: ИИ-автоанализ, вложения/OCR, разбор «общих» заявок по
-> форматам вложений, массовое редактирование, сроки/SLA, единый мастер ИИ.
+> форматам вложений, массовое редактирование, сроки/SLA (+TG-алерты включены), единый
+> мастер ИИ, петля обратной связи ИИ («Оценки ИИ»), копирование монтажнику
+> (installer_export), редактирование параметров заявки, личные шаблоны (user_id).
+> Из «Future Enhancements» реализовано: batch-операции, Telegram-интеграция (бот + алерты).
 > Не сделано из «Future/Risk»: Okdesk webhook, Redis, WebSocket, RBAC (есть простая
 > файловая авторизация admin/demo).
 

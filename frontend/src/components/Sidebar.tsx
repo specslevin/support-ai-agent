@@ -24,7 +24,7 @@ type NavEntry = {
 
 const NAV: NavEntry[] = [
   { id: 'issues', label: 'Заявки', icon: ClipboardList },
-  { id: 'chat', label: 'ИИ-чат', icon: MessageSquare },
+  { id: 'chat', label: 'ИИ-чат', icon: MessageSquare, stub: true },
   { id: 'ai_feedback', label: 'Оценки ИИ', icon: ThumbsUp },
   { id: 'mango', label: 'Mango — звонки', icon: Phone, stub: true },
   { id: 'installers', label: 'Выезды монтажников', icon: Truck, stub: true },
