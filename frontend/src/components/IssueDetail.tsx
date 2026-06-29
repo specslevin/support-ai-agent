@@ -1034,6 +1034,14 @@ function AutoAnalysis({ issueId, latestAnalysis, issueTitle, companyName }: { is
                 <span className={`text-[10px] ${shown.needs_review ? 'text-warning' : 'text-green-400'}`}>
                   уверенность {conf}%{shown.needs_review ? ' · нужна проверка' : ''}
                 </span>
+                {shown.auto_eligible && (
+                  <span
+                    title="ИИ уверен: вердикт надёжен (можно отвечать без детальной проверки)"
+                    className="px-2 py-0.5 rounded bg-success/15 text-success text-[10px] font-semibold"
+                  >
+                    ✓ можно авто
+                  </span>
+                )}
               </div>
               {shown.needs_remote_diagnostics && (
                 <div className="flex items-start gap-1.5 bg-warning/10 border border-warning/30 rounded-lg px-3 py-2 text-[11px] text-warning leading-relaxed">

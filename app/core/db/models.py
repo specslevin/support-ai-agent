@@ -203,6 +203,11 @@ class AiFeedback(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )
+    # Отметка «разобрано и исправлено» — чтобы в экране «Оценки ИИ» отличать
+    # обработанные ошибки от ещё не исправленных, когда их накопится много.
+    resolved: Mapped[bool] = mapped_column(Integer, default=0, nullable=False)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    resolved_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class ObjectResolveCache(Base):

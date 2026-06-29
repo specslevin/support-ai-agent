@@ -125,6 +125,7 @@ export interface AutomationResult {
   needs_review: boolean
   needs_remote_diagnostics?: boolean
   spec_vehicle?: boolean
+  auto_eligible?: boolean
   error: string | null
 }
 
@@ -277,6 +278,7 @@ export interface AiFeedback {
 
 /** Элемент списка GET /issues/ai_feedback/list */
 export interface AiFeedbackListItem {
+  id: number
   issue_external_id: number
   rating: AiFeedbackRating
   error_kind: AiFeedbackErrorKind | null
@@ -285,4 +287,7 @@ export interface AiFeedbackListItem {
   correct_category: string | null
   created_by: string | null
   created_at: string | null
+  resolved?: boolean
+  resolved_by?: string | null
+  resolved_at?: string | null
 }

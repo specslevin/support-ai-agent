@@ -35,6 +35,14 @@ def _run_lightweight_migrations(conn) -> None:
     if not _column_exists(conn, "app_templates", "user_id"):
         conn.exec_driver_sql("ALTER TABLE app_templates ADD COLUMN user_id TEXT")
 
+    # ai_feedback: отметка «разобрано и исправлено» (resolved) + кто/когда.
+    if not _column_exists(conn, "ai_feedback", "resolved"):
+        conn.exec_driver_sql("ALTER TABLE ai_feedback ADD COLUMN resolved INTEGER NOT NULL DEFAULT 0")
+    if not _column_exists(conn, "ai_feedback", "resolved_at"):
+        conn.exec_driver_sql("ALTER TABLE ai_feedback ADD COLUMN resolved_at DATETIME")
+    if not _column_exists(conn, "ai_feedback", "resolved_by"):
+        conn.exec_driver_sql("ALTER TABLE ai_feedback ADD COLUMN resolved_by TEXT")
+
 
 async def init_db():
     async with engine.begin() as conn:

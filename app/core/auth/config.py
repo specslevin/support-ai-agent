@@ -29,6 +29,10 @@ log = structlog.get_logger(__name__)
 _DEFAULT_TTL = 12 * 3600
 _DEFAULT_SECRET = "change-me-support-ai-secret"  # noqa: S105 — dev fallback only
 
+# Допустимые роли: admin (полный доступ + управление учётками), operator (доступ
+# к записи как admin, но без админ-эндпоинтов), demo (только просмотр).
+_ROLES = ("admin", "operator", "demo")
+
 
 def _parse_seed(raw: str | None, role: str) -> dict[str, tuple[str, str]]:
     """Parse ``user:password`` pairs → {username: (password, role)}."""
@@ -111,4 +115,48 @@ class AuthConfig:
         rec["pw_hash"] = hash_password(new_password)
         self._save(self.users)
         log.info("auth_password_changed", username=username)
+        return True
+
+    # ----- user management (admin) --------------------------------------
+    def _admin_count(self) -> int:
+        return sum(1 for v in self.users.values() if v.get("role") == "admin")
+
+    def create_user(self, username: str, password: str, role: str) -> bool:
+        """Создать учётку. False, если имя занято/пустое, пароль пуст или роль
+        невалидна. role ∈ {admin, operator, demo}."""
+        username = (username or "").strip()
+        if (not username or username in self.users
+                or not (password or "").strip()
+                or role not in _ROLES):
+            return False
+        self.users[username] = {"pw_hash": hash_password(password), "role": role}
+        self._save(self.users)
+        log.info("auth_user_created", username=username, role=role)
+        return True
+
+    def delete_user(self, username: str) -> bool:
+        """Удалить учётку. False, если пользователя нет ИЛИ это последний admin."""
+        username = (username or "").strip()
+        rec = self.users.get(username)
+        if not rec:
+            return False
+        if rec.get("role") == "admin" and self._admin_count() <= 1:
+            return False
+        del self.users[username]
+        self._save(self.users)
+        log.info("auth_user_deleted", username=username)
+        return True
+
+    def set_role(self, username: str, role: str) -> bool:
+        """Сменить роль. False, если пользователя нет, роль невалидна ИЛИ это
+        попытка снять admin с последнего администратора."""
+        username = (username or "").strip()
+        rec = self.users.get(username)
+        if not rec or role not in _ROLES:
+            return False
+        if rec.get("role") == "admin" and role != "admin" and self._admin_count() <= 1:
+            return False
+        rec["role"] = role
+        self._save(self.users)
+        log.info("auth_role_changed", username=username, role=role)
         return True

@@ -1,11 +1,18 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import {
-  Plus, Search, Star, Trash2, Pencil, X, Check, Sparkles, FileText, Loader2, KeyRound, Brain, RefreshCw,
+  Plus, Search, Star, Trash2, Pencil, X, Check, Sparkles, FileText, Loader2, KeyRound, Brain, RefreshCw, UserPlus,
 } from 'lucide-react'
 import { api, authApi } from '../api/client'
 import { useAuthStore } from '../store/authStore'
+import type { UserRole } from '../store/authStore'
 import type { TemplateCreate } from '../types'
+
+const ROLE_OPTIONS: { value: UserRole; label: string }[] = [
+  { value: 'admin', label: 'Администратор' },
+  { value: 'operator', label: 'Оператор' },
+  { value: 'demo', label: 'Демо (только чтение)' },
+]
 import { hasPlaceholders } from '../lib/templates'
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -200,6 +207,7 @@ function TemplateForm({
 }
 
 function PasswordManager() {
+  const queryClient = useQueryClient()
   const { data: users = [], isLoading } = useQuery({
     queryKey: ['auth-users'],
     queryFn: () => authApi.listUsers(),
@@ -208,6 +216,22 @@ function PasswordManager() {
 
   const [passwords, setPasswords] = useState<Record<string, string>>({})
   const [statuses, setStatuses] = useState<Record<string, 'ok' | 'error'>>({})
+
+  // Форма создания пользователя.
+  const [newUsername, setNewUsername] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [newRole, setNewRole] = useState<UserRole>('operator')
+  const [createError, setCreateError] = useState<string | null>(null)
+
+  const refresh = () => queryClient.invalidateQueries({ queryKey: ['auth-users'] })
+
+  const errMsg = (err: unknown, fallback: string): string => {
+    if (err && typeof err === 'object' && 'response' in err) {
+      const detail = (err as { response?: { data?: { detail?: string } } }).response?.data?.detail
+      if (detail) return detail
+    }
+    return fallback
+  }
 
   const changeMut = useMutation({
     mutationFn: ({ username, password }: { username: string; password: string }) =>
@@ -222,26 +246,100 @@ function PasswordManager() {
     },
   })
 
+  const createMut = useMutation({
+    mutationFn: ({ username, password, role }: { username: string; password: string; role: UserRole }) =>
+      authApi.createUser(username, password, role),
+    onSuccess: () => {
+      setNewUsername(''); setNewPassword(''); setNewRole('operator'); setCreateError(null)
+      refresh()
+    },
+    onError: (err) => setCreateError(errMsg(err, 'Не удалось создать пользователя')),
+  })
+
+  const deleteMut = useMutation({
+    mutationFn: (username: string) => authApi.deleteUser(username),
+    onSuccess: () => refresh(),
+    onError: (err, username) => {
+      window.alert(errMsg(err, 'Не удалось удалить пользователя'))
+      setStatuses(s => ({ ...s, [username]: 'error' }))
+    },
+  })
+
+  const roleMut = useMutation({
+    mutationFn: ({ username, role }: { username: string; role: UserRole }) =>
+      authApi.setRole(username, role),
+    onSuccess: () => refresh(),
+    onError: (_err, { username }) => setStatuses(s => ({ ...s, [username]: 'error' })),
+  })
+
+  const onDelete = (username: string) => {
+    if (window.confirm(`Удалить пользователя «${username}»? Действие необратимо.`)) {
+      deleteMut.mutate(username)
+    }
+  }
+
   if (isLoading) {
     return <p className="flex items-center gap-2 text-xs text-muted"><Loader2 size={14} className="animate-spin" /> Загрузка учёток…</p>
   }
 
+  const canCreate = newUsername.trim().length > 0 && newPassword.trim().length > 0
+
   return (
     <div className="space-y-3">
+      {/* Создание пользователя */}
+      <div className="flex flex-wrap items-center gap-2 bg-card border border-border rounded-lg px-3 py-2.5">
+        <input
+          value={newUsername}
+          onChange={e => setNewUsername(e.target.value)}
+          placeholder="Логин"
+          className="w-32 bg-frame border border-border rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:border-accent"
+        />
+        <input
+          type="password"
+          value={newPassword}
+          onChange={e => setNewPassword(e.target.value)}
+          placeholder="Пароль"
+          className="w-36 bg-frame border border-border rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:border-accent"
+        />
+        <select
+          value={newRole}
+          onChange={e => setNewRole(e.target.value as UserRole)}
+          className="bg-frame border border-border rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-accent"
+        >
+          {ROLE_OPTIONS.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
+        </select>
+        <button
+          disabled={!canCreate || createMut.isPending}
+          onClick={() => createMut.mutate({ username: newUsername.trim(), password: newPassword, role: newRole })}
+          className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium bg-accent text-black rounded-lg hover:opacity-90 transition-opacity disabled:opacity-40 shrink-0"
+        >
+          {createMut.isPending ? <Loader2 size={13} className="animate-spin" /> : <UserPlus size={13} />}
+          Создать
+        </button>
+        {createError && <span className="text-xs text-orange-400 w-full">{createError}</span>}
+      </div>
+
       {users.map(u => {
         const pw = passwords[u.username] ?? ''
         const st = statuses[u.username]
         const isPending = changeMut.isPending && changeMut.variables?.username === u.username
+        const isDeleting = deleteMut.isPending && deleteMut.variables === u.username
         return (
-          <div key={u.username} className="flex items-center gap-3 bg-card border border-border rounded-lg px-3 py-2">
+          <div key={u.username} className="flex flex-wrap items-center gap-3 bg-card border border-border rounded-lg px-3 py-2">
             <span className="text-xs font-medium text-white w-24 shrink-0 truncate">{u.username}</span>
-            <span className="text-[10px] uppercase tracking-wide text-muted/60 w-10 shrink-0">{u.role}</span>
+            <select
+              value={u.role}
+              onChange={e => roleMut.mutate({ username: u.username, role: e.target.value as UserRole })}
+              className="bg-frame border border-border rounded-lg px-2 py-1.5 text-[11px] focus:outline-none focus:border-accent shrink-0"
+            >
+              {ROLE_OPTIONS.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
+            </select>
             <input
               type="password"
               value={pw}
               onChange={e => setPasswords(p => ({ ...p, [u.username]: e.target.value }))}
               placeholder="Новый пароль"
-              className="flex-1 bg-frame border border-border rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:border-accent"
+              className="flex-1 min-w-[120px] bg-frame border border-border rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:border-accent"
             />
             <button
               disabled={!pw.trim() || isPending}
@@ -250,6 +348,14 @@ function PasswordManager() {
             >
               {isPending ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
               Сменить
+            </button>
+            <button
+              disabled={isDeleting}
+              onClick={() => onDelete(u.username)}
+              title="Удалить пользователя"
+              className="flex items-center gap-1 px-2 py-1.5 text-xs font-medium bg-danger/15 text-danger rounded-lg hover:bg-danger/25 transition-colors disabled:opacity-40 shrink-0"
+            >
+              {isDeleting ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
             </button>
             {st === 'ok' && <Check size={14} className="text-green-400 shrink-0" />}
             {st === 'error' && <span className="text-xs text-orange-400 shrink-0">Ошибка</span>}

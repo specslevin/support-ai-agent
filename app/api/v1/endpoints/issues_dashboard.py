@@ -1037,6 +1037,23 @@ async def list_ai_feedback(
     return {"items": items, "count": len(items)}
 
 
+@router.post("/ai_feedback/{feedback_id}/resolve")
+async def resolve_ai_feedback(
+    feedback_id: int,
+    request: Request,
+    resolved: bool = Query(True, description="true=исправлено, false=снять отметку"),
+    cache: CacheService = Depends(get_cache_service),
+) -> dict[str, object]:
+    """Отметить оценку (обычно «ошибка») как разобранную и ИСПРАВЛЕННУЮ — чтобы в
+    экране «Оценки ИИ» отличать обработанные от ещё не исправленных."""
+    user = getattr(request.state, "user", None)
+    ok = await cache.set_ai_feedback_resolved(
+        feedback_id, resolved, by=(user.get("u") if user else None))
+    if not ok:
+        raise HTTPException(status_code=404, detail="Оценка не найдена")
+    return {"ok": True, "resolved": resolved}
+
+
 @router.post("/{issue_id}/compose_answer")
 async def compose_answer(
     issue_id: int,

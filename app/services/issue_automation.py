@@ -741,6 +741,10 @@ class AutomationResult:
     needs_remote_diagnostics: bool = False
     # Спецтехника без км-пробега (трактор/погрузчик/буровая) — км-вердикт ненадёжен.
     spec_vehicle: bool = False
+    # Безопасная граница авто-разбора: вердикт надёжен (можно отвечать без детальной
+    # проверки). True только если needs_review=False, confidence>=0.8, категория
+    # «Глушение»/«Данные верны» и есть гос.номер + дата.
+    auto_eligible: bool = False
 
 
 # Canonical answer catalogue mirroring okdesk-console templates (category -> guidance).
@@ -1866,6 +1870,13 @@ class IssueAutomationService:
             if notes:
                 res.reasoning = " ".join(notes) + ("\n" + res.reasoning if res.reasoning else "")
                 res.needs_review = True
+            res.auto_eligible = (
+                (not res.needs_review)
+                and res.confidence >= 0.8
+                and res.category in ("Глушение", "Данные верны")
+                and bool(res.parsed.plate)
+                and bool(res.parsed.date)
+            )
             return res
 
         telemetry = TelemetryFacts()
@@ -2492,4 +2503,5 @@ class IssueAutomationService:
             "error": r.error,
             "needs_remote_diagnostics": r.needs_remote_diagnostics,
             "spec_vehicle": r.spec_vehicle,
+            "auto_eligible": r.auto_eligible,
         }

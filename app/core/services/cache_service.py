@@ -452,11 +452,28 @@ class CacheService:
             stmt = stmt.where(AiFeedback.rating == rating)
         rows = list((await self.db.execute(stmt)).scalars().all())
         return [{
+            "id": r.id,
             "issue_external_id": r.issue_external_id, "rating": r.rating,
             "error_kind": r.error_kind, "comment": r.comment, "ai_category": r.ai_category,
             "correct_category": r.correct_category, "created_by": r.created_by,
             "created_at": r.created_at.isoformat(),
+            "resolved": bool(r.resolved),
+            "resolved_at": r.resolved_at.isoformat() if r.resolved_at else None,
+            "resolved_by": r.resolved_by,
         } for r in rows]
+
+    async def set_ai_feedback_resolved(self, fid: int, resolved: bool,
+                                       by: str | None = None) -> bool:
+        """Отметить запись оценки как исправленную/не исправленную."""
+        row = (await self.db.execute(
+            select(AiFeedback).where(AiFeedback.id == fid))).scalar_one_or_none()
+        if not row:
+            return False
+        row.resolved = 1 if resolved else 0
+        row.resolved_by = by if resolved else None
+        row.resolved_at = datetime.utcnow() if resolved else None
+        await self.db.commit()
+        return True
 
     async def find_similar_resolved(
         self,

@@ -271,6 +271,10 @@ def _demo_write_allowed(path: str) -> bool:
 async def auth_middleware(request: Request, call_next):
     """Enforce a valid token on /api/v1 routes; block writes for the demo role.
 
+    Roles: admin (full access + user management via _require_admin), operator
+    (write access like admin, but admin-only endpoints stay gated by
+    _require_admin), demo (read-only). Only ``demo`` is blocked from writes here.
+
     Non-API paths (SPA, static, /health, /docs, Telegram webhook) are untouched —
     the React app must load so the user can reach the login screen. The token is
     read from the ``Authorization: Bearer`` header OR a ``?token=`` query param

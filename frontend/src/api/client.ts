@@ -1,5 +1,6 @@
 import axios from 'axios'
 import type { IssuesListResponse, IssueDetail, Comment, Analysis, Template, TemplateCategory, TemplateCreate, TemplateUpdate, AutomationResult, TrackData, IssueAttachment, BatchResult, TemplateValues, ChatResponse, AiFeedback, AiFeedbackBody, AiFeedbackListItem, AiFeedbackRating, InstallerExport } from '../types'
+import type { UserRole } from '../store/authStore'
 
 const http = axios.create({
   baseURL: '/api/v1',
@@ -50,9 +51,14 @@ http.interceptors.response.use(
 )
 
 // Auth-specific API calls
+export interface UserOut {
+  username: string
+  role: UserRole
+}
+
 export interface LoginResponse {
   token: string
-  user: { username: string; role: 'admin' | 'demo' }
+  user: UserOut
 }
 
 export const authApi = {
@@ -60,16 +66,28 @@ export const authApi = {
     return http.post('/auth/login', { username, password }).then(r => r.data)
   },
 
-  getMe(): Promise<{ username: string; role: 'admin' | 'demo' }> {
+  getMe(): Promise<UserOut> {
     return http.get('/auth/me').then(r => r.data)
   },
 
-  listUsers(): Promise<{ username: string; role: 'admin' | 'demo' }[]> {
+  listUsers(): Promise<UserOut[]> {
     return http.get('/auth/users').then(r => r.data)
   },
 
   changePassword(username: string, password: string): Promise<{ ok: boolean }> {
     return http.post(`/auth/users/${username}/password`, { password }).then(r => r.data)
+  },
+
+  createUser(username: string, password: string, role: UserRole): Promise<{ ok: boolean }> {
+    return http.post('/auth/users', { username, password, role }).then(r => r.data)
+  },
+
+  deleteUser(username: string): Promise<{ ok: boolean }> {
+    return http.delete(`/auth/users/${username}`).then(r => r.data)
+  },
+
+  setRole(username: string, role: UserRole): Promise<{ ok: boolean }> {
+    return http.post(`/auth/users/${username}/role`, { role }).then(r => r.data)
   },
 }
 
@@ -276,6 +294,10 @@ export const api = {
 
   listAiFeedback(rating?: AiFeedbackRating): Promise<{ items: AiFeedbackListItem[]; count: number }> {
     return http.get('/issues/ai_feedback/list', { params: rating ? { rating } : undefined }).then(r => r.data)
+  },
+
+  resolveAiFeedback(id: number, resolved = true): Promise<{ ok: boolean; resolved: boolean }> {
+    return http.post(`/issues/ai_feedback/${id}/resolve`, null, { params: { resolved } }).then(r => r.data)
   },
 }
 
