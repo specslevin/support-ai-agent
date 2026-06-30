@@ -531,7 +531,7 @@ def _parse_summary_table(text: str) -> list[tuple[str, str | None, float | None,
     return results
 
 
-def _parse_grouping_table(text: str) -> list[tuple[str, float | None, float | None]]:
+def _parse_grouping_table(text: str) -> list[tuple[str | None, float | None, float | None]]:
     """Табличный отчёт «Группировка <дата> | Пробег по ГЛОНАСС | Пробег ТС | …»
     (Ульяновские РС, 64436): по одному XLSX на дату, строка — один ТС.
 
@@ -539,7 +539,7 @@ def _parse_grouping_table(text: str) -> list[tuple[str, float | None, float | No
     заявленный клиентом пробег по системе. Пустые ячейки XLSX выпадают при
     извлечении, поэтому берём ЧИСЛА после ячейки с гос.номером: 1-е = ГЛОНАСС,
     2-е = Пробег ТС. Возвращает (plate, sheet_km|None, glonass_km|None)."""
-    results: list[tuple[str, float | None, float | None]] = []
+    results: list[tuple[str | None, float | None, float | None]] = []
     for line in (text or "").splitlines():
         if "|" not in line:
             continue
@@ -553,6 +553,22 @@ def _parse_grouping_table(text: str) -> list[tuple[str, float | None, float | No
                 name_idx = i
                 break
         if not plate:
+            # Строка-данные без распознанного номера (OCR/XLSX потерял ячейку
+            # номера) — показываем как «Номер не распознан», чтобы строка не
+            # пропадала молча (как в актах, 64725). Только если это похоже на
+            # строку ТС: есть ≥2 числа-пробега и нет заголовочных/итоговых слов
+            # (иначе шапка «Гос.номер|Пробег…» и строки «Итого» дали бы мусор).
+            low = line.lower()
+            if any(w in low for w in ("номер", "пробег", "глонас", "дата", "итог", "всего")):
+                continue
+            allnums: list[float] = []
+            for cell in cells:
+                try:
+                    allnums.append(float(cell.replace(",", ".").replace(" ", "")))
+                except ValueError:
+                    continue
+            if len(allnums) >= 2:
+                results.append((None, allnums[1], allnums[0]))
             continue
         nums: list[float] = []
         for cell in cells[name_idx + 1:]:

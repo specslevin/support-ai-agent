@@ -2275,7 +2275,7 @@ export function IssueDetail() {
                     </span>
                     <span className="shrink-0 tabular-nums text-muted" title="Дата и время комментария">{formatDate(c.created_at) ?? '—'}</span>
                   </div>
-                  <p className={['leading-relaxed whitespace-pre-wrap', isAutoNotif ? 'italic text-muted/80' : ''].join(' ')}>{c.content ?? ''}</p>
+                  <p className={['leading-relaxed whitespace-pre-wrap', isNotification ? 'text-muted/80' : ''].join(' ')}>{c.content ?? ''}</p>
                 </div>
               )
             })}
