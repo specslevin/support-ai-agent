@@ -6,7 +6,7 @@ import {
   Layers, Power, RadioTower, Scissors, HelpCircle, FileText, Sheet,
   Image as ImageIcon, Paperclip, PanelRightClose, Info, MessageSquare, Sparkles, Wand2,
   Loader2, Lock, User, Headset, Play, ThumbsUp, ThumbsDown,
-  Copy, Calendar, Truck,
+  Copy, Calendar, Truck, Pencil,
   type LucideIcon,
 } from 'lucide-react'
 import { api } from '../api/client'
@@ -1127,6 +1127,7 @@ const VERDICT_STYLE: Record<string, string> = {
   'Объект не найден': 'text-red-400',
   'Нет данных': 'text-muted',
   'Нет номера/даты': 'text-muted',
+  'Номер не распознан': 'text-warning',
   'Проверить': 'text-cyan-400',
 }
 
@@ -1178,6 +1179,10 @@ function BatchAnalysis({ issueId, issueTitle, onOpenExternal }: { issueId: numbe
   const [verdictError, setVerdictError] = useState<string | null>(null)
   const [plateLoading, setPlateLoading] = useState<Set<string>>(new Set())
   const [plateError, setPlateError] = useState<string | null>(null)
+  // Какая строка сейчас в режиме правки номера (защита от случайной правки —
+  // правим только по явному клику на карандаш). cancelPlateRef — отмена по Escape.
+  const [editingPlateKey, setEditingPlateKey] = useState<string | null>(null)
+  const cancelPlateRef = useRef(false)
   const [localBatch, setLocalBatch] = useState<import('../types').BatchResult | null>(null)
   // Авто-дораспознавание больших сканов: счётчик проходов и последний прогресс
   // (чтобы остановиться при отсутствии продвижения, а не крутить бесконечно).
@@ -1209,9 +1214,10 @@ function BatchAnalysis({ issueId, issueTitle, onOpenExternal }: { issueId: numbe
 
   // Per-issue child creation map — survives panel close/reopen (global store, not local state)
   const rowCreated = batchChildren[issueId] ?? {}
-  // Ключ строки = номер|дата|файл: у одного ТС за разные даты — отдельные строки,
-  // статус «создано»/спиннер/правка должны быть строго по своей строке (не по номеру).
-  const rowKey = (o: import('../types').BatchObject) => `${o.plate ?? ''}|${o.date ?? ''}|${o.file ?? ''}`
+  // Ключ строки = индекс|номер|дата|файл: статус «создано»/спиннер/правка строго по
+  // своей строке. Индекс нужен для строк БЕЗ номера (несколько нераспознанных актов
+  // с одной датой в одном файле иначе имели бы одинаковый ключ).
+  const rowKey = (o: import('../types').BatchObject, idx: number) => `${idx}|${o.plate ?? ''}|${o.date ?? ''}|${o.file ?? ''}`
 
   const { data: attachments = [] } = useQuery({
     queryKey: ['attachments', issueId],
@@ -1271,9 +1277,9 @@ function BatchAnalysis({ issueId, issueTitle, onOpenExternal }: { issueId: numbe
     run.mutate()
   }
 
-  const createRow = async (o: import('../types').BatchObject) => {
+  const createRow = async (o: import('../types').BatchObject, idx: number) => {
     if (!o.plate) return
-    const key = rowKey(o)
+    const key = rowKey(o, idx)
     setLoadingPlates(prev => new Set([...prev, key]))
     try {
       // Передаём РОВНО эту строку (объект + её дата) — дочерняя создаётся только по
@@ -1292,18 +1298,21 @@ function BatchAnalysis({ issueId, issueTitle, onOpenExternal }: { issueId: numbe
   }
 
   // Ручная правка гос.номера: бэкенд заново ищет ТС в гео по верному номеру и
-  // обновляет вердикт/трек/пробег этой строки (кейс «OCR исказил номер», 64722).
-  const handlePlateChange = async (o: import('../types').BatchObject, raw: string) => {
+  // обновляет вердикт/трек/пробег этой строки (кейс «OCR исказил номер», 64722;
+  // и строки без номера, 64725). idx — точный селектор строки на бэкенде.
+  const handlePlateChange = async (o: import('../types').BatchObject, raw: string, idx: number) => {
     const np = raw.trim().toUpperCase()
-    if (!o.plate || !np || np === (o.plate ?? '').toUpperCase()) return
-    const key = rowKey(o)
+    // Разрешаем и для строк БЕЗ номера (акт распознан, но OCR не прочитал гос.номер —
+    // оператор вписывает вручную, 64725). Нужно лишь непустое новое значение.
+    if (!np || np === (o.plate ?? '').toUpperCase()) return
+    const key = rowKey(o, idx)
     setPlateLoading(prev => new Set([...prev, key]))
     setPlateError(null)
     try {
-      const updated = await api.updateBatchPlate(issueId, o.plate, np, o.date || undefined, o.file || undefined)
+      const updated = await api.updateBatchPlate(issueId, o.plate ?? '', np, o.date || undefined, o.file || undefined, idx)
       setLocalBatch(updated)
     } catch {
-      setPlateError(`Не удалось обновить номер ${o.plate} — проверьте, найден ли ${np} в гео.`)
+      setPlateError(`Не удалось обновить номер на ${np} — проверьте, найден ли он в гео.`)
     } finally {
       setPlateLoading(prev => { const s = new Set(prev); s.delete(key); return s })
     }
@@ -1327,11 +1336,10 @@ function BatchAnalysis({ issueId, issueTitle, onOpenExternal }: { issueId: numbe
 
   const ALLOWED_VERDICTS = ['Глушение', 'Данные верны', 'Не было питания', 'Нет данных', 'Терминал подключился', 'Проверить'] as const
 
-  const handleVerdictChange = async (o: import('../types').BatchObject, newVerdict: string) => {
+  const handleVerdictChange = async (o: import('../types').BatchObject, newVerdict: string, idx: number) => {
     if (!o.plate) return
-    // Ключ строки = номер|дата|файл — у одного ТС за разные даты разные вердикты
-    // (63617), правка применяется только к этой строке (и спиннер только на ней).
-    const key = `${o.plate}|${o.date ?? ''}|${o.file ?? ''}`
+    // Ключ строки (idx|номер|дата|файл) — правка и спиннер строго по этой строке.
+    const key = rowKey(o, idx)
     setVerdictLoading(prev => new Set([...prev, key]))
     setVerdictError(null)
     try {
@@ -1390,7 +1398,7 @@ function BatchAnalysis({ issueId, issueTitle, onOpenExternal }: { issueId: numbe
             {(() => {
               const counts: Record<string, number> = {}
               for (const o of res.objects) counts[o.verdict] = (counts[o.verdict] ?? 0) + 1
-              const order = ['Глушение', 'Данные верны', 'Не было питания', 'Терминал подключился', 'Изменили настройки', 'Проверить', 'Нет данных', 'Объект не найден', 'Нет номера/даты', 'Ошибка данных']
+              const order = ['Глушение', 'Данные верны', 'Не было питания', 'Терминал подключился', 'Изменили настройки', 'Проверить', 'Нет данных', 'Объект не найден', 'Номер не распознан', 'Нет номера/даты', 'Ошибка данных']
               const keys = Object.keys(counts).sort((a, b) => order.indexOf(a) - order.indexOf(b))
               return keys.map(v => (
                 <span key={v} className={VERDICT_STYLE[v] ?? 'text-white'}>{v} {counts[v]}</span>
@@ -1407,7 +1415,7 @@ function BatchAnalysis({ issueId, issueTitle, onOpenExternal }: { issueId: numbe
               </thead>
               <tbody>
                 {res.objects.map((o, idx) => {
-                  const key = rowKey(o)
+                  const key = rowKey(o, idx)
                   const rc = o.plate ? rowCreated[key] : null
                   const isLoading = !!o.plate && loadingPlates.has(key)
                   const isVerdictLoading = !!o.plate && verdictLoading.has(key)
@@ -1415,18 +1423,34 @@ function BatchAnalysis({ issueId, issueTitle, onOpenExternal }: { issueId: numbe
                   return (
                     <tr key={idx} className={`border-t border-border/50 ${trackOpen && trackPlate === o.plate && trackDate === o.date ? 'bg-accent/10 border-l-2 border-l-accent/60' : ''}`}>
                       <td className="py-1 pr-2 font-mono">
-                        {isDemo ? (o.plate ?? '—') : (
+                        {isDemo ? (o.plate ?? '—') : editingPlateKey === key ? (
                           <span className="inline-flex items-center gap-1">
                             <input
-                              key={o.plate ?? 'none'}
+                              autoFocus
                               defaultValue={o.plate ?? ''}
                               disabled={isPlateLoading}
-                              onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
-                              onBlur={e => handlePlateChange(o, e.target.value)}
-                              title="Изменить гос.номер и перепроверить ТС в гео"
-                              placeholder="—"
-                              className="w-[5.5rem] bg-transparent border border-transparent hover:border-border focus:border-accent rounded px-1 py-0.5 font-mono text-[11px] text-white outline-none disabled:opacity-50"
+                              onKeyDown={e => {
+                                if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+                                else if (e.key === 'Escape') { cancelPlateRef.current = true; (e.target as HTMLInputElement).blur() }
+                              }}
+                              onBlur={e => {
+                                const val = e.target.value
+                                setEditingPlateKey(null)
+                                if (cancelPlateRef.current) { cancelPlateRef.current = false; return }
+                                handlePlateChange(o, val, idx)
+                              }}
+                              className="w-[5.5rem] bg-frame border border-accent rounded px-1 py-0.5 font-mono text-[11px] text-white outline-none disabled:opacity-50"
                             />
+                            <span className="text-[9px] text-muted/60 shrink-0">Enter / Esc</span>
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1">
+                            <span className={o.plate ? '' : 'text-warning'}>{o.plate ?? 'нет номера'}</span>
+                            <button
+                              onClick={() => setEditingPlateKey(key)}
+                              title={o.plate ? 'Изменить гос.номер и перепроверить ТС в гео' : 'Вписать гос.номер вручную (OCR не распознал) и проверить в гео'}
+                              className="text-muted/40 hover:text-accent shrink-0 transition-colors"
+                            ><Pencil size={11} /></button>
                             {o.plate_edited && <span title="Номер изменён оператором, перепроверено в гео" className="text-info shrink-0">●</span>}
                             {isPlateLoading && <span className="animate-spin text-muted shrink-0">↻</span>}
                           </span>
@@ -1444,7 +1468,7 @@ function BatchAnalysis({ issueId, issueTitle, onOpenExternal }: { issueId: numbe
                             <select
                               value={o.verdict}
                               disabled={isVerdictLoading}
-                              onChange={e => handleVerdictChange(o, e.target.value)}
+                              onChange={e => handleVerdictChange(o, e.target.value, idx)}
                               title={o.verdict_edited ? 'Изменено оператором' : undefined}
                               className={`bg-transparent border-0 outline-none cursor-pointer text-[11px] font-medium appearance-none pr-1 disabled:opacity-50 disabled:cursor-wait ${VERDICT_STYLE[o.verdict] ?? 'text-white'}`}
                             >
@@ -1495,7 +1519,7 @@ function BatchAnalysis({ issueId, issueTitle, onOpenExternal }: { issueId: numbe
                             <Check size={14} className="inline text-green-400" />
                           ) : (
                             <button
-                              onClick={() => !isDemo && createRow(o)}
+                              onClick={() => !isDemo && createRow(o, idx)}
                               title={isDemo ? 'Недоступно в демо-режиме' : 'Создать дочернюю заявку'}
                               disabled={isDemo}
                               className={`inline-flex transition-colors ${isDemo ? 'text-muted/40 cursor-not-allowed' : 'text-muted hover:text-accent'}`}
@@ -1516,7 +1540,7 @@ function BatchAnalysis({ issueId, issueTitle, onOpenExternal }: { issueId: numbe
             </p>
           )}
           {!isAggregate && (() => {
-            const children = res.objects.filter(o => o.plate && !rowCreated[rowKey(o)]?.ok && (o.verdict === 'Данные верны' || o.verdict === 'Нет данных'))
+            const children = res.objects.filter((o, i) => o.plate && !rowCreated[rowKey(o, i)]?.ok && (o.verdict === 'Данные верны' || o.verdict === 'Нет данных'))
             const totalEligible = res.objects.filter(o => o.verdict === 'Данные верны' || o.verdict === 'Нет данных').length
             if (totalEligible === 0) return null
             return (
@@ -2203,28 +2227,35 @@ export function IssueDetail() {
               const isSystem = c.author_kind === 'system'
               // is_internal is the legacy flag; is_public (new) takes precedence when present.
               const isInternal = c.is_public === false || (c.is_public == null && c.is_internal === true)
-              // Авто-уведомления Okdesk (смена статуса и т.п.) — приглушённый стиль
+              // Авто-уведомления Okdesk (смена статуса и т.п.) — часто приходят от
+              // сотрудника, но это не «живой» комментарий. Вместе с author_kind=system
+              // объединяем в одну категорию «уведомление».
               const isAutoNotif = /перешл\w* в статус|изменил\w* статус|если остал\w* вопрос\w* можете повторно|статус\w* заявки измен/i.test(c.content ?? '')
-              const KindIcon = isClient ? User : isSystem ? Bot : Headset
-              const kindLabel = isClient ? 'Клиент' : isSystem ? 'Система' : 'Сотрудник'
+              const isNotification = isSystem || isAutoNotif
+              const KindIcon = isClient ? User : isNotification ? Bot : Headset
+              const kindLabel = isClient ? 'Клиент' : isAutoNotif ? 'Уведомление' : isSystem ? 'Система' : 'Сотрудник'
+              // Системные уведомления — нейтральный серый, явно отличный от клиента
+              // (синий) и сотрудника (бирюзовый). Приватный/внутренний комментарий
+              // сохраняет свой пунктир-янтарь (важнее показать «не виден клиенту»),
+              // а цвет автора остаётся в бейдже.
+              const baseStyle = isInternal
+                ? 'border border-dashed border-warning/50 bg-warning/5'
+                : isNotification
+                ? `bg-white/[0.04] border-l-2 border-muted/40${isAutoNotif ? ' opacity-80' : ''}`
+                : isClient
+                ? 'bg-frame border-l-2 border-info/60'
+                : 'bg-card border-l-2 border-accent/40'
               return (
                 <div
                   key={c.id}
-                  className={[
-                    'rounded-lg px-3 py-2.5 text-xs space-y-1',
-                    isAutoNotif
-                      ? 'bg-purple-500/5 border-l-2 border-purple-500/40 opacity-80'
-                      : isSystem ? 'bg-purple-500/10 border-l-2 border-purple-500/60'
-                      : isClient ? 'bg-frame border-l-2 border-info/60' : 'bg-card border-l-2 border-accent/40',
-                    isInternal ? 'border border-dashed border-warning/50 bg-warning/5' : '',
-                  ].join(' ')}
+                  className={`rounded-lg px-3 py-2.5 text-xs space-y-1 ${baseStyle}`}
                 >
                   <div className="flex items-center justify-between gap-2 text-muted">
                     <span className="flex items-center gap-1.5 min-w-0">
                       <span
                         title={kindLabel}
                         className={`inline-flex items-center gap-1 shrink-0 px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wide ${
-                          isClient ? 'bg-info/15 text-info' : isSystem ? 'bg-purple-500/20 text-purple-300' : 'bg-accent/15 text-accent'
+                          isClient ? 'bg-info/15 text-info' : isNotification ? 'bg-white/10 text-muted' : 'bg-accent/15 text-accent'
                         }`}
                       >
                         <KindIcon size={10} /> {kindLabel}

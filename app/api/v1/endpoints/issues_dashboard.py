@@ -980,6 +980,9 @@ class PlateUpdate(BaseModel):
     new_plate: str
     file: str | None = None
     date: str | None = None  # ISO — правим строку конкретной даты, а не все строки ТС
+    index: int | None = None  # точный индекс строки в objects: нужен для строк БЕЗ
+                              # номера (несколько нераспознанных актов с одной датой
+                              # в одном файле имеют одинаковый ключ date+file)
 
 
 @router.post("/{issue_id}/batch/plate")
@@ -1009,25 +1012,34 @@ async def update_batch_plate(
     data = cached["data"]
     objects: list[dict] = data.get("objects") or []
     target = _norm_plate(body.old_plate)
+    # Точный индекс строки (если передан и валиден) — единственный надёжный селектор
+    # для строк без номера. Иначе матчим по (old_plate, date, file).
+    if body.index is not None and 0 <= body.index < len(objects):
+        match_idx = [body.index]
+    else:
+        match_idx = [
+            i for i, o in enumerate(objects)
+            if _norm_plate(o.get("plate")) == target
+            and (not body.file or o.get("file") == body.file)
+            and (not body.date or o.get("date") == body.date)
+        ]
     updated = 0
-    for i, o in enumerate(objects):
-        if (_norm_plate(o.get("plate")) == target
-                and (not body.file or o.get("file") == body.file)
-                and (not body.date or o.get("date") == body.date)):
-            # Перепроверка в гео по верному номеру: дату/ПЛ/заявл.систему/адрес/файл
-            # берём из этой же строки, телеметрию и вердикт считаем заново.
-            try:
-                fresh = await automation._analyze_object(
-                    new_plate, o.get("date"), o.get("sheet_mileage_km"),
-                    o.get("address"), o.get("file") or "",
-                    declared=o.get("declared_system_km"),
-                )
-            except Exception:
-                log.warning("batch_plate_reanalyze_failed", issue_id=issue_id, plate=new_plate)
-                raise HTTPException(status_code=502, detail="Не удалось перепроверить ТС в гео")
-            fresh["plate_edited"] = True
-            objects[i] = fresh
-            updated += 1
+    for i in match_idx:
+        o = objects[i]
+        # Перепроверка в гео по верному номеру: дату/ПЛ/заявл.систему/адрес/файл
+        # берём из этой же строки, телеметрию и вердикт считаем заново.
+        try:
+            fresh = await automation._analyze_object(
+                new_plate, o.get("date"), o.get("sheet_mileage_km"),
+                o.get("address"), o.get("file") or "",
+                declared=o.get("declared_system_km"),
+            )
+        except Exception:
+            log.warning("batch_plate_reanalyze_failed", issue_id=issue_id, plate=new_plate)
+            raise HTTPException(status_code=502, detail="Не удалось перепроверить ТС в гео")
+        fresh["plate_edited"] = True
+        objects[i] = fresh
+        updated += 1
     if not updated:
         raise HTTPException(status_code=404, detail="ТС не найдено в разборе")
     data["total"] = len(objects)

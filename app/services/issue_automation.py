@@ -350,7 +350,7 @@ def _iso_from_dmy(s: str | None) -> str | None:
     return _parse_date_short(m) if m else None
 
 
-def _parse_act_blocks(text: str) -> list[tuple[str, str | None, float | None, float | None]]:
+def _parse_act_blocks(text: str) -> list[tuple[str | None, str | None, float | None, float | None]]:
     """Структурный многоактный акт «Заявка №…Дата неисправности…Пробег по
     путевому листу» (Волжское ПО, 64481): один «Акт №» = один ТС.
 
@@ -361,7 +361,7 @@ def _parse_act_blocks(text: str) -> list[tuple[str, str | None, float | None, fl
     РАЗНЫМИ датами неисправности (64481: М203УО в актах №27 и №30, В836МН в №28 и
     №29) — это отдельные записи. Отсекаем лишь повтор той же пары (латиница/
     кириллица одного акта). Возвращает [(plate, date_iso|None, sheet_km|None)]."""
-    out: list[tuple[str, str | None, float | None, float | None]] = []
+    out: list[tuple[str | None, str | None, float | None, float | None]] = []
     seen: set[tuple[str, str | None]] = set()
     for seg in _split_acts(text or ""):
         plates = extract_all_plates(seg)
@@ -369,9 +369,11 @@ def _parse_act_blocks(text: str) -> list[tuple[str, str | None, float | None, fl
             m = _PLATE_RE.search(seg)
             if m:
                 plates = [_normalize_plate(m.group(0))]
-        if not plates:
-            continue
-        plate = plates[0]
+        # plate может быть None: акт распознан (есть дата/пробег), но OCR не прочитал
+        # сам гос.номер (плохой скан строки «гос. номер …», 64725). Раньше такой
+        # сегмент молча выбрасывался и 6 актов из 23 исчезали. Теперь сохраняем его
+        # как строку «без номера» — оператор впишет номер вручную (перепроверка в гео).
+        plate = plates[0] if plates else None
         # Дата акта (отчётная) повторяется в сегменте несколько раз: шапка
         # «Акт № N от DATE», «DATE года», «Заявка № N от DATE». Дата НЕИСПРАВНОСТИ
         # — отдельная, отличается от отчётной. Поэтому:
@@ -399,9 +401,6 @@ def _parse_act_blocks(text: str) -> list[tuple[str, str | None, float | None, fl
             date = _iso_from_month_name(seg)
         if not date:
             date = header
-        if (plate, date) in seen:
-            continue
-        seen.add((plate, date))
         # Пробег по путевому листу (ПЛ) и пробег по системе ГЛОНАСС (заявленный
         # клиентом). _safe_km отсекает мусор (пустое поле → телефон ответственного,
         # 64481 акт №29).
@@ -409,6 +408,16 @@ def _parse_act_blocks(text: str) -> list[tuple[str, str | None, float | None, fl
         gm = _GLONASS_KM_RE.search(seg)
         sheet = _safe_km(wm.group(1)) if wm else None
         glonass = _safe_km(gm.group(1)) if gm else None
+        if plate is None:
+            # Сегмент без номера сохраняем, ТОЛЬКО если это реальный акт (есть дата
+            # неисправности или пробег) — иначе это шапка/мусор. Не дедупим: каждый
+            # нераспознанный акт — отдельная строка (даты могут совпадать).
+            if fm or sheet is not None or glonass is not None:
+                out.append((None, date, sheet, glonass))
+            continue
+        if (plate, date) in seen:
+            continue
+        seen.add((plate, date))
         out.append((plate, date, sheet, glonass))
     return out
 
@@ -2405,8 +2414,14 @@ class IssueAutomationService:
             # разбираем отдельно; повторы той же пары (мульти-акт PDF, вариант
             # номера с регионом и без — 64513) отсекаем.
             seen_pairs: set[tuple[str, str | None]] = set()
-            uniq: list[tuple[str, str | None, float | None, float | None]] = []
+            uniq: list[tuple[str | None, str | None, float | None, float | None]] = []
             for plate, pdate, psheet, pglonass in targets:
+                # Строки без номера (OCR не прочитал, 64725) НЕ дедупим — каждый
+                # нераспознанный акт виден отдельно; иначе несколько таких актов с
+                # совпавшей датой схлопнулись бы в один по ключу ("", date).
+                if not plate:
+                    uniq.append((plate, pdate, psheet, pglonass))
+                    continue
                 key = (_plate_dedup_key(plate), pdate)
                 if key in seen_pairs:
                     continue
@@ -2512,6 +2527,10 @@ class IssueAutomationService:
             "spec_vehicle": _is_special_vehicle(plate, file),
             "verdict": "Нет номера/даты",
         }
+        # Акт распознан (есть дата/пробег), но OCR не прочитал гос.номер — отдельный
+        # вердикт, чтобы оператор увидел такую строку и вписал номер вручную (64725).
+        if not plate and date:
+            item["verdict"] = "Номер не распознан"
         if plate and date:
             try:
                 t = await self.gather_telemetry(plate, date)

@@ -159,8 +159,9 @@ export const api = {
   },
 
   // Исправление гос.номера в разборе: бэкенд заново ищет ТС в гео по верному номеру.
-  updateBatchPlate(id: number, oldPlate: string, newPlate: string, date?: string, file?: string): Promise<BatchResult> {
-    return http.post(`/issues/${id}/batch/plate`, { old_plate: oldPlate, new_plate: newPlate, ...(date ? { date } : {}), ...(file ? { file } : {}) }).then(r => r.data)
+  // index — точный индекс строки (нужен для строк без номера, где ключ date+file не уникален).
+  updateBatchPlate(id: number, oldPlate: string, newPlate: string, date?: string, file?: string, index?: number): Promise<BatchResult> {
+    return http.post(`/issues/${id}/batch/plate`, { old_plate: oldPlate, new_plate: newPlate, ...(date ? { date } : {}), ...(file ? { file } : {}), ...(index != null ? { index } : {}) }).then(r => r.data)
   },
 
   composeAnswer(id: number): Promise<{ answer: string }> {
