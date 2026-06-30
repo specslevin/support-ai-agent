@@ -14,6 +14,7 @@ import json
 import math
 import os
 import re
+import time
 from dataclasses import asdict, dataclass, field
 from typing import Any, Awaitable, Callable
 
@@ -2138,10 +2139,16 @@ class IssueAutomationService:
     # ОДКРА «письма» (9+ scanned letter-PDFs) trigger minutes of Tesseract OCR
     # per request — the call never returns and the UI shows «Ошибка разбора».
     _BATCH_MAX_ATTACHMENTS = 25
+    # Бюджет времени на ОДИН запрос разбора (сервер 1 ядро/1 ГБ — большой
+    # многоактный PDF не успевает целиком за окно фронт-таймаута 90 с). Новые
+    # вложения перестаём начинать после дедлайна; распознанное копится в кэше
+    # (ocr:<att_id>) и дотягивается при следующем «Обновить разбор».
+    _BATCH_REQUEST_BUDGET_S = 60.0
 
     async def analyze_batch(self, issue_external_id: int, attachments: list[Any],
                             issue_title: str | None = None,
-                            issue_description: str | None = None) -> list[dict[str, Any]]:
+                            issue_description: str | None = None,
+                            ocr_cache: Any = None) -> list[dict[str, Any]]:
         """Per-object analysis of a batch/«общая» issue (one vehicle act per attachment).
 
         Returns a list of {file, plate, date, sheet_mileage_km, system_mileage_km,
@@ -2200,17 +2207,58 @@ class IssueAutomationService:
                 chunk0 = await asyncio.gather(
                     *(_one_subj(p, d, s, g) for p, d, s, g in targets_subj))
                 return [r for r in chunk0 if r is not None]
-        # Bound the OCR work so the request always returns in reasonable time.
+        # Возобновляемое извлечение текста с накоплением в кэше (ocr:<att_id>):
+        # распознанное вложение не гоняется повторно, большой скан дотягивается за
+        # несколько запросов. Дедлайн запроса не даёт начать новую тяжёлую OCR-работу
+        # после исчерпания бюджета — частичный результат уже сохранён.
+        req_deadline = time.monotonic() + self._BATCH_REQUEST_BUDGET_S
+
+        async def _attachment_text(att: Any, fname: str) -> str:
+            kind = f"ocr:{att.id}"
+            acc, cursor, complete = "", 0, False
+            if ocr_cache is not None:
+                try:
+                    cached = await ocr_cache.get_result_cache(issue_external_id, kind)
+                except Exception:
+                    cached = None
+                if cached:
+                    d = cached.get("data") or {}
+                    acc = d.get("text") or ""
+                    cursor = int(d.get("next") or 0)
+                    complete = bool(d.get("complete"))
+            if complete:
+                return acc
+            # Не начинаем новую OCR-работу после дедлайна — отдаём что накопили.
+            if time.monotonic() > req_deadline:
+                return acc
+            try:
+                res = await self._okdesk.download_attachment(issue_external_id, att.id)
+            except Exception:
+                log.warning("analyze_batch_extract_failed", file=fname)
+                return acc
+            if not res:
+                return acc
+            try:
+                # OCR/парсинг в потоке — не блокируем event loop (см. _enrich выше).
+                frag, done, next_page = await asyncio.to_thread(
+                    attachment_reader.extract_resumable, fname, res[0], cursor)
+            except Exception:
+                log.warning("analyze_batch_extract_failed", file=fname)
+                return acc
+            acc = (acc + "\n" + frag).strip() if acc else (frag or "")
+            if ocr_cache is not None:
+                try:
+                    await ocr_cache.save_result_cache(
+                        issue_external_id, kind,
+                        json.dumps({"text": acc, "next": next_page, "complete": done},
+                                   ensure_ascii=False))
+                except Exception:
+                    log.warning("ocr_cache_save_failed", file=fname)
+            return acc
+
         for a in extractable[: self._BATCH_MAX_ATTACHMENTS]:
             name = getattr(a, "attachment_file_name", None) or ""
-            try:
-                res = await self._okdesk.download_attachment(issue_external_id, a.id)
-                # OCR/парсинг в потоке — не блокируем event loop (см. _enrich выше).
-                text = (await asyncio.to_thread(attachment_reader.extract_text, name, res[0])
-                        if res else "")
-            except Exception:
-                log.warning("analyze_batch_extract_failed", file=name)
-                text = ""
+            text = await _attachment_text(a, name)
             # Пустые/мусорные вложения (подпись письма image001.jpg → OCR в пару
             # символов) НЕ дают данных, но через title-fallback плодили ложный
             # объект «Нет номера/даты» (64657). Порог 15 символов отсекает шум.

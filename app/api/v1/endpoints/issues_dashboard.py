@@ -835,7 +835,8 @@ async def automate_batch(
         try:
             objects = await automation.analyze_batch(external_id, live.attachments,
                                                      issue_title=live.title,
-                                                     issue_description=live.description)
+                                                     issue_description=live.description,
+                                                     ocr_cache=cache)
         except Exception:
             # analyze_batch is best-effort and shouldn't raise, but guard anyway
             # so a single bad attachment never turns into a 500 «Ошибка разбора».
@@ -1080,7 +1081,8 @@ async def compose_answer(
             live = await okdesk.get_issue(external_id)
             objects = await automation.analyze_batch(external_id, live.attachments,
                                                      issue_title=live.title,
-                                                     issue_description=live.description)
+                                                     issue_description=live.description,
+                                                     ocr_cache=cache)
 
         # Best-effort: surface prior resolved answers for the same vehicles so
         # the aggregate stays consistent with what the client was told before.
