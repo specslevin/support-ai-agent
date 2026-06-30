@@ -1473,10 +1473,17 @@ async def get_issue_comments(
         raw_public: dict[int, bool] = {}
         raw_author_kind: dict[int, str] = {}
 
-        def _map_author_kind(author_type: object) -> str:
+        def _map_author_kind(author: dict) -> str:
             # Okdesk `author.type` values: "contact" (client portal user),
             # "employee"/"user"/"staff" (support staff). Map to UI buckets.
-            t = str(author_type or "").lower()
+            # ВАЖНО: авто-уведомления Okdesk (смена статуса и т.п.) приходят как
+            # author.type='employee' от ПСЕВДО-аккаунта «Системное уведомление»
+            # (id=6 в нашей инсталляции) — по типу неотличимы от живого сотрудника.
+            # Ловим их по автору, иначе красятся как комментарий оператора (64725).
+            name = str(author.get("name") or "").lower()
+            if "системное уведомлен" in name or str(author.get("id")) == "6":
+                return "system"
+            t = str(author.get("type") or "").lower()
             if t in ("contact", "client"):
                 return "client"
             if t in ("employee", "staff", "user", "operator"):
@@ -1500,7 +1507,7 @@ async def get_issue_comments(
                     raw_public[cid] = bool(pub)
                 author = r.get("author")
                 if isinstance(author, dict):
-                    raw_author_kind[cid] = _map_author_kind(author.get("type"))
+                    raw_author_kind[cid] = _map_author_kind(author)
         except Exception:
             log.warning("comment_meta_lookup_failed", issue_id=issue_id)
 

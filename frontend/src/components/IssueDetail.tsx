@@ -2230,7 +2230,10 @@ export function IssueDetail() {
               // Авто-уведомления Okdesk (смена статуса и т.п.) — часто приходят от
               // сотрудника, но это не «живой» комментарий. Вместе с author_kind=system
               // объединяем в одну категорию «уведомление».
-              const isAutoNotif = /перешл\w* в статус|изменил\w* статус|если остал\w* вопрос\w* можете повторно|статус\w* заявки измен/i.test(c.content ?? '')
+              // Фолбэк по тексту (основной детект — author_kind=system на бэкенде).
+              // \w в JS НЕ матчит кириллицу — используем [а-яё], иначе «перешла»
+              // не ловилось и уведомление красилось как комментарий сотрудника.
+              const isAutoNotif = /перешл[а-яё]* в статус|изменил[а-яё]* статус|остал[а-яё]* вопрос[а-яё]* можете повторно|статус[а-яё]* заявки измен/i.test(c.content ?? '')
               const isNotification = isSystem || isAutoNotif
               const KindIcon = isClient ? User : isNotification ? Bot : Headset
               const kindLabel = isClient ? 'Клиент' : isAutoNotif ? 'Уведомление' : isSystem ? 'Система' : 'Сотрудник'
