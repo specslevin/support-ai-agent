@@ -1783,7 +1783,10 @@ class IssueAutomationService:
                 result = await self._okdesk.download_attachment(issue_external_id, a.id)
                 if not result:
                     continue
-                text = attachment_reader.extract_text(name, result[0])
+                # OCR/парсинг — CPU-bound и синхронный; в потоке, чтобы не
+                # блокировать единственный event loop uvicorn (иначе весь сервис
+                # висит на время разбора).
+                text = await asyncio.to_thread(attachment_reader.extract_text, name, result[0])
                 if text.strip():
                     parts.append(f"=== Вложение: {name} ===\n{text}")
             except Exception:  # pragma: no cover - best effort
@@ -2202,7 +2205,9 @@ class IssueAutomationService:
             name = getattr(a, "attachment_file_name", None) or ""
             try:
                 res = await self._okdesk.download_attachment(issue_external_id, a.id)
-                text = attachment_reader.extract_text(name, res[0]) if res else ""
+                # OCR/парсинг в потоке — не блокируем event loop (см. _enrich выше).
+                text = (await asyncio.to_thread(attachment_reader.extract_text, name, res[0])
+                        if res else "")
             except Exception:
                 log.warning("analyze_batch_extract_failed", file=name)
                 text = ""

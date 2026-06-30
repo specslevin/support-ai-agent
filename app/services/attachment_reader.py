@@ -10,6 +10,7 @@ from __future__ import annotations
 import csv
 import io
 import os
+import time
 from typing import Any
 
 import structlog
@@ -34,13 +35,20 @@ def _ext(filename: str) -> str:
 
 
 # OCR (scanned PDFs / photos). Best-effort: needs tesseract + PyMuPDF.
-# _OCR_MAX_PAGES: многоактные сканы бывают на десятки страниц (несколько актов
-# по 1-2 страницы). Подняли с 6 до 40, чтобы распознавались ВСЕ акты. OCR ~1-2 с
-# на страницу — на больших PDF первый разбор дольше, но результат кэшируется
-# (result_cache), повторные открытия мгновенны.
+# OCR — синхронная CPU-bound работа; вызывающий выносит её в поток (asyncio.to_thread),
+# чтобы не блокировать единственный event loop uvicorn (иначе ВЕСЬ сервис висит и
+# CPU одного ядра = 100% на время разбора).
+# Потолок страниц + БЮДЖЕТ ВРЕМЕНИ гарантируют, что разбор многостраничного скана
+# вернётся задолго до фронт-таймаута (90 с) даже на медленном сервере под свопом.
+# Раньше 40 страниц @200 DPI могли занять >90 с → запрос отваливался, результат не
+# кэшировался, оператор бился в цикл «Ошибка разбора». Лучше разобрать первые N актов,
+# чем не разобрать ничего.
 _OCR_LANG = "rus+eng"
-_OCR_MAX_PAGES = 40
+_OCR_MAX_PAGES = 20
 _OCR_DPI = 200
+# Жёсткий бюджет на OCR одного PDF. 45 с оставляет запас под последующий анализ
+# телеметрии по объектам в пределах общего окна запроса (~90 с).
+_OCR_TIME_BUDGET_S = 45.0
 
 
 def _ocr_available() -> bool:
@@ -180,7 +188,13 @@ def _pdf_ocr(data: bytes) -> str:
     try:
         zoom = _OCR_DPI / 72.0
         matrix = fitz.Matrix(zoom, zoom)
-        for page in doc[:_OCR_MAX_PAGES]:
+        deadline = time.monotonic() + _OCR_TIME_BUDGET_S
+        for i, page in enumerate(doc[:_OCR_MAX_PAGES]):
+            # Бюджет проверяем ПОСЛЕ первой страницы — хотя бы один акт разбираем
+            # всегда, как бы ни был медленен сервер.
+            if i and time.monotonic() > deadline:
+                log.warning("pdf_ocr_time_budget_exceeded", pages_done=i)
+                break
             pix = page.get_pixmap(matrix=matrix)
             t = _ocr_image(pix.tobytes("png"))
             if t.strip():
