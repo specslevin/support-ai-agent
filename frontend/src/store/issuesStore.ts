@@ -102,6 +102,15 @@ export const useIssuesStore = create<FiltersState>()(
     }),
     {
       name: 'issues-prefs',
+      // v1: ключ batchChildren сменился с `plate` на `plate|date|file` — старые
+      // записи несовместимы (повисли бы как «создано» не на тех строках, риск
+      // дублей дочерних). Сбрасываем ТОЛЬКО их, остальные префы сохраняем.
+      version: 1,
+      migrate: (persisted: unknown, from: number) => {
+        const s = (persisted ?? {}) as Record<string, unknown>
+        if (from < 1) s.batchChildren = {}
+        return s
+      },
       // Persist pagination size + last-used template + filter combo across sessions.
       // Filters (status/company/assignee/search/issueId) are remembered so a
       // frequently-used combo survives reloads. `page` is intentionally NOT

@@ -172,7 +172,17 @@ export interface BatchObject {
   teleport_jumps: number
   verdict: string
   verdict_edited?: boolean
+  plate_edited?: boolean
   spec_vehicle?: boolean
+}
+
+// Прогресс возобновляемого OCR: complete=false → распознаны не все страницы
+// вложений (сервер слаб, большой PDF идёт порциями), фронт авто-дораспознаёт.
+export interface OcrProgress {
+  complete: boolean
+  attachments_total: number
+  attachments_done: number
+  pages_done: number
 }
 
 export interface BatchResult {
@@ -181,6 +191,7 @@ export interface BatchResult {
   ok_count: number
   is_aggregate?: boolean
   objects: BatchObject[]
+  ocr_progress?: OcrProgress
 }
 
 // «Передать монтажнику»: два готовых текста (КАЛЕНДАРЬ + МЕССЕНДЖЕР) + поля.

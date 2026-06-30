@@ -832,11 +832,17 @@ async def automate_batch(
         live = await okdesk.get_issue(external_id)
         objects: list[dict[str, object]] = []
         note: str | None = None
+        # ocr_progress: complete=False означает, что OCR части вложений не дошёл до
+        # конца (сервер слаб, большой PDF за окно запроса не успевает) — фронт
+        # авто-дораспознаёт, повторяя запрос, пока complete не станет True.
+        ocr_progress: dict[str, object] = {"complete": True, "attachments_total": 0,
+                                            "attachments_done": 0, "pages_done": 0}
         try:
             objects = await automation.analyze_batch(external_id, live.attachments,
                                                      issue_title=live.title,
                                                      issue_description=live.description,
-                                                     ocr_cache=cache)
+                                                     ocr_cache=cache,
+                                                     progress_out=ocr_progress)
         except Exception:
             # analyze_batch is best-effort and shouldn't raise, but guard anyway
             # so a single bad attachment never turns into a 500 «Ошибка разбора».
@@ -860,6 +866,7 @@ async def automate_batch(
             "is_aggregate": _is_aggregate(company_name, live.description, objects),
             "objects": objects,
             "note": note,
+            "ocr_progress": ocr_progress,
         }
         try:
             await cache.save_result_cache(external_id, "batch", json.dumps(payload, ensure_ascii=False))
@@ -965,6 +972,72 @@ async def update_batch_verdict(
     except Exception:
         log.warning("batch_verdict_save_failed", issue_id=issue_id)
         raise HTTPException(status_code=500, detail="Не удалось сохранить вердикт")
+    return {"ok": True, "updated": updated, **data}
+
+
+class PlateUpdate(BaseModel):
+    old_plate: str
+    new_plate: str
+    file: str | None = None
+    date: str | None = None  # ISO — правим строку конкретной даты, а не все строки ТС
+
+
+@router.post("/{issue_id}/batch/plate")
+async def update_batch_plate(
+    issue_id: int,
+    body: PlateUpdate,
+    cache: CacheService = Depends(get_cache_service),
+    okdesk: OkdeskService = Depends(get_okdesk_service),
+    automation: IssueAutomationService = Depends(get_issue_automation_service),
+) -> dict[str, object]:
+    """Оператор исправляет гос.номер ТС в сохранённом разборе (OCR исказил номер —
+    напр. М567МВ→MS69MB, 64722) и система ЗАНОВО ищет ТС в гео по верному номеру,
+    обновляя вердикт/трек/пробег этой строки.
+
+    Правится ТОЛЬКО строка (old_plate, date, file) — у одного ТС за разные даты
+    свои строки, чужую дату не трогаем."""
+    new_plate = (body.new_plate or "").strip()
+    if not new_plate:
+        raise HTTPException(status_code=400, detail="Новый гос.номер пуст")
+    issue_data = await cache.get_issue_with_analysis(issue_id)
+    if not issue_data:
+        raise HTTPException(status_code=404, detail="Issue not found")
+    external_id = issue_data["issue"].external_id
+    cached = await cache.get_result_cache(external_id, "batch")
+    if not cached or not cached.get("data", {}).get("objects"):
+        raise HTTPException(status_code=400, detail="Сначала выполните разбор по вложениям")
+    data = cached["data"]
+    objects: list[dict] = data.get("objects") or []
+    target = _norm_plate(body.old_plate)
+    updated = 0
+    for i, o in enumerate(objects):
+        if (_norm_plate(o.get("plate")) == target
+                and (not body.file or o.get("file") == body.file)
+                and (not body.date or o.get("date") == body.date)):
+            # Перепроверка в гео по верному номеру: дату/ПЛ/заявл.систему/адрес/файл
+            # берём из этой же строки, телеметрию и вердикт считаем заново.
+            try:
+                fresh = await automation._analyze_object(
+                    new_plate, o.get("date"), o.get("sheet_mileage_km"),
+                    o.get("address"), o.get("file") or "",
+                    declared=o.get("declared_system_km"),
+                )
+            except Exception:
+                log.warning("batch_plate_reanalyze_failed", issue_id=issue_id, plate=new_plate)
+                raise HTTPException(status_code=502, detail="Не удалось перепроверить ТС в гео")
+            fresh["plate_edited"] = True
+            objects[i] = fresh
+            updated += 1
+    if not updated:
+        raise HTTPException(status_code=404, detail="ТС не найдено в разборе")
+    data["total"] = len(objects)
+    data["jamming_count"] = sum(1 for o in objects if o.get("verdict") == "Глушение")
+    data["ok_count"] = sum(1 for o in objects if o.get("verdict") == "Данные верны")
+    try:
+        await cache.save_result_cache(external_id, "batch", json.dumps(data, ensure_ascii=False))
+    except Exception:
+        log.warning("batch_plate_save_failed", issue_id=issue_id)
+        raise HTTPException(status_code=500, detail="Не удалось сохранить гос.номер")
     return {"ok": True, "updated": updated, **data}
 
 

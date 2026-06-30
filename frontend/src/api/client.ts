@@ -158,6 +158,11 @@ export const api = {
     return http.post(`/issues/${id}/batch/verdict`, { plate, verdict, ...(file ? { file } : {}), ...(date ? { date } : {}) }).then(r => r.data)
   },
 
+  // Исправление гос.номера в разборе: бэкенд заново ищет ТС в гео по верному номеру.
+  updateBatchPlate(id: number, oldPlate: string, newPlate: string, date?: string, file?: string): Promise<BatchResult> {
+    return http.post(`/issues/${id}/batch/plate`, { old_plate: oldPlate, new_plate: newPlate, ...(date ? { date } : {}), ...(file ? { file } : {}) }).then(r => r.data)
+  },
+
   composeAnswer(id: number): Promise<{ answer: string }> {
     return http.post(`/issues/${id}/compose_answer`).then(r => r.data)
   },

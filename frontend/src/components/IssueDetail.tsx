@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, useRef } from 'react'
 import {
   ChevronDown, AlertTriangle, X, Check, Star, Bot, RefreshCw, Database,
   Lightbulb, Map, FilePlus, ExternalLink, Pause, Send,
@@ -1176,15 +1176,42 @@ function BatchAnalysis({ issueId, issueTitle, onOpenExternal }: { issueId: numbe
   const [loadingPlates, setLoadingPlates] = useState<Set<string>>(new Set())
   const [verdictLoading, setVerdictLoading] = useState<Set<string>>(new Set())
   const [verdictError, setVerdictError] = useState<string | null>(null)
+  const [plateLoading, setPlateLoading] = useState<Set<string>>(new Set())
+  const [plateError, setPlateError] = useState<string | null>(null)
   const [localBatch, setLocalBatch] = useState<import('../types').BatchResult | null>(null)
+  // Авто-дораспознавание больших сканов: счётчик проходов и последний прогресс
+  // (чтобы остановиться при отсутствии продвижения, а не крутить бесконечно).
+  const ocrRoundsRef = useRef(0)
+  const lastPagesRef = useRef(-1)
+  const ocrTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // autoOcr — цикл реально активен (запланирован следующий проход). Завязывать
+  // занятость на счётчик проходов нельзя: при остановке по «нет прогресса» он
+  // застрял бы в (0, MAX) и кнопка осталась бы заблокированной навсегда.
+  const [autoOcr, setAutoOcr] = useState(false)
+  const MAX_OCR_ROUNDS = 15
+
+  // Отменить запланированный проход (смена заявки / размонтирование / стоп).
+  const cancelOcrLoop = () => {
+    if (ocrTimerRef.current != null) { clearTimeout(ocrTimerRef.current); ocrTimerRef.current = null }
+  }
 
   useEffect(() => {
     setLocalBatch(null)
     setVerdictError(null)
+    setPlateError(null)
+    // Сброс авто-дораспознавания: ключи завязаны на конкретную заявку — нельзя,
+    // чтобы запланированный проход выстрелил по другой/закрытой заявке.
+    ocrRoundsRef.current = 0
+    lastPagesRef.current = -1
+    setAutoOcr(false)
+    return cancelOcrLoop
   }, [issueId])
 
   // Per-issue child creation map — survives panel close/reopen (global store, not local state)
   const rowCreated = batchChildren[issueId] ?? {}
+  // Ключ строки = номер|дата|файл: у одного ТС за разные даты — отдельные строки,
+  // статус «создано»/спиннер/правка должны быть строго по своей строке (не по номеру).
+  const rowKey = (o: import('../types').BatchObject) => `${o.plate ?? ''}|${o.date ?? ''}|${o.file ?? ''}`
 
   const { data: attachments = [] } = useQuery({
     queryKey: ['attachments', issueId],
@@ -1207,28 +1234,78 @@ function BatchAnalysis({ issueId, issueTitle, onOpenExternal }: { issueId: numbe
 
   const run = useMutation({
     mutationFn: () => api.automateBatch(issueId),
-    onSuccess: () => {
+    onSuccess: (data) => {
       setLocalBatch(null)
       setVerdictError(null)
       queryClient.invalidateQueries({ queryKey: ['batch-cached', issueId] })
-      clearBatchChildren(issueId)
+      // Авто-дораспознавание: сервер за один проход осиливает не весь большой PDF.
+      // Пока complete=false и есть ПРОДВИЖЕНИЕ по страницам — повторяем разбор сами,
+      // оператору не нужно гадать, сколько раз жать. Если прогресс встал (страницы
+      // не растут) или достигнут лимит проходов — останавливаемся и снимаем autoOcr,
+      // чтобы кнопка «Продолжить распознавание» снова стала доступна (не залипала).
+      const prog = data?.ocr_progress
+      const pages = prog?.pages_done ?? 0
+      if (prog && prog.complete === false
+          && ocrRoundsRef.current < MAX_OCR_ROUNDS
+          && pages > lastPagesRef.current) {
+        lastPagesRef.current = pages
+        ocrRoundsRef.current += 1
+        setAutoOcr(true)
+        ocrTimerRef.current = setTimeout(() => run.mutate(), 400)
+      } else {
+        setAutoOcr(false)
+      }
     },
+    onError: () => setAutoOcr(false),
   })
+
+  // Старт разбора по кнопке: сбрасываем счётчики авто-дораспознавания и статус
+  // дочерних (повторный разбор не должен наследовать старые отметки).
+  const startRun = () => {
+    cancelOcrLoop()
+    ocrRoundsRef.current = 0
+    lastPagesRef.current = -1
+    setAutoOcr(true)
+    setLocalBatch(null)
+    clearBatchChildren(issueId)
+    run.mutate()
+  }
 
   const createRow = async (o: import('../types').BatchObject) => {
     if (!o.plate) return
-    setLoadingPlates(prev => new Set([...prev, o.plate!]))
+    const key = rowKey(o)
+    setLoadingPlates(prev => new Set([...prev, key]))
     try {
+      // Передаём РОВНО эту строку (объект + её дата) — дочерняя создаётся только по
+      // выбранной дате неисправности, а не по всем строкам этого номера.
       const res = await api.createChildren(issueId, [o])
       const r = res.results[0]
-      setBatchChild(issueId, o.plate, { issue_id: r?.issue_id, ok: r?.ok ?? false })
+      setBatchChild(issueId, key, { issue_id: r?.issue_id, ok: r?.ok ?? false })
       // Backend caches child immediately — just invalidate queries
       queryClient.invalidateQueries({ queryKey: ['issues'] })
       queryClient.invalidateQueries({ queryKey: ['issue', issueId] })
     } catch {
-      setBatchChild(issueId, o.plate, { ok: false })
+      setBatchChild(issueId, key, { ok: false })
     } finally {
-      setLoadingPlates(prev => { const s = new Set(prev); s.delete(o.plate!); return s })
+      setLoadingPlates(prev => { const s = new Set(prev); s.delete(key); return s })
+    }
+  }
+
+  // Ручная правка гос.номера: бэкенд заново ищет ТС в гео по верному номеру и
+  // обновляет вердикт/трек/пробег этой строки (кейс «OCR исказил номер», 64722).
+  const handlePlateChange = async (o: import('../types').BatchObject, raw: string) => {
+    const np = raw.trim().toUpperCase()
+    if (!o.plate || !np || np === (o.plate ?? '').toUpperCase()) return
+    const key = rowKey(o)
+    setPlateLoading(prev => new Set([...prev, key]))
+    setPlateError(null)
+    try {
+      const updated = await api.updateBatchPlate(issueId, o.plate, np, o.date || undefined, o.file || undefined)
+      setLocalBatch(updated)
+    } catch {
+      setPlateError(`Не удалось обновить номер ${o.plate} — проверьте, найден ли ${np} в гео.`)
+    } finally {
+      setPlateLoading(prev => { const s = new Set(prev); s.delete(key); return s })
     }
   }
 
@@ -1240,6 +1317,13 @@ function BatchAnalysis({ issueId, issueTitle, onOpenExternal }: { issueId: numbe
   const res = localBatch ?? run.data ?? (cached as BatchResult | null)
   const isCached = !localBatch && !run.data && !!cached
   const isAggregate = !!res?.is_aggregate
+  // OCR ещё не дочитал все вложения → идёт авто-дораспознавание (или предложить
+  // продолжить, если цикл остановился по лимиту проходов).
+  const ocrProg = res?.ocr_progress
+  const ocrPending = !!ocrProg && ocrProg.complete === false
+  // Заняты, только пока реально идёт проход или запланирован следующий (autoOcr).
+  // При остановке цикла (стоп прогресса/лимит) autoOcr=false → кнопка «Продолжить».
+  const ocrBusy = run.isPending || autoOcr
 
   const ALLOWED_VERDICTS = ['Глушение', 'Данные верны', 'Не было питания', 'Нет данных', 'Терминал подключился', 'Проверить'] as const
 
@@ -1263,19 +1347,30 @@ function BatchAnalysis({ issueId, issueTitle, onOpenExternal }: { issueId: numbe
   return (
     <div className="space-y-2">
       <button
-        onClick={() => run.mutate()}
-        disabled={run.isPending || isDemo}
+        onClick={startRun}
+        disabled={ocrBusy || isDemo}
         title={isDemo ? 'Недоступно в демо-режиме' : undefined}
-        className={`flex items-center justify-center gap-2 w-full bg-card border border-info/40 text-info hover:bg-info/10 text-xs font-semibold py-2 rounded-lg transition-colors disabled:opacity-40 ${run.isPending ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
+        className={`flex items-center justify-center gap-2 w-full bg-card border border-info/40 text-info hover:bg-info/10 text-xs font-semibold py-2 rounded-lg transition-colors disabled:opacity-40 ${ocrBusy ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
       >
-        {run.isPending ? (
-          <Working label="Разбираю объекты…" />
+        {ocrBusy ? (
+          <Working label="Распознаю вложения…" />
+        ) : ocrPending ? (
+          <><RefreshCw size={14} /> Продолжить распознавание</>
         ) : res ? (
           <><RefreshCw size={14} /> Обновить разбор</>
         ) : (
           <><Layers size={14} /> Разбор заявки</>
         )}
       </button>
+      {ocrProg && ocrProg.complete === false && (
+        <div className="flex items-center gap-2 bg-frame border border-info/30 rounded-lg px-3 py-2 text-[11px] text-secondary">
+          <Loader2 size={13} className={`text-info shrink-0 ${ocrBusy ? 'animate-spin' : ''}`} />
+          <span>
+            Распознавание больших сканов: вложений {ocrProg.attachments_done}/{ocrProg.attachments_total}, страниц {ocrProg.pages_done}.
+            {ocrBusy ? ' Идёт авто-дораспознавание…' : ' Нажмите «Продолжить распознавание», чтобы дочитать остаток.'}
+          </span>
+        </div>
+      )}
       {isCached && (
         <p className="flex items-center gap-1 text-[10px] text-muted/70"><Database size={11} /> показан сохранённый разбор{cachedQ.data?.created_at ? ` от ${new Date(cachedQ.data.created_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}` : ''}</p>
       )}
@@ -1312,12 +1407,31 @@ function BatchAnalysis({ issueId, issueTitle, onOpenExternal }: { issueId: numbe
               </thead>
               <tbody>
                 {res.objects.map((o, idx) => {
-                  const rc = o.plate ? rowCreated[o.plate] : null
-                  const isLoading = !!o.plate && loadingPlates.has(o.plate)
-                  const isVerdictLoading = !!o.plate && verdictLoading.has(`${o.plate}|${o.date ?? ''}|${o.file ?? ''}`)
+                  const key = rowKey(o)
+                  const rc = o.plate ? rowCreated[key] : null
+                  const isLoading = !!o.plate && loadingPlates.has(key)
+                  const isVerdictLoading = !!o.plate && verdictLoading.has(key)
+                  const isPlateLoading = plateLoading.has(key)
                   return (
                     <tr key={idx} className={`border-t border-border/50 ${trackOpen && trackPlate === o.plate && trackDate === o.date ? 'bg-accent/10 border-l-2 border-l-accent/60' : ''}`}>
-                      <td className="py-1 pr-2 font-mono">{o.plate ?? '—'}</td>
+                      <td className="py-1 pr-2 font-mono">
+                        {isDemo ? (o.plate ?? '—') : (
+                          <span className="inline-flex items-center gap-1">
+                            <input
+                              key={o.plate ?? 'none'}
+                              defaultValue={o.plate ?? ''}
+                              disabled={isPlateLoading}
+                              onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+                              onBlur={e => handlePlateChange(o, e.target.value)}
+                              title="Изменить гос.номер и перепроверить ТС в гео"
+                              placeholder="—"
+                              className="w-[5.5rem] bg-transparent border border-transparent hover:border-border focus:border-accent rounded px-1 py-0.5 font-mono text-[11px] text-white outline-none disabled:opacity-50"
+                            />
+                            {o.plate_edited && <span title="Номер изменён оператором, перепроверено в гео" className="text-info shrink-0">●</span>}
+                            {isPlateLoading && <span className="animate-spin text-muted shrink-0">↻</span>}
+                          </span>
+                        )}
+                      </td>
                       <td className="pr-2">{o.date ?? '—'}</td>
                       <td className="pr-2">{o.sheet_mileage_km ?? '—'}</td>
                       <td className="pr-2">{o.declared_system_km ?? '—'}</td>
@@ -1402,7 +1516,7 @@ function BatchAnalysis({ issueId, issueTitle, onOpenExternal }: { issueId: numbe
             </p>
           )}
           {!isAggregate && (() => {
-            const children = res.objects.filter(o => o.plate && !rowCreated[o.plate]?.ok && (o.verdict === 'Данные верны' || o.verdict === 'Нет данных'))
+            const children = res.objects.filter(o => o.plate && !rowCreated[rowKey(o)]?.ok && (o.verdict === 'Данные верны' || o.verdict === 'Нет данных'))
             const totalEligible = res.objects.filter(o => o.verdict === 'Данные верны' || o.verdict === 'Нет данных').length
             if (totalEligible === 0) return null
             return (
@@ -1419,6 +1533,7 @@ function BatchAnalysis({ issueId, issueTitle, onOpenExternal }: { issueId: numbe
       )}
       {run.isError && <p className="text-xs text-orange-400">Ошибка разбора. Попробуйте снова.</p>}
       {verdictError && <p className="text-xs text-orange-400">{verdictError}</p>}
+      {plateError && <p className="text-xs text-orange-400">{plateError}</p>}
     </div>
   )
 }
@@ -1658,6 +1773,7 @@ function AnalysisWizard({
         </div>
         {useBatch ? (
           <BatchAnalysis
+            key={issue.id}
             issueId={issue.id}
             issueTitle={issue.subject}
             companyName={issue.company_name}

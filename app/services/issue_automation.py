@@ -274,7 +274,12 @@ def _split_acts(text: str) -> list[str]:
     the date/mileage from its own act. Returns the whole text as one segment if
     there is no «Акт №» marker.
     """
-    parts = re.split(r"(?=\bАкт\s+№)", text or "", flags=re.I)
+    # OCR искажает заголовки актов: «Акт№…» (без пробела), «Ак№…» (потеряна «т»),
+    # «Акr №» (т→латинская r). Жёсткий «Акт\s+№» терял такие точки разреза, и
+    # несколько актов схлопывались в один сегмент → терялись ТС (64722: 9 актов →
+    # 6 сегментов, потерян У731РА из темы). Допускаем опц. «т»/«r» и опц. пробел,
+    # № либо латинская N.
+    parts = re.split(r"(?=Ак[тr]?\s*[№N])", text or "", flags=re.I)
     return [p for p in parts if p.strip()]
 
 
@@ -2148,7 +2153,8 @@ class IssueAutomationService:
     async def analyze_batch(self, issue_external_id: int, attachments: list[Any],
                             issue_title: str | None = None,
                             issue_description: str | None = None,
-                            ocr_cache: Any = None) -> list[dict[str, Any]]:
+                            ocr_cache: Any = None,
+                            progress_out: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         """Per-object analysis of a batch/«общая» issue (one vehicle act per attachment).
 
         Returns a list of {file, plate, date, sheet_mileage_km, system_mileage_km,
@@ -2213,7 +2219,10 @@ class IssueAutomationService:
         # после исчерпания бюджета — частичный результат уже сохранён.
         req_deadline = time.monotonic() + self._BATCH_REQUEST_BUDGET_S
 
-        async def _attachment_text(att: Any, fname: str) -> str:
+        async def _attachment_text(att: Any, fname: str) -> tuple[str, bool, int]:
+            """Возвращает (text, complete, pages_done) для одного вложения.
+            complete=False означает, что OCR не дошёл до конца документа — фронт
+            должен повторить разбор (авто-дораспознавание)."""
             kind = f"ocr:{att.id}"
             acc, cursor, complete = "", 0, False
             if ocr_cache is not None:
@@ -2227,24 +2236,25 @@ class IssueAutomationService:
                     cursor = int(d.get("next") or 0)
                     complete = bool(d.get("complete"))
             if complete:
-                return acc
-            # Не начинаем новую OCR-работу после дедлайна — отдаём что накопили.
+                return acc, True, cursor
+            # Не начинаем новую OCR-работу после дедлайна — отдаём что накопили
+            # (complete=False → фронт дотянет следующим проходом).
             if time.monotonic() > req_deadline:
-                return acc
+                return acc, False, cursor
             try:
                 res = await self._okdesk.download_attachment(issue_external_id, att.id)
             except Exception:
                 log.warning("analyze_batch_extract_failed", file=fname)
-                return acc
+                return acc, complete, cursor
             if not res:
-                return acc
+                return acc, complete, cursor
             try:
                 # OCR/парсинг в потоке — не блокируем event loop (см. _enrich выше).
                 frag, done, next_page = await asyncio.to_thread(
                     attachment_reader.extract_resumable, fname, res[0], cursor)
             except Exception:
                 log.warning("analyze_batch_extract_failed", file=fname)
-                return acc
+                return acc, complete, cursor
             acc = (acc + "\n" + frag).strip() if acc else (frag or "")
             if ocr_cache is not None:
                 try:
@@ -2254,11 +2264,20 @@ class IssueAutomationService:
                                    ensure_ascii=False))
                 except Exception:
                     log.warning("ocr_cache_save_failed", file=fname)
-            return acc
+            return acc, done, next_page
 
-        for a in extractable[: self._BATCH_MAX_ATTACHMENTS]:
+        batch_atts = extractable[: self._BATCH_MAX_ATTACHMENTS]
+        prog_done = 0       # вложений распознано полностью
+        prog_pages = 0      # суммарно страниц распознано (курсоры)
+        prog_complete = True
+        for a in batch_atts:
             name = getattr(a, "attachment_file_name", None) or ""
-            text = await _attachment_text(a, name)
+            text, att_complete, att_pages = await _attachment_text(a, name)
+            prog_pages += att_pages
+            if att_complete:
+                prog_done += 1
+            else:
+                prog_complete = False
             # Пустые/мусорные вложения (подпись письма image001.jpg → OCR в пару
             # символов) НЕ дают данных, но через title-fallback плодили ложный
             # объект «Нет номера/даты» (64657). Порог 15 символов отсекает шум.
@@ -2425,6 +2444,13 @@ class IssueAutomationService:
                 continue
             seen_final.add(key)
             final.append(r)
+        if progress_out is not None:
+            progress_out.update({
+                "complete": prog_complete,
+                "attachments_total": len(batch_atts),
+                "attachments_done": prog_done,
+                "pages_done": prog_pages,
+            })
         return final
 
     async def compose_aggregate_answer(self, objects: list[dict[str, Any]],
