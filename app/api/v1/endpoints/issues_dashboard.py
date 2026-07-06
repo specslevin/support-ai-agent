@@ -1369,6 +1369,22 @@ async def get_issue_track(
         if plate and date:
             return await automation.build_track("", "", plate=plate, fault_date=date,
                                                 date_from=date_from, date_to=date_to)
+        # Приоритет — номер/дата из сохранённого ИИ-анализа: он учитывает РУЧНУЮ
+        # правку оператора (64838: клиент ошибся в номере, но опечатка совпала с
+        # чужим реальным ТС), LLM-извлечение и alt-plate. Иначе независимый парс
+        # трека взял бы исходный (неверный) номер из темы и построил трек по
+        # чужому объекту, расходясь с анализом.
+        try:
+            cached = await cache.get_result_cache(external_id, "automate")
+            if cached and isinstance(cached.get("data"), dict):
+                cp = cached["data"].get("parsed") or {}
+                cplate, cdate = cp.get("plate"), cp.get("date")
+                if isinstance(cplate, str) and cplate and isinstance(cdate, str) and cdate:
+                    return await automation.build_track(
+                        "", "", plate=cplate, fault_date=cdate[:10],
+                        date_from=date_from, date_to=date_to)
+        except Exception:
+            log.warning("track_prefer_automate_failed", issue_id=issue_id)
         live = await okdesk.get_issue(external_id)
         attachments_text = ""
         if live.attachments:
