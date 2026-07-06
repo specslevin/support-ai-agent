@@ -2410,7 +2410,7 @@ class IssueAutomationService:
             if filename_plate:  # спец-формат (5297СУ) не ловится STD-регэкспом
                 fname_plates = list(dict.fromkeys([filename_plate, *fname_plates]))
             acts_segments = _split_acts(text)
-            text_plates = list(text_plates)
+            text_plates = extract_all_plates(text)
             # «Акт №» в теле может быть просто ссылкой («на основании акта №12») —
             # мульти-акт только когда НЕСКОЛЬКО сегментов содержат свои номера.
             act_segs_with_plates = sum(1 for seg in acts_segments if extract_all_plates(seg))
