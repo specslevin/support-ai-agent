@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { IssuesListResponse, IssueDetail, Comment, Analysis, Template, TemplateCategory, TemplateCreate, TemplateUpdate, AutomationResult, TrackData, IssueAttachment, BatchResult, TemplateValues, ChatResponse, AiFeedback, AiFeedbackBody, AiFeedbackListItem, AiFeedbackRating, InstallerExport } from '../types'
+import type { IssuesListResponse, IssueDetail, Comment, Analysis, Template, TemplateCategory, TemplateCreate, TemplateUpdate, AutomationResult, TrackData, IssueAttachment, BatchResult, TemplateValues, ChatResponse, AiFeedback, AiFeedbackBody, AiFeedbackListItem, AiFeedbackRating, InstallerExport, SavedFilter, SavedFilterCreate, SavedFilterUpdate } from '../types'
 import type { UserRole } from '../store/authStore'
 
 const http = axios.create({
@@ -308,6 +308,23 @@ export const api = {
 
   resolveAiFeedback(id: number, resolved = true): Promise<{ ok: boolean; resolved: boolean }> {
     return http.post(`/issues/ai_feedback/${id}/resolve`, null, { params: { resolved } }).then(r => r.data)
+  },
+
+  // Личные сохранённые фильтры списка заявок.
+  listSavedFilters(): Promise<SavedFilter[]> {
+    return http.get('/saved-filters').then(r => r.data)
+  },
+
+  createSavedFilter(body: SavedFilterCreate): Promise<SavedFilter> {
+    return http.post('/saved-filters', body).then(r => r.data)
+  },
+
+  updateSavedFilter(id: number, body: SavedFilterUpdate): Promise<SavedFilter> {
+    return http.put(`/saved-filters/${id}`, body).then(r => r.data)
+  },
+
+  deleteSavedFilter(id: number): Promise<{ ok: boolean }> {
+    return http.delete(`/saved-filters/${id}`).then(r => r.data)
   },
 }
 

@@ -25,6 +25,12 @@ interface FiltersState {
   batchChildren: Record<number, Record<string, ChildInfo>>
   lastBatchTemplate: { name: string; content: string } | null
   setFilter: (key: 'status' | 'company' | 'search' | 'assignee' | 'issueId', value: string) => void
+  // Атомарно применить набор условий (сохранённый фильтр). Незаданные поля
+  // сбрасываются к пустым; page всегда → 1, чекбоксы очищаются.
+  applyFilters: (f: {
+    status?: string; company?: string; search?: string; assignee?: string
+    issueId?: string; sort?: string; order?: 'asc' | 'desc'
+  }) => void
   setSort: (sort: string, order: 'asc' | 'desc') => void
   setPage: (page: number) => void
   setLimit: (limit: number) => void
@@ -64,6 +70,17 @@ export const useIssuesStore = create<FiltersState>()(
       lastBatchTemplate: null,
 
       setFilter: (key, value) => set({ [key]: value, page: 1, checkedIds: [] }),
+      applyFilters: f => set({
+        status: f.status ?? '',
+        company: f.company ?? '',
+        search: f.search ?? '',
+        assignee: f.assignee ?? '',
+        issueId: f.issueId ?? '',
+        sort: f.sort ?? 'deadline_at',
+        order: f.order ?? 'asc',
+        page: 1,
+        checkedIds: [],
+      }),
       setSort: (sort, order) => set({ sort, order, page: 1 }),
       setPage: page => set({ page, checkedIds: [] }),
       setLimit: limit => set({ limit, page: 1, checkedIds: [] }),

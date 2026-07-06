@@ -1,5 +1,6 @@
 import { useIssuesStore } from '../store/issuesStore'
 import { EMPLOYEES } from '../store/userStore'
+import { SavedFilters } from './SavedFilters'
 import type { ViewMode } from './IssuesList'
 
 const STATUSES = [
@@ -80,6 +81,8 @@ export function IssueFilters({ viewMode, onViewModeChange }: IssueFiltersProps) 
           Сбросить
         </button>
       )}
+
+      <SavedFilters />
 
       {/* Сортировка списка — рядом с переключателем вида */}
       <div className="ml-auto flex items-center gap-1.5 shrink-0">

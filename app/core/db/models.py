@@ -290,6 +290,34 @@ class Template(Base):
     )
 
 
+class SavedFilter(Base):
+    """Личные сохранённые фильтры списка заявок (per-user, приватные).
+
+    Каждая запись принадлежит одному пользователю (``username``) и хранит
+    сериализованный JSON набора фильтров списка заявок
+    (``{status, company, search, assignee, issueId, sort, order}``). ``position``
+    задаёт порядок в UI. Таблица создаётся ``Base.metadata.create_all`` —
+    отдельная миграция не нужна.
+    """
+
+    __tablename__ = "saved_filter"
+    __table_args__ = (
+        Index("ix_saved_filter_username", "username"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(64), nullable=False)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    filters_json: Mapped[str] = mapped_column(Text, nullable=False)
+    position: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
 class ChatHistory(Base):
     __tablename__ = "chat_history"
 

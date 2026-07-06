@@ -266,6 +266,41 @@ export interface TemplateUpdate {
 }
 
 // Петля обратной связи по качеству ИИ-разбора заявки.
+/** Набор условий фильтра, хранимый в сохранённом пресете. */
+export interface SavedFilterValues {
+  status?: string
+  company?: string
+  search?: string
+  assignee?: string
+  issueId?: string
+  sort?: string
+  order?: 'asc' | 'desc'
+}
+
+/** Личный сохранённый фильтр списка заявок (GET /saved-filters). */
+export interface SavedFilter {
+  id: number
+  name: string
+  filters: SavedFilterValues
+  position: number
+  created_at: string
+  updated_at: string
+}
+
+/** Тело POST /saved-filters. */
+export interface SavedFilterCreate {
+  name: string
+  filters: SavedFilterValues
+  position?: number
+}
+
+/** Тело PUT /saved-filters/{id}. */
+export interface SavedFilterUpdate {
+  name?: string
+  filters?: SavedFilterValues
+  position?: number
+}
+
 export type AiFeedbackRating = 'good' | 'bad'
 export type AiFeedbackErrorKind = 'wrong_verdict' | 'wrong_plate' | 'wrong_date' | 'wrong_mileage' | 'other'
 

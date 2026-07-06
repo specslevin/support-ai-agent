@@ -11,6 +11,7 @@ from .endpoints import (
     issue_types,
     issues_dashboard,
     objects,
+    saved_filters,
     templates,
     test,
     webhooks,
@@ -25,4 +26,5 @@ api_v1_router.include_router(employees.router)
 api_v1_router.include_router(templates.router)
 api_v1_router.include_router(issue_types.router)
 api_v1_router.include_router(objects.router)
+api_v1_router.include_router(saved_filters.router)
 api_v1_router.include_router(chat.router)
