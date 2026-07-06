@@ -852,6 +852,10 @@ function AutoAnalysis({ issueId, latestAnalysis, issueTitle, companyName }: { is
   const isDemo = useAuthStore(s => s.user?.role === 'demo')
   const [result, setResult] = useState<AutomationResult | null>(null)
   const [confirmResolve, setConfirmResolve] = useState(false)
+  // Ручное уточнение гос.номера/даты (опечатка клиента) → переанализ.
+  const [refineOpen, setRefineOpen] = useState(false)
+  const [refinePlate, setRefinePlate] = useState('')
+  const [refineDate, setRefineDate] = useState('')
 
   // Demo: allow analysis only once per issue. Track in localStorage.
   const demoAnalyzedKey = `demo_analyzed_${issueId}`
@@ -896,7 +900,7 @@ function AutoAnalysis({ issueId, latestAnalysis, issueTitle, companyName }: { is
   const cached = cachedQ.data?.cached ? cachedQ.data : null
 
   const run = useMutation({
-    mutationFn: () => api.automateIssue(issueId),
+    mutationFn: (override?: { plate?: string; date?: string } | void) => api.automateIssue(issueId, override || undefined),
     onSuccess: (data) => {
       setResult(data)
       setConfirmResolve(false)
@@ -994,6 +998,66 @@ function AutoAnalysis({ issueId, latestAnalysis, issueTitle, companyName }: { is
               </div>
             </div>
           )}
+
+          {/* Ручное уточнение гос.номера/даты — на случай опечатки клиента; переанализ по верным данным. */}
+          <div className="bg-card border border-frame rounded-lg px-3 py-2 space-y-2">
+            <button
+              type="button"
+              onClick={() => {
+                setRefineOpen(o => {
+                  const next = !o
+                  if (next) {
+                    setRefinePlate(p?.plate ?? '')
+                    setRefineDate(p?.date ?? '')
+                  }
+                  return next
+                })
+              }}
+              className="flex items-center gap-1.5 text-[11px] font-semibold text-muted hover:text-secondary transition-colors"
+            >
+              <Pencil size={12} /> Уточнить номер/дату
+              <ChevronDown size={12} className={`transition-transform ${refineOpen ? 'rotate-180' : ''}`} />
+            </button>
+            {refineOpen && (
+              <div className="space-y-2">
+                <p className="text-[10px] text-muted/80 leading-relaxed">
+                  Если клиент ошибся в гос.номере или дате — исправьте и переанализируйте по верным данным.
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="space-y-0.5">
+                    <span className="block text-[10px] text-muted">Гос.номер</span>
+                    <input
+                      type="text"
+                      value={refinePlate}
+                      onChange={e => setRefinePlate(e.target.value)}
+                      placeholder="напр. А123ВС777"
+                      className="w-full bg-frame border border-frame rounded-lg px-2 py-1 text-[11px] text-white/90 placeholder:text-muted/50 focus:border-accent/50 focus:outline-none"
+                    />
+                  </label>
+                  <label className="space-y-0.5">
+                    <span className="block text-[10px] text-muted">Дата неисправности</span>
+                    <input
+                      type="date"
+                      value={refineDate}
+                      onChange={e => setRefineDate(e.target.value)}
+                      className="w-full bg-frame border border-frame rounded-lg px-2 py-1 text-[11px] text-white/90 focus:border-accent/50 focus:outline-none"
+                    />
+                  </label>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => run.mutate({
+                    ...(refinePlate.trim() ? { plate: refinePlate.trim() } : {}),
+                    ...(refineDate ? { date: refineDate } : {}),
+                  })}
+                  disabled={run.isPending || (!refinePlate.trim() && !refineDate)}
+                  className="flex items-center justify-center gap-2 w-full bg-card border border-accent/40 text-accent hover:bg-accent/10 text-[11px] font-semibold py-1.5 rounded-lg transition-colors disabled:opacity-40"
+                >
+                  <RefreshCw size={12} /> Переанализировать с уточнением
+                </button>
+              </div>
+            )}
+          </div>
 
           {t && (t.object_name || t.system_mileage_km != null) && (
             <div className="bg-frame rounded-lg px-3 py-2.5 space-y-2">

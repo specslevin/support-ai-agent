@@ -124,8 +124,12 @@ export const api = {
     return http.post(`/issues/${id}/analysis`, { mileage_from_sheet, notes }).then(r => r.data)
   },
 
-  automateIssue(id: number): Promise<AutomationResult> {
-    return http.post(`/issues/${id}/automate`).then(r => r.data)
+  // override — ручное уточнение гос.номера/даты при опечатке клиента (переанализ).
+  automateIssue(id: number, override?: { plate?: string; date?: string }): Promise<AutomationResult> {
+    const params: Record<string, string> = {}
+    if (override?.plate) params.plate = override.plate
+    if (override?.date) params.date = override.date
+    return http.post(`/issues/${id}/automate`, null, Object.keys(params).length ? { params } : undefined).then(r => r.data)
   },
 
   getCachedAutomate(id: number): Promise<(AutomationResult & { cached: boolean; created_at?: string })> {

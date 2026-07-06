@@ -1909,7 +1909,9 @@ class IssueAutomationService:
                        example_provider: Callable[
                            [str, str | None, list[str]],
                            Awaitable[list[dict[str, Any]]],
-                       ] | None = None) -> AutomationResult:
+                       ] | None = None,
+                       plate_override: str | None = None,
+                       date_override: str | None = None) -> AutomationResult:
         # 64871: у форвард-писем description пуст — тело письма лежит в ПЕРВОМ
         # комментарии; добавляем дайджест комментариев к тексту для парсинга
         # (без ISO-таймштампов публикации — см. _scrub_iso_dates).
@@ -1917,9 +1919,18 @@ class IssueAutomationService:
         if comments and not _strip_html(description).strip():
             parse_extra = f"{attachments_text or ''}\n{_scrub_iso_dates(comments)}"
         parsed = self.parse_issue(title, description, params, extra_text=parse_extra)
+        # Ручное переопределение (оператор): клиент указал номер с опечаткой,
+        # совпавшей с чужим реальным ТС, или неверную дату — авто-разбор тут
+        # бессилен. Перезаписываем даже то, что нашёл regex, и пропускаем
+        # LLM-fallback для переопределённого поля.
+        if plate_override:
+            norm = _normalize_plate(plate_override)
+            parsed.plate = norm or plate_override.strip()
+        if date_override:
+            parsed.date = date_override.strip()  # ожидается формат YYYY-MM-DD
         # Fallback: если regex не нашёл гос.номер ИЛИ дату — просим LLM извлечь
         # поля из текста/вложений (нестандартные форматы дочерних Россетей).
-        # Не тратим токены, когда regex справился.
+        # Не тратим токены, когда regex справился (или поле задано вручную).
         if (not parsed.plate or not parsed.date) and (title or description or attachments_text or comments):
             try:
                 body = _strip_html(description)

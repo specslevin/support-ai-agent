@@ -562,6 +562,8 @@ async def installer_export(
 @router.post("/{issue_id}/automate")
 async def automate_issue(
     issue_id: int,
+    plate: str | None = Query(None, description="Manual override of the vehicle plate (typo/wrong plate)"),
+    date: str | None = Query(None, description="Manual override of the fault date (YYYY-MM-DD)"),
     cache: CacheService = Depends(get_cache_service),
     okdesk: OkdeskService = Depends(get_okdesk_service),
     automation: IssueAutomationService = Depends(get_issue_automation_service),
@@ -643,6 +645,8 @@ async def automate_issue(
             sender=sender,
             comments=comments_digest or None,
             example_provider=_example_provider,
+            plate_override=plate,
+            date_override=date,
         )
 
         # Persist the analysis so the dashboard can show it later.
