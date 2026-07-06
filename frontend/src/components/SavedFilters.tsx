@@ -11,6 +11,24 @@ function useCurrentFilters(): SavedFilterValues {
   return { status, company, search, assignee, issueId, sort, order }
 }
 
+// Нормализация для сравнения: пустые строки/undefined эквивалентны, у sort/order — дефолты.
+function normFilters(f: Partial<SavedFilterValues>) {
+  return {
+    status: f.status || '',
+    company: f.company || '',
+    search: f.search || '',
+    assignee: f.assignee || '',
+    issueId: f.issueId || '',
+    sort: f.sort || 'deadline_at',
+    order: f.order || 'asc',
+  }
+}
+
+function sameFilters(a: Partial<SavedFilterValues>, b: Partial<SavedFilterValues>): boolean {
+  const na = normFilters(a), nb = normFilters(b)
+  return (Object.keys(na) as (keyof typeof na)[]).every(k => na[k] === nb[k])
+}
+
 export function SavedFilters() {
   const [open, setOpen] = useState(false)
   const [creating, setCreating] = useState(false)
@@ -29,6 +47,9 @@ export function SavedFilters() {
   })
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['saved-filters'] })
+
+  // Какой сохранённый фильтр совпадает с текущими условиями (подсветка «активен»).
+  const activeFilter = filters.find(f => sameFilters(f.filters, current)) || null
 
   const createMut = useMutation({
     mutationFn: (name: string) => api.createSavedFilter({ name, filters: current }),
@@ -70,14 +91,16 @@ export function SavedFilters() {
     setEditId(null)
   }
 
-  const btnCls = 'flex items-center gap-1 text-sm px-3 py-1.5 rounded border border-border text-white hover:border-accent transition-colors'
+  const btnCls = `flex items-center gap-1 text-sm px-3 py-1.5 rounded border transition-colors max-w-[220px] ${
+    activeFilter ? 'border-accent text-accent bg-accent/10' : 'border-border text-white hover:border-accent'
+  }`
 
   return (
     <div className="relative">
-      <button onClick={() => (open ? close() : setOpen(true))} className={btnCls}>
-        <Bookmark size={14} className="text-muted" />
-        Мои фильтры
-        <ChevronDown size={13} className="text-muted" />
+      <button onClick={() => (open ? close() : setOpen(true))} className={btnCls} title={activeFilter ? `Активен: ${activeFilter.name}` : 'Мои фильтры'}>
+        <Bookmark size={14} className={activeFilter ? 'text-accent' : 'text-muted'} />
+        <span className="truncate">{activeFilter ? activeFilter.name : 'Мои фильтры'}</span>
+        <ChevronDown size={13} className={activeFilter ? 'text-accent' : 'text-muted'} />
       </button>
 
       {open && (
@@ -91,7 +114,7 @@ export function SavedFilters() {
             {filters.map(f => (
               <div
                 key={f.id}
-                className="group flex items-center gap-1 px-2 py-1.5 hover:bg-surface"
+                className={`group flex items-center gap-1 px-2 py-1.5 hover:bg-surface ${activeFilter?.id === f.id ? 'bg-accent/10' : ''}`}
               >
                 {editId === f.id ? (
                   <>
@@ -125,10 +148,11 @@ export function SavedFilters() {
                   <>
                     <button
                       onClick={() => apply(f, close)}
-                      className="flex-1 min-w-0 text-left text-sm text-white truncate"
-                      title={`Применить: ${f.name}`}
+                      className={`flex-1 min-w-0 flex items-center gap-1.5 text-left text-sm truncate ${activeFilter?.id === f.id ? 'text-accent font-medium' : 'text-white'}`}
+                      title={activeFilter?.id === f.id ? `Активен: ${f.name}` : `Применить: ${f.name}`}
                     >
-                      {f.name}
+                      {activeFilter?.id === f.id && <Check size={13} className="shrink-0 text-accent" />}
+                      <span className="truncate">{f.name}</span>
                     </button>
                     <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
                       <button
