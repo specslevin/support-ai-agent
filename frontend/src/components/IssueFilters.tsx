@@ -73,6 +73,8 @@ export function IssueFilters({ viewMode, onViewModeChange }: IssueFiltersProps) 
         className={`${inputCls} w-40`}
       />
 
+      <SavedFilters />
+
       {hasAny && (
         <button
           onClick={resetFilters}
@@ -81,8 +83,6 @@ export function IssueFilters({ viewMode, onViewModeChange }: IssueFiltersProps) 
           Сбросить
         </button>
       )}
-
-      <SavedFilters />
 
       {/* Сортировка списка — рядом с переключателем вида */}
       <div className="ml-auto flex items-center gap-1.5 shrink-0">
