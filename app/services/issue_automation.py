@@ -258,6 +258,28 @@ _PLATE_FALLBACK_RE = re.compile(
 # хвост «2» от номера следующего пункта прилипает к номеру.
 _PLATE_STD_RE = re.compile(rf"(?<![A-Za-zА-Яа-яЁё0-9.-])[{_L}]\s?\d{{3}}\s?[{_L}]{{2}}\d{{0,3}}", re.I)
 
+# Полный «правильный» гос.номер (для нормализованного значения без пробелов):
+# стандартный ЛЦЦЦЛЛ[регион] ЛИБО форматы спецтехники. Если распознанный номер
+# НЕ матчит ни один — это, скорее всего, ошибка клиента в номере (Т911А64 —
+# одна буква после цифр, 64868): помечаем, чтобы оператор понял причину и правил.
+_PLATE_VALID_FULL = re.compile(
+    rf"^(?:"
+    rf"[{_L}]\d{{3}}[{_L}]{{2}}\d{{0,3}}"   # А123ВС / А123ВС64
+    rf"|\d{{2}}[{_L}]{{2}}\d{{4}}"           # 64СН3847 (спецтехника)
+    rf"|\d{{4}}[{_L}]{{2}}"                  # 5297СУ
+    rf"|[{_L}]{{2}}\d{{4}}"                  # СУ5297
+    rf")$",
+    re.I,
+)
+
+
+def _plate_format_suspect(plate: str | None) -> bool:
+    """True, если номер задан, но не соответствует ни одному валидному формату
+    (вероятная опечатка клиента). Пустой/None → False (это отдельный случай)."""
+    if not plate:
+        return False
+    return not _PLATE_VALID_FULL.match(_normalize_plate(plate) or "")
+
 
 def extract_all_plates(text: str, limit: int = 40) -> list[str]:
     """All distinct standard plates in order of appearance (для списков ТС)."""
@@ -2727,8 +2749,12 @@ class IssueAutomationService:
         }
 
     def to_dict(self, r: AutomationResult) -> dict[str, Any]:
+        parsed = asdict(r.parsed)
+        # Флаг для UI: номер не соответствует формату (опечатка клиента, 64868) —
+        # оператор увидит явную пометку и сможет исправить номер вручную.
+        parsed["plate_format_suspect"] = _plate_format_suspect(r.parsed.plate)
         return {
-            "parsed": asdict(r.parsed),
+            "parsed": parsed,
             "telemetry": asdict(r.telemetry),
             "category": r.category,
             "confidence": r.confidence,

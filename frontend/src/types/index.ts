@@ -92,6 +92,7 @@ export interface AutomationParsed {
   sheet_mileage_km: number | null
   declared_system_km: number | null
   llm_extracted?: boolean
+  plate_format_suspect?: boolean
 }
 
 export interface AutomationTelemetry {

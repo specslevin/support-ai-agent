@@ -928,6 +928,19 @@ function AutoAnalysis({ issueId, latestAnalysis, issueTitle, companyName }: { is
   const conf = shown ? Math.round(shown.confidence * 100) : 0
   const isCached = !result && !!cached
 
+  // Подозрение на ошибку клиента в гос.номере: не тот формат ИЛИ объект не найден в мониторинге.
+  const plateSuspect = !!shown && (!!p?.plate_format_suspect || shown.error === 'object_not_found')
+
+  // Если номер под подозрением — сразу раскрываем блок ручного уточнения и предзаполняем инпуты.
+  useEffect(() => {
+    if (plateSuspect) {
+      setRefineOpen(true)
+      setRefinePlate(p?.plate ?? '')
+      setRefineDate(p?.date ?? '')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plateSuspect, p?.plate, p?.date])
+
   if (isBatch) {
     return (
       <p className="flex items-start gap-1.5 text-[11px] text-muted leading-relaxed">
@@ -999,8 +1012,20 @@ function AutoAnalysis({ issueId, latestAnalysis, issueTitle, companyName }: { is
             </div>
           )}
 
+          {/* Заметное предупреждение о вероятной ошибке клиента в гос.номере. */}
+          {plateSuspect && (
+            <div className="flex items-start gap-2 bg-warning/10 border border-warning/40 rounded-lg px-3 py-2.5 text-warning">
+              <AlertTriangle size={15} className="shrink-0 mt-0.5" />
+              <span className="text-[11px] leading-relaxed">
+                {p?.plate_format_suspect
+                  ? <>Гос.номер «<b className="font-semibold">{p?.plate ?? '—'}</b>» не соответствует формату — вероятно, ошибка клиента. Проверьте и укажите верный номер ниже.</>
+                  : <>Гос.номер «<b className="font-semibold">{p?.plate ?? '—'}</b>» не найден в системе мониторинга — возможно, ошибка клиента в номере. Уточните номер вручную ниже.</>}
+              </span>
+            </div>
+          )}
+
           {/* Ручное уточнение гос.номера/даты — на случай опечатки клиента; переанализ по верным данным. */}
-          <div className="bg-card border border-frame rounded-lg px-3 py-2 space-y-2">
+          <div className={`bg-card border rounded-lg px-3 py-2 space-y-2 transition-colors ${plateSuspect ? 'border-accent ring-1 ring-accent/40' : 'border-frame'}`}>
             <button
               type="button"
               onClick={() => {
@@ -1013,7 +1038,7 @@ function AutoAnalysis({ issueId, latestAnalysis, issueTitle, companyName }: { is
                   return next
                 })
               }}
-              className="flex items-center gap-1.5 text-[11px] font-semibold text-muted hover:text-secondary transition-colors"
+              className={`flex items-center gap-1.5 text-[11px] font-semibold transition-colors ${plateSuspect ? 'text-accent hover:text-accent/80' : 'text-muted hover:text-secondary'}`}
             >
               <Pencil size={12} /> Уточнить номер/дату
               <ChevronDown size={12} className={`transition-transform ${refineOpen ? 'rotate-180' : ''}`} />
