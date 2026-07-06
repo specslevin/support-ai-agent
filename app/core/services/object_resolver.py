@@ -71,6 +71,11 @@ class ObjectResolverService:
         raw = await self.geo.find_object_by_plate(plate)
         mapping = _from_raw(plate_norm, raw) if raw else None
 
+        # Fuzzy-совпадение (исправленная опечатка) НЕ пишем в вечный кэш как
+        # канонический маппинг: объект мог просто временно отсутствовать в гео.
+        if raw and raw.get("fuzzy_plate_match"):
+            return mapping
+
         # Persist both hits and misses (object_id=None) so repeated lookups of an
         # unknown plate don't re-scan the whole Objects list every time.
         row = ObjectResolveCache(

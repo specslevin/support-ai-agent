@@ -235,6 +235,10 @@ async def _build_comments_digest(external_id: int, okdesk: OkdeskService,
     # Recover timestamps from the raw payload (the parsed model drops them, same
     # as the /comments endpoint).
     raw_dates: dict[int, str] = {}
+    raw_roles: dict[int, str] = {}
+    _role_tags = {"contact": "клиент", "client": "клиент",
+                  "employee": "сотрудник", "staff": "сотрудник",
+                  "user": "сотрудник", "operator": "сотрудник"}
     try:
         raw = await okdesk._client.get_issue_comments(external_id)
         raw_rows = raw if isinstance(raw, list) else (
@@ -244,6 +248,11 @@ async def _build_comments_digest(external_id: int, okdesk: OkdeskService,
                 ts = r.get("published_at") or r.get("created_at")
                 if ts:
                     raw_dates[r["id"]] = ts
+                author = r.get("author")
+                if isinstance(author, dict):
+                    tag = _role_tags.get(str(author.get("type") or "").lower())
+                    if tag:
+                        raw_roles[r["id"]] = tag
     except Exception:
         log.warning("automate_comments_meta_failed", external_id=external_id)
 
@@ -253,6 +262,9 @@ async def _build_comments_digest(external_id: int, okdesk: OkdeskService,
         if not text:
             continue
         author = (c.author.name if getattr(c, "author", None) else None) or "—"
+        role = raw_roles.get(getattr(c, "id", None))
+        if role:
+            author = f"{author} [{role}]"
         date = (getattr(c, "created_at", None) or raw_dates.get(getattr(c, "id", None)) or "")
         date = str(date)[:16].replace("T", " ")
         rows.append((date, f"{author} • {date} • {text}"))
@@ -1357,8 +1369,20 @@ async def get_issue_track(
         attachments_text = ""
         if live.attachments:
             attachments_text = await automation.read_attachments(external_id, live.attachments)
+        # Пустое description: тело письма нередко лежит в первом комментарии
+        # (64871) — подтягиваем комментарии и отдаём их текст парсеру, чтобы
+        # гос.номер из тела письма находился.
+        comments_text = ""
+        if not (live.description or "").strip():
+            from app.services.issue_automation import _scrub_iso_dates
+
+            # Без ISO-таймштампов публикации — иначе дата первого комментария
+            # подхватилась бы парсером как «дата неисправности».
+            comments_text = _scrub_iso_dates(
+                await _build_comments_digest(external_id, okdesk))
+        extra_text = "\n".join(t for t in (attachments_text, comments_text) if t) or None
         result = await automation.build_track(
-            live.title, live.description, attachments_text=attachments_text or None,
+            live.title, live.description, attachments_text=extra_text,
             date_from=date_from, date_to=date_to,
         )
         # The independent single-plate parse in build_track sometimes fails where
@@ -1366,9 +1390,17 @@ async def get_issue_track(
         # fault date hidden in an HTML table — issue 64196). When the parse can't
         # produce a clean plate+date, reuse the plate/date the AI already found
         # (cached automate result) so the track panel matches the AI analysis.
-        if isinstance(result, dict) and result.get("error") == "no_plate_or_date":
+        if isinstance(result, dict) and result.get("error") in (
+                "no_plate_or_date", "no_plate", "no_date"):
+            # То, что build_track УЖЕ распарсил (номер при "no_date" и т.п.) —
+            # бесплатный первоисточник, не пере-парсим тот же текст заново.
             fb_plate: str | None = None
             fb_date: str | None = None
+            parsed0 = result.get("parsed") or {}
+            if isinstance(parsed0.get("plate"), str) and parsed0.get("plate"):
+                fb_plate = parsed0["plate"]
+            if isinstance(parsed0.get("date"), str) and parsed0.get("date"):
+                fb_date = parsed0["date"][:10]
             try:
                 cached = await cache.get_result_cache(external_id, "automate")
                 if cached and isinstance(cached.get("data"), dict):
@@ -1388,19 +1420,22 @@ async def get_issue_track(
 
                 if not fb_plate:
                     plates = extract_all_plates(
-                        f"{live.title or ''} {attachments_text or ''}"
+                        f"{live.title or ''} {extra_text or ''}"
                     )
                     if plates:
                         fb_plate = plates[0]
                 if not fb_date:
                     parsed_again = automation.parse_issue(
                         live.title, live.description, None,
-                        extra_text=attachments_text or None,
+                        extra_text=extra_text,
                     )
                     if parsed_again.date:
                         fb_date = parsed_again.date
             except Exception:
                 log.warning("track_fallback_extract_failed", issue_id=issue_id)
+            # Номер найден, а дата — нет: НЕ угадываем дату (created_at ≠ дата
+            # неисправности — молча показали бы трек не за тот день). Фронт
+            # покажет "no_date" с просьбой задать период вручную.
             if fb_plate and fb_date:
                 result = await automation.build_track(
                     "", "", plate=fb_plate, fault_date=fb_date,

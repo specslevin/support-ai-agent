@@ -7,8 +7,12 @@ import re
 import time
 from typing import Any
 
+import structlog
+
 from .client import GpsposGeoClient
 from app.core.gpspos.models import EventItem, ObjectInfo, ObjectStatus
+
+log = structlog.get_logger(__name__)
 
 
 def _decode_cp1251(text: str) -> str:
@@ -124,6 +128,8 @@ class GpsposGeoService:
         return result
 
     _PLATE_CORE = re.compile(r"[АВЕКМНОРСТУХ]\d{3}[АВЕКМНОРСТУХ]{2}", re.I)
+    # Full plate with optional region digits — for fuzzy extraction from object names.
+    _PLATE_FULL = re.compile(r"[АВЕКМНОРСТУХ]\d{3}[АВЕКМНОРСТУХ]{2}\d{0,3}")
     # Special equipment plate: 4 digits + 2 letters in either order (5297СУ / СУ5297).
     _SPECIAL_RE = re.compile(r"(\d{4})([АВЕКМНОРСТУХ]{2})|([АВЕКМНОРСТУХ]{2})(\d{4})", re.I)
     # Latin lookalikes → Cyrillic, so "A759PC" (latin) matches "А759РС" (cyrillic).
@@ -180,7 +186,72 @@ class GpsposGeoService:
                     core_match = r
                 elif special and special_match is None and (special[0] in nf or special[1] in nf):
                     special_match = r
-        return partial or core_match or special_match
+        found = partial or core_match or special_match
+        if found is not None:
+            return found
+        return self._fuzzy_find(needle, rows, plate)
+
+    @staticmethod
+    def _fuzzy_plate_eq(a: str, b: str) -> bool:
+        """Плейты «почти равны»: одинаковая длина, ЦИФРЫ совпадают полностью и
+        позиционно, расхождение в БУКВАХ — от 1 до 2 позиций (опечатки OCR)."""
+        if len(a) != len(b) or a == b:
+            return False
+        letter_diff = 0
+        for ca, cb in zip(a, b):
+            if ca == cb:
+                continue
+            if ca.isdigit() or cb.isdigit():
+                return False
+            letter_diff += 1
+            if letter_diff > 2:
+                return False
+        return letter_diff >= 1
+
+    def _fuzzy_find(self, needle: str, rows: list[dict[str, Any]],
+                    plate: str) -> dict[str, Any] | None:
+        """Финальный fuzzy-проход по опечаткам OCR/клиента (64838: в теме
+        Т643ТС58, реальный объект М643ТЕ58). Кандидат — объект, у которого
+        цифры номера совпадают полностью и позиционно, а буквы расходятся ≤2.
+        Принимаем ТОЛЬКО единственного кандидата, иначе None (без ложных
+        срабатываний)."""
+        if not self._PLATE_CORE.search(needle):
+            return None  # не похоже на обычный гос.номер — fuzzy неприменим
+        needle_core = self._plate_core(needle)
+        # «Единственность» считаем по РАЗНЫМ номерам, а не по строкам: один ТС
+        # часто задвоен в гео (старый/новый терминал с тем же номером) — такие
+        # дубли не должны отменять fuzzy-спасение.
+        by_plate: dict[str, tuple[dict[str, Any], str]] = {}
+        for r in rows:
+            hit: str | None = None
+            for f in (r.get("stateNumber"), r.get("name"), r.get("number")):
+                nf = self._norm_plate(f)
+                if not nf:
+                    continue
+                for cand in self._PLATE_FULL.findall(nf):
+                    if self._fuzzy_plate_eq(needle, cand):
+                        hit = cand
+                        break
+                    # Регион отсутствует с одной из сторон — сравниваем ядра.
+                    if len(cand) != len(needle) and self._fuzzy_plate_eq(
+                            needle_core, self._plate_core(cand)):
+                        hit = cand
+                        break
+                if hit:
+                    break
+            if hit:
+                key = self._plate_core(hit) or hit
+                by_plate.setdefault(key, (r, hit))
+                if len(by_plate) > 1:
+                    return None
+        if len(by_plate) == 1:
+            obj, matched = next(iter(by_plate.values()))
+            log.warning("plate_fuzzy_matched", query_plate=plate,
+                        matched_plate=matched, object_name=obj.get("name"))
+            # Маркер для вызывающих: маппинг неточный (опечатка исправлена) —
+            # его нельзя кэшировать как канонический (object_resolver).
+            return {**obj, "fuzzy_plate_match": matched}
+        return None
 
     async def get_daily_stats(
         self, object_id: int, from_ms: int, till_ms: int

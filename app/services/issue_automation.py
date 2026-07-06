@@ -243,7 +243,15 @@ _PLATE_RE = re.compile(
 )
 # Fallback: усечённый номер 2 буквы + 3 цифры (ЕК424) — только если обычный/спец
 # не нашлись (иначе ловит «Акт122» и т.п., но lookbehind режет «Акт»→«кт»).
-_PLATE_FALLBACK_RE = re.compile(rf"(?<![A-Za-zА-Яа-яЁё0-9.-])[{_L}]{{2}}\s?\d{{3}}", re.I)
+# Вторая альтернатива — прицеп/усечённый: буква+3цифры+ОДНА буква+регион
+# («КАМАЗ-43114 Т911А64», 64868): стандартный формат требует 2 буквы после цифр.
+_PLATE_FALLBACK_RE = re.compile(
+    rf"(?<![A-Za-zА-Яа-яЁё0-9.-])(?:"
+    rf"[{_L}]{{2}}\s?\d{{3}}"
+    rf"|[{_L}]\d{{3}}[{_L}]\d{{2,3}}(?![A-Za-zА-Яа-яЁё0-9])"
+    rf")",
+    re.I,
+)
 # Standard-only (буква+3цифры+2буквы[+регион]) для извлечения СПИСКА номеров из
 # «общей» заявки (один файл — много ТС). Без спецформата, чтобы «23-00 нет»→«2300НЕ» не лез.
 # Регион только слитно (без \s? перед \d{0,3}) — иначе в списке «В152ТУ\n2.»
@@ -531,16 +539,27 @@ def _parse_summary_table(text: str) -> list[tuple[str, str | None, float | None,
     return results
 
 
-def _parse_grouping_table(text: str) -> list[tuple[str | None, float | None, float | None]]:
+def _parse_grouping_table(text: str) -> list[tuple[str | None, float | None, float | None, str | None]]:
     """Табличный отчёт «Группировка <дата> | Пробег по ГЛОНАСС | Пробег ТС | …»
     (Ульяновские РС, 64436): по одному XLSX на дату, строка — один ТС.
 
     «Пробег ТС» = пробег по путевому листу (одометр), «Пробег по ГЛОНАСС» =
     заявленный клиентом пробег по системе. Пустые ячейки XLSX выпадают при
     извлечении, поэтому берём ЧИСЛА после ячейки с гос.номером: 1-е = ГЛОНАСС,
-    2-е = Пробег ТС. Возвращает (plate, sheet_km|None, glonass_km|None)."""
-    results: list[tuple[str | None, float | None, float | None]] = []
+    2-е = Пробег ТС. Возвращает (plate, sheet_km|None, glonass_km|None, date|None).
+
+    Дата — из заголовка «Группировка ДД.ММ.ГГГГ» СВОЕГО листа: в одной книге
+    несколько листов с разными датами, и первая дата всего текста подставлялась
+    всем строкам (64691)."""
+    results: list[tuple[str | None, float | None, float | None, str | None]] = []
+    cur_date: str | None = None
     for line in (text or "").splitlines():
+        if line.lstrip().startswith("# Лист"):
+            cur_date = None  # новый лист — дата предыдущего не наследуется
+            continue
+        gm = re.search(r"Группировка\s+(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{4})", line, re.I)
+        if gm:
+            cur_date = f"{gm.group(3)}-{int(gm.group(2)):02d}-{int(gm.group(1)):02d}"
         if "|" not in line:
             continue
         cells = [c.strip() for c in line.split("|")]
@@ -568,7 +587,7 @@ def _parse_grouping_table(text: str) -> list[tuple[str | None, float | None, flo
                 except ValueError:
                     continue
             if len(allnums) >= 2:
-                results.append((None, allnums[1], allnums[0]))
+                results.append((None, allnums[1], allnums[0], cur_date))
             continue
         nums: list[float] = []
         for cell in cells[name_idx + 1:]:
@@ -578,7 +597,7 @@ def _parse_grouping_table(text: str) -> list[tuple[str | None, float | None, flo
                 continue
         glonass = nums[0] if len(nums) >= 1 else None
         sheet = nums[1] if len(nums) >= 2 else None
-        results.append((plate, sheet, glonass))
+        results.append((plate, sheet, glonass, cur_date))
     return results
 
 
@@ -698,6 +717,15 @@ def _strip_html(text: str | None) -> str:
 
 _MD_NOISE_RE = re.compile(r"\*\*|\*|__|`|#+|^\s*[-•]\s+", re.M)
 
+# Метаданные дайджеста комментариев («Автор • 2026-07-01 10:23 • текст»):
+# ISO-даты публикации вычищаем перед парсингом, иначе они подхватываются как
+# «дата неисправности» (даты в теле письма клиент пишет в формате ДД.ММ.ГГГГ).
+_ISO_TS_RE = re.compile(r"\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?")
+
+
+def _scrub_iso_dates(text: str) -> str:
+    return _ISO_TS_RE.sub(" ", text)
+
 
 def _clean_answer(text: str | None) -> str:
     """Убрать лишние символы из ответа клиенту (markdown-разметку LLM: **, *, #,
@@ -786,7 +814,7 @@ _CATEGORY_CATALOG: list[dict[str, str]] = [
      "template": "Добрый день! Расхождение пробега связано с проездом в зоне глушения GPS/ГЛОНАСС-сигнала (воздействие средств РЭБ). В такие моменты терминал не может корректно определить местоположение и пробег. Устранить эти сбои невозможно, оборудование исправно."},
     {"key": "Не было питания", "when": "Напряжение внешнего питания падало до нуля — терминал был обесточен, трек за этот период восстановить нельзя.",
      "template": "Здравствуйте! В указанную дату ({date}) отсутствовало питающее напряжение на входах терминала. Нет возможности восстановить трек за период, когда питание терминала было отключено."},
-    {"key": "Терминал подключился", "when": "Пробег по системе заметно МЕНЬШЕ путевого листа при в целом чистом треке — терминал терял связь/питание, данные копились в чёрном ящике и выгрузились (или выгрузятся) позже, после чего пробег сходится с ПЛ. Если в системе уже сошлось — указать актуальный пробег; если ещё нет — предупредить, что данные догрузятся.",
+    {"key": "Терминал подключился", "when": "Пробег по системе заметно МЕНЬШЕ путевого листа при в целом чистом треке — терминал терял связь/питание, данные копились в чёрном ящике и выгрузились (или выгрузятся) позже, после чего пробег сходится с ПЛ. Если в системе уже сошлось — указать актуальный пробег; если ещё нет — предупредить, что данные догрузятся. ВАЖНО: если реальный пробег по системе УЖЕ сходится с путевым листом (±10%) — данные догрузились, выбирай «Данные верны», а не эту категорию.",
      "template": "Добрый день! Терминал временно терял связь, данные из внутренней памяти выгрузились. Пробег за {date} составил {system_km} км. Если терминал ещё не выгрузил все данные за период потери связи, пробег обновится после восстановления связи."},
     {"key": "Изменили настройки", "when": "Трек был, но детектор поездок занижал пробег; после корректировки настроек пробег отобразился полностью.",
      "template": "Добрый день! Изменили настройки детектора поездок. Трек отобразился полностью, пробег за {date} составил {system_km} км."},
@@ -1137,6 +1165,8 @@ class IssueAutomationService:
             jumps = 0
             max_impl = 0.0
             track_m = 0.0
+            first_tp_ms: float | None = None
+            last_tp_ms: float | None = None
             for i in range(1, len(packets)):
                 a, b = packets[i - 1], packets[i]
                 if not (a.get("lat") and a.get("lng") and b.get("lat") and b.get("lng")):
@@ -1149,10 +1179,20 @@ class IssueAutomationService:
                 max_impl = max(max_impl, impl)
                 if impl > _TELEPORT_KMH:
                     jumps += 1
+                    tms = b.get("time") or 0
+                    if tms:
+                        first_tp_ms = tms if first_tp_ms is None else min(first_tp_ms, tms)
+                        last_tp_ms = tms if last_tp_ms is None else max(last_tp_ms, tms)
                 else:
                     track_m += dist
             facts.teleport_jumps = jumps
             facts.max_implied_kmh = round(max_impl, 1)
+            # Хронология глушения (64915): клиенту важно, что данные СНАЧАЛА шли
+            # нормально, а прострелы начались позже — фиксируем окно телепортов.
+            if first_tp_ms:
+                ev["прострелы_с"] = _hm(first_tp_ms)
+                if last_tp_ms and last_tp_ms != first_tp_ms:
+                    ev["прострелы_по"] = _hm(last_tp_ms)
             # Prefer the live track distance over the (possibly stale) DailyStat.
             if track_m > 0:
                 facts.system_mileage_km = round(track_m / 1000.0, 2)
@@ -1411,6 +1451,8 @@ class IssueAutomationService:
             "это почти всегда временная потеря связи/питания терминала: данные копятся в чёрном ящике и "
             "выгружаются позже, пробег потом сходится. В этом случае НЕ выбирай «Данные верны», ставь умеренную "
             "уверенность (≤0.7) и рекомендуй перепроверить пробег после выгрузки. "
+            "НО если реальный пробег по системе (реальный_пробег_системы_км) УЖЕ сходится с путевым листом (±10%) — "
+            "данные догрузились: выбирай «Данные верны» с актуальным пробегом, а НЕ «Терминал подключился». "
             "Если в фактах есть большой обрыв трека (макс_разрыв_трека_мин велик) или признак track_gap — "
             "СНАЧАЛА проверь признаки глушения: прострелы трека (телепорты), потеря спутников, скачки расчётной "
             "скорости. При наличии таких признаков это ГЛУШЕНИЕ (по данным операторов разрыв трека в ~3/4 случаев "
@@ -1456,6 +1498,9 @@ class IssueAutomationService:
             "значит питание БЫЛО (не пиши «нет питания»); «нет данных» в отрезке = в это время пакеты не поступали. "
             "Поле «анализ_графика» — конкретные моменты с графика (окно движения, время падения напряжения, крупные разрывы): "
             "ПРОАНАЛИЗИРУЙ их перед ответом и опирайся на конкретные времена/значения, а не на общие фразы. "
+            "Хронология важна: если данные за день сначала шли нормально (терминал был на связи, данные выгружались), "
+            "а признаки проблемы (глушение/обрыв) появились ПОЗЖЕ — опиши последовательность событий в ответе "
+            "(«до HH:MM данные поступали корректно, затем …»), а не только итоговый вердикт. "
             "Будь гибким в формулировках и опирайся на конкретику фактов, но НЕ выходи за рамки категорий каталога и не выдумывай данные. "
             "Держи ответ кратким (2–4 предложения), по делу, без воды. "
             "Не выдумывай данные, которых нет. Верни СТРОГО JSON без пояснений: "
@@ -1466,9 +1511,15 @@ class IssueAutomationService:
             att_block = f"\nТекст из вложений заявки (путевые листы и т.п.):\n{attachments_text[:4000]}\n"
         comments_block = ""
         if comments and comments.strip():
+            # Голова (первый комментарий = исходный запрос/тело письма) и хвост
+            # (свежие ответы сотрудника, 64886) важнее середины: при длинной
+            # переписке вырезаем середину, а не последние ответы.
+            ctext = comments.strip()
+            if len(ctext) > 6000:
+                ctext = ctext[:2000] + "\n…[середина переписки опущена]…\n" + ctext[-4000:]
             comments_block = (
                 "\nКомментарии по заявке (хронологически, автор • дата • текст):\n"
-                f"{comments.strip()[:6000]}\n"
+                f"{ctext}\n"
             )
         examples_block = self._format_examples(examples)
         user = (
@@ -1839,7 +1890,10 @@ class IssueAutomationService:
                 continue
             seen.add(p)
             try:
-                if await self._geo.find_object_by_plate(p):
+                obj = await self._geo.find_object_by_plate(p)
+                # Только ТОЧНОЕ совпадение в гео: fuzzy-спасение для АЛЬТЕРНАТИВНОГО
+                # кандидата — двойная неточность, легко подменяет чужое ТС.
+                if obj and not obj.get("fuzzy_plate_match"):
                     return p
             except Exception:  # pragma: no cover - geo may fail
                 continue
@@ -1856,13 +1910,22 @@ class IssueAutomationService:
                            [str, str | None, list[str]],
                            Awaitable[list[dict[str, Any]]],
                        ] | None = None) -> AutomationResult:
-        parsed = self.parse_issue(title, description, params, extra_text=attachments_text)
+        # 64871: у форвард-писем description пуст — тело письма лежит в ПЕРВОМ
+        # комментарии; добавляем дайджест комментариев к тексту для парсинга
+        # (без ISO-таймштампов публикации — см. _scrub_iso_dates).
+        parse_extra = attachments_text
+        if comments and not _strip_html(description).strip():
+            parse_extra = f"{attachments_text or ''}\n{_scrub_iso_dates(comments)}"
+        parsed = self.parse_issue(title, description, params, extra_text=parse_extra)
         # Fallback: если regex не нашёл гос.номер ИЛИ дату — просим LLM извлечь
         # поля из текста/вложений (нестандартные форматы дочерних Россетей).
         # Не тратим токены, когда regex справился.
-        if (not parsed.plate or not parsed.date) and (title or description or attachments_text):
+        if (not parsed.plate or not parsed.date) and (title or description or attachments_text or comments):
             try:
-                ext = await self._extract_with_llm(title, _strip_html(description), attachments_text)
+                body = _strip_html(description)
+                if not body.strip() and comments:
+                    body = _scrub_iso_dates(comments)[:4000]
+                ext = await self._extract_with_llm(title, body, attachments_text)
                 self._apply_llm_extraction(parsed, ext)
             except Exception:  # pragma: no cover - best effort
                 log.warning("llm_extract_failed", title=(title or "")[:60])
@@ -2075,7 +2138,10 @@ class IssueAutomationService:
         else:
             parsed = self.parse_issue(title, description, None, extra_text=attachments_text)
         if not parsed.plate or not parsed.date:
-            return {"error": "no_plate_or_date", "parsed": asdict(parsed), "points": []}
+            # Раздельные коды (64826/64838: номер в теме ЕСТЬ, нет только даты —
+            # сообщение «номер не найден» вводило оператора в заблуждение).
+            code = "no_date" if parsed.plate else "no_plate"
+            return {"error": code, "parsed": asdict(parsed), "points": []}
         obj = await self._geo.find_object_by_plate(parsed.plate)
         if not obj:
             return {"error": "object_not_found", "parsed": asdict(parsed), "points": []}
@@ -2334,7 +2400,26 @@ class IssueAutomationService:
             act_like = (("дата неисправности" in tl and "путево" in tl)
                         or (("одометр" in tl or "путево" in tl)
                             and ("глонас" in tl or "ссм" in tl or "смс" in tl)))
-            if filename_plate:
+            # 64731/64850/64851: в одном PDF несколько актов/ТС, а в имени файла
+            # перечислены все номера — ветка «номер из имени» брала только первый
+            # и теряла остальные. Разделители _/- заменяем пробелом ТОЛЬКО в имени
+            # файла (в тексте lookbehind защищает от «№ШР175 ОТ», 64144).
+            # Считаем РАЗНЫЕ ТС по ключу без региона (_plate_dedup_key): номер с
+            # регионом и без — один ТС (64513), а не повод уйти в мульти-ветку.
+            fname_plates = extract_all_plates(name.replace("_", " ").replace("-", " "))
+            if filename_plate:  # спец-формат (5297СУ) не ловится STD-регэкспом
+                fname_plates = list(dict.fromkeys([filename_plate, *fname_plates]))
+            acts_segments = _split_acts(text)
+            text_plates = list(text_plates)
+            # «Акт №» в теле может быть просто ссылкой («на основании акта №12») —
+            # мульти-акт только когда НЕСКОЛЬКО сегментов содержат свои номера.
+            act_segs_with_plates = sum(1 for seg in acts_segments if extract_all_plates(seg))
+            text_plate_keys = {_plate_dedup_key(p) for p in text_plates}
+            fname_plate_keys = {_plate_dedup_key(p) for p in fname_plates}
+            multi_doc = (len(fname_plate_keys) >= 2
+                         or act_segs_with_plates >= 2
+                         or len(text_plate_keys | fname_plate_keys) >= 2)
+            if filename_plate and not multi_doc:
                 p = self.parse_issue(name, "", None, extra_text=text)
                 base_date = p.date
                 targets.append((filename_plate, p.date, p.sheet_mileage_km, p.declared_system_km))
@@ -2348,17 +2433,17 @@ class IssueAutomationService:
                 if not targets:
                     p = self.parse_issue(name, "", None, extra_text=text)
                     base_date = p.date
-                    for plate in extract_all_plates(text):
+                    for plate in text_plates:
                         targets.append((plate, p.date, p.sheet_mileage_km, p.declared_system_km))
             elif "пробег тс" in tl:
                 # Табличный отчёт «Группировка <дата>» (Ульяновские РС, 64436):
                 # строка — гос.номер + «Пробег ТС» (=ПЛ) + «Пробег по ГЛОНАСС» (система).
                 p0 = self.parse_issue(name, "", None, extra_text=text)
-                for plate, sheet_km, glonass_km in _parse_grouping_table(text):
-                    targets.append((plate, p0.date, sheet_km, glonass_km))
+                for plate, sheet_km, glonass_km, row_date in _parse_grouping_table(text):
+                    targets.append((plate, row_date or p0.date, sheet_km, glonass_km))
                 if not targets:
                     base_date = p0.date
-                    for plate in extract_all_plates(text):
+                    for plate in text_plates:
                         targets.append((plate, p0.date, p0.sheet_mileage_km, p0.declared_system_km))
             elif act_like:
                 # Акт(ы) неисправности. Многоактный PDF (Волжское, 64481): один
@@ -2366,17 +2451,17 @@ class IssueAutomationService:
                 # номеров (Чапаевское «Общая»: один Word — список ТС) — раскладываем
                 # по списку (_parse_body_vehicles), иначе потеряли бы всех кроме 1-го.
                 rows = _parse_act_blocks(text)
-                if len(rows) < 2 and len(extract_all_plates(text)) >= 2:
+                if len(rows) < 2 and len(text_plates) >= 2:
                     rows = _parse_body_vehicles(text)
                 for plate, pdate, psheet, pglonass in rows:
                     targets.append((plate, pdate, psheet, pglonass))
                 if not targets:
                     p = self.parse_issue(name, "", None, extra_text=text)
                     base_date = p.date
-                    for plate in extract_all_plates(text):
+                    for plate in text_plates:
                         targets.append((plate, p.date, p.sheet_mileage_km, p.declared_system_km))
             else:
-                acts = _split_acts(text)
+                acts = acts_segments
                 if len(acts) >= 2:
                     for seg in acts:
                         seg_plates = extract_all_plates(seg)
@@ -2388,7 +2473,7 @@ class IssueAutomationService:
                 else:
                     p = self.parse_issue(name, "", None, extra_text=text)
                     base_date = p.date
-                    plates = extract_all_plates(text)
+                    plates = list(text_plates)
                     # Один документ — несколько ТС списком, без «Акт №» и без маркеров
                     # пробега (Чапаевское без явных пробегов): не терять остальные ТС.
                     if len(plates) >= 2:
@@ -2404,6 +2489,17 @@ class IssueAutomationService:
                     if not targets:
                         for plate in plates:
                             targets.append((plate, p.date, p.sheet_mileage_km, p.declared_system_km))
+
+            # Страховка мульти-документа: номер перечислен в имени файла, но его
+            # акт не распознался в OCR-тексте — добираем с датой документа, иначе
+            # ТС молча пропадает из разбора (64851: А759РС после «111-»).
+            if multi_doc and fname_plates:
+                have = {_plate_dedup_key(pl) for pl, _, _, _ in targets if pl}
+                for pl in fname_plates:
+                    if _plate_dedup_key(pl) not in have:
+                        # Дата None: ниже её заполнит дата ДОКУМЕНТА (имя файла/
+                        # тема), а не дата чужого акта из этого же PDF.
+                        targets.append((pl, None, None, None))
 
             # Дата документа/темы для объектов без своей даты (Чапаевское «Общая»:
             # дата одна в шапке/имени файла/теме, не у каждого ТС в списке) — чтобы
@@ -2570,6 +2666,20 @@ class IssueAutomationService:
                     item["verdict"] = "Глушение"
                 elif sheet and system is not None and abs(sheet - system) <= max(5.0, sheet * 0.1):
                     item["verdict"] = "Данные верны"
+                elif (declared is not None and system is not None and sheet
+                      and abs(declared - system) <= max(5.0, system * 0.1)):
+                    # 63317: реальная телеметрия сходится с тем, что клиент видит в
+                    # системе, а расходится только его ПЛ — проблема на стороне
+                    # учёта клиента (одометр/пробуксовка), данные мониторинга верны.
+                    item["verdict"] = "Данные верны"
+                elif (declared is not None and system is not None and sheet
+                      and system - declared > max(5.0, system * 0.25)
+                      and abs(sheet - system) <= max(5.0, sheet * 0.25)):
+                    # Клиент видит в системе заметно меньше, чем реально есть в
+                    # телеметрии, а реальный пробег уже примерно сошёлся с ПЛ —
+                    # данные догрузились позже (чёрный ящик). Если же system всё
+                    # ещё далёк от ПЛ — это «Проверить», а не ложное «догрузилось».
+                    item["verdict"] = "Терминал подключился"
                 else:
                     item["verdict"] = "Проверить"
             except Exception:

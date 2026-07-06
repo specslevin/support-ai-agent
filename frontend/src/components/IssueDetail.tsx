@@ -903,6 +903,8 @@ function AutoAnalysis({ issueId, latestAnalysis, issueTitle, companyName }: { is
       if (isDemo) localStorage.setItem(demoAnalyzedKey, '1')
       queryClient.invalidateQueries({ queryKey: ['issue', issueId] })
       queryClient.invalidateQueries({ queryKey: ['automate-cached', issueId] })
+      // Трек мог быть закэширован с ошибкой «номер не найден» до анализа — сбрасываем (64736, 64965)
+      queryClient.invalidateQueries({ queryKey: ['track', issueId] })
     },
   })
 
