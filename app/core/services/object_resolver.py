@@ -10,6 +10,7 @@ per-object answer aggregation (ОДКР).
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from typing import Any
 
 import structlog
@@ -20,6 +21,10 @@ from app.core.db.models import ObjectResolveCache
 from app.core.gpspos_geo.service import GpsposGeoService
 
 log = structlog.get_logger(__name__)
+
+# Отрицательные записи (object_id=None) не живут вечно: объект мог появиться в
+# geo уже после промаха. Просроченный негатив игнорируем и перезапрашиваем.
+_NEGATIVE_TTL_SEC = 24 * 3600
 
 
 def _to_mapping(row: ObjectResolveCache) -> dict[str, Any] | None:
@@ -66,7 +71,15 @@ class ObjectResolverService:
         )
         cached = existing.scalar_one_or_none()
         if cached is not None:
-            return _to_mapping(cached)
+            if cached.object_id is not None:
+                # Позитивная запись кэшируется как раньше (объект найден).
+                return _to_mapping(cached)
+            # Негативная запись: отдаём промах только пока она свежая. Протухший
+            # негатив (объект мог появиться в geo позже) игнорируем и перезапрашиваем.
+            ts = cached.updated_at or cached.created_at
+            if ts is not None and (datetime.utcnow() - ts) < timedelta(seconds=_NEGATIVE_TTL_SEC):
+                return None
+            # иначе — падаем в повторный запрос ниже (запись НЕ удаляем, обновим её).
 
         raw = await self.geo.find_object_by_plate(plate)
         mapping = _from_raw(plate_norm, raw) if raw else None
@@ -77,15 +90,24 @@ class ObjectResolverService:
             return mapping
 
         # Persist both hits and misses (object_id=None) so repeated lookups of an
-        # unknown plate don't re-scan the whole Objects list every time.
-        row = ObjectResolveCache(
-            plate_norm=plate_norm,
-            object_id=mapping["object_id"] if mapping else None,
-            name=mapping["name"] if mapping else None,
-            imei=mapping["imei"] if mapping else None,
-            phone=mapping["phone"] if mapping else None,
-        )
-        self.db.add(row)
+        # unknown plate don't re-scan the whole Objects list every time. При
+        # протухшем негативе обновляем существующую строку (plate_norm уникален),
+        # иначе INSERT нарушит unique-constraint.
+        if cached is not None:
+            cached.object_id = mapping["object_id"] if mapping else None
+            cached.name = mapping["name"] if mapping else None
+            cached.imei = mapping["imei"] if mapping else None
+            cached.phone = mapping["phone"] if mapping else None
+            cached.updated_at = datetime.utcnow()
+        else:
+            row = ObjectResolveCache(
+                plate_norm=plate_norm,
+                object_id=mapping["object_id"] if mapping else None,
+                name=mapping["name"] if mapping else None,
+                imei=mapping["imei"] if mapping else None,
+                phone=mapping["phone"] if mapping else None,
+            )
+            self.db.add(row)
         await self.db.commit()
 
         if mapping is None:

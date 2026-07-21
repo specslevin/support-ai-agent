@@ -273,6 +273,30 @@ _PLATE_VALID_FULL = re.compile(
 )
 
 
+# «г.н.К862ВТ» / «№К862ВТ» — префикс приклеен к номеру, а lookbehind в _PLATE_RE
+# режет номер, стоящий сразу после точки/буквы/цифры. Отделяем известный префикс
+# гос.номера от самого номера пробелом, чтобы он извлёкся (65152).
+_PLATE_PREFIX_RE = re.compile(
+    rf"(?i)(г\.?\s?н\.?|г\s?/\s?н|гос\.?\s?номер|рег\.?\s?номер|№)\s*"
+    rf"(?=[{_L}]\s?\d{{3}})"
+)
+
+
+def _unglue_plate_prefix(text: str) -> str:
+    """Вставляет пробел между префиксом «г.н./г/н/гос.номер/№» и приклеенным
+    к нему гос.номером, иначе lookbehind в _PLATE_RE не даёт номеру извлечься."""
+    if not text:
+        return text
+    return _PLATE_PREFIX_RE.sub(lambda m: m.group(1) + " ", text)
+
+
+def _plate_no_region(plate: str | None) -> bool:
+    """True для стандартного номера БЕЗ кода региона (О006СХ — 6 символов).
+    Такой номер неоднозначен: в geo может совпасть с несколькими ТС (65034)."""
+    n = _normalize_plate(plate) or ""
+    return bool(re.fullmatch(rf"[{_L}]\d{{3}}[{_L}]{{2}}", n))
+
+
 def _plate_format_suspect(plate: str | None) -> bool:
     """True, если номер задан, но не соответствует ни одному валидному формату
     (вероятная опечатка клиента). Пустой/None → False (это отдельный случай)."""
@@ -285,7 +309,8 @@ def extract_all_plates(text: str, limit: int = 40) -> list[str]:
     """All distinct standard plates in order of appearance (для списков ТС)."""
     seen: set[str] = set()
     out: list[str] = []
-    for m in _PLATE_STD_RE.finditer(text or ""):
+    text = _unglue_plate_prefix(text or "")
+    for m in _PLATE_STD_RE.finditer(text):
         p = _normalize_plate(m.group(0))  # translit: «M203YO»→«М203УО» (64481)
         if p not in seen:
             seen.add(p)
@@ -929,9 +954,9 @@ class IssueAutomationService:
     def parse_issue(self, title: str | None, description: str | None,
                     params: list[dict[str, Any]] | None = None,
                     extra_text: str | None = None) -> ParsedIssue:
-        title = title or ""
+        title = _unglue_plate_prefix(title or "")
         body = _strip_html(description)
-        text = f"{title} {body} {extra_text or ''}"
+        text = _unglue_plate_prefix(f"{title} {body} {extra_text or ''}")
         parsed = ParsedIssue()
 
         # Приоритет: полный номер в теме/имени файла → усечённый в теме →
@@ -1041,20 +1066,51 @@ class IssueAutomationService:
         return parsed
 
     # ----- telemetry -----------------------------------------------------
+    async def _pick_object_by_plate_dated(
+        self, plate: str, from_ms: int, till_ms: int, ymd0: int, ymd1: int
+    ) -> tuple[dict[str, Any] | None, bool]:
+        """Выбирает объект по гос.номеру с учётом наличия данных за дату.
+
+        Для номера БЕЗ региона («О006СХ») в geo может совпасть несколько ТС
+        (разные регионы). Раньше брался первый попавшийся — и это оказывался
+        «пустой» объект без данных (Зил-131 О006СХ), хотя данные были у другого
+        (ГАЗ О006СХ63) — 65034. Пробуем суточную статистику каждого кандидата и
+        предпочитаем того, у кого за интервал есть пробег. Возвращает кортеж
+        (объект, неоднозначно): неоднозначно=True, когда данные есть у нескольких
+        кандидатов — тогда угадывать нельзя, нужен код региона.
+        """
+        candidates = await self._geo.find_objects_by_plate(plate)
+        if not candidates:
+            # нет прямых кандидатов — прежнее поведение (в т.ч. fuzzy-спасение)
+            return (await self._geo.find_object_by_plate(plate), False)
+        if len(candidates) == 1 or not _plate_no_region(plate):
+            return (candidates[0], False)
+        with_data: list[dict[str, Any]] = []
+        for c in candidates[:6]:
+            try:
+                cid = int(c["id"])
+                stats = await self._geo.get_daily_stats(cid, from_ms, till_ms)
+            except Exception:  # pragma: no cover - tool may fail
+                continue
+            if any(ymd0 <= (r.get("day") or 0) <= ymd1
+                   and float(r.get("length") or 0) > 0 for r in stats):
+                with_data.append(c)
+        if len(with_data) == 1:
+            return (with_data[0], False)
+        if len(with_data) >= 2:
+            return (with_data[0], True)
+        # ни у кого нет данных за дату — оставляем первого кандидата (как раньше)
+        return (candidates[0], False)
+
     async def gather_telemetry(self, plate: str, iso_date: str,
                                iso_date_to: str | None = None) -> TelemetryFacts:
         facts = TelemetryFacts()
-        obj = await self._geo.find_object_by_plate(plate)
-        if not obj:
-            facts.flags.append("object_not_found")
-            return facts
-        oid = int(obj["id"])
-        facts.object_id = oid
-        facts.object_name = obj.get("name")
 
         day = _dt.date.fromisoformat(iso_date)
         # Интервал неисправности (1.6): окно от начала до конца интервала (МСК),
-        # пробег/трек считаем за ВЕСЬ период, а не один день.
+        # пробег/трек считаем за ВЕСЬ период, а не один день. Окно считаем ДО
+        # выбора объекта — оно нужно, чтобы при номере без региона выбрать того
+        # кандидата, у кого есть данные за дату (65034).
         day_to = day
         if iso_date_to:
             try:
@@ -1065,10 +1121,23 @@ class IssueAutomationService:
                 pass
         from_ms, _ = _msk_day_window_ms(day)
         _, till_ms = _msk_day_window_ms(day_to)
-
-        stats = await self._geo.get_daily_stats(oid, from_ms, till_ms)
         ymd0 = int(day.strftime("%Y%m%d"))
         ymd1 = int(day_to.strftime("%Y%m%d"))
+
+        obj, ambiguous = await self._pick_object_by_plate_dated(
+            plate, from_ms, till_ms, ymd0, ymd1)
+        if not obj:
+            facts.flags.append("object_not_found")
+            return facts
+        oid = int(obj["id"])
+        facts.object_id = oid
+        facts.object_name = obj.get("name")
+        if ambiguous:
+            # Номер без региона совпал с несколькими ТС, и данные за дату есть у
+            # нескольких — оператору нужно уточнить регион (не угадываем).
+            facts.flags.append("plate_ambiguous_no_region")
+
+        stats = await self._geo.get_daily_stats(oid, from_ms, till_ms)
         # За интервал суммируем все суточные строки в диапазоне; для одного дня —
         # это ровно та же строка (без stats[0]-фоллбэка, чтобы не взять чужой день).
         rng_rows = [r for r in stats if ymd0 <= (r.get("day") or 0) <= ymd1]

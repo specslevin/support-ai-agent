@@ -20,6 +20,10 @@ _OKDESK_PAGE_SIZE = 50
 _OKDESK_MAX_PAGES = 60  # sync most recent 3000 issues
 _OKDESK_PAGE_RETRIES = 3  # повторы при сбое страницы, чтобы не терять хвост синка
 
+# Латинские двойники → кириллица, чтобы «K862BT» совпадал с «К862ВТ».
+# Тот же маппинг, что в GpsposGeoService._norm_plate (эталон нормализации).
+_PLATE_TRANSLIT = str.maketrans("ABEKMHOPCTYX", "АВЕКМНОРСТУХ")
+
 
 def _parse_dt(value: str | None) -> datetime | None:
     if not value:
@@ -573,7 +577,7 @@ class CacheService:
         def _norm(p: str | None) -> str | None:
             if not p:
                 return None
-            n = re.sub(r"[\s\-]", "", str(p)).upper()
+            n = re.sub(r"[\s\-]", "", str(p)).upper().translate(_PLATE_TRANSLIT)
             return n or None
 
         wanted = {n for n in (_norm(p) for p in (plates or [])) if n}

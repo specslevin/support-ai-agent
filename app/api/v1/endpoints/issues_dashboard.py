@@ -943,8 +943,13 @@ _EDITABLE_VERDICTS = {
 }
 
 
+# Латинские двойники → кириллица, чтобы «o006cx63» совпадал с «О006СХ63».
+# Тот же маппинг, что в GpsposGeoService._norm_plate (эталон нормализации).
+_PLATE_TRANSLIT = str.maketrans("ABEKMHOPCTYX", "АВЕКМНОРСТУХ")
+
+
 def _norm_plate(p: object) -> str:
-    return re.sub(r"[\s\-]", "", str(p or "")).upper()
+    return re.sub(r"[\s\-]", "", str(p or "")).upper().translate(_PLATE_TRANSLIT)
 
 
 @router.post("/{issue_id}/batch/verdict")

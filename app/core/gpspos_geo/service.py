@@ -156,6 +156,54 @@ class GpsposGeoService:
         digits, letters = (m.group(1), m.group(2)) if m.group(1) else (m.group(4), m.group(3))
         return (digits + letters, letters + digits)
 
+    async def find_objects_by_plate(self, plate: str) -> list[dict[str, Any]]:
+        """Все объекты-кандидаты по гос.номеру, отсортированные по качеству
+        совпадения: точное → подстрока → ядро без региона → спецтехника.
+
+        Для номера БЕЗ региона (``О006СХ``) кандидатов может быть несколько —
+        один и тот же «корень» встречается у разных регионов (``О006СХ`` у Зил-131
+        без данных и ``О006СХ63`` у ГАЗ с данными, 65034). Вызывающий выбирает
+        нужный по наличию телеметрии за дату. Дедуп по ``id``.
+        """
+        needle = self._norm_plate(plate)
+        if not needle:
+            return []
+        core = self._plate_core(needle)
+        special = self._special_candidates(needle)  # for спецтехника (5297СУ / СУ5297)
+        rows = await self._objects_cached()
+        buckets: dict[str, list[dict[str, Any]]] = {
+            "exact": [], "partial": [], "core": [], "special": []}
+        seen: set[int] = set()
+
+        def _add(kind: str, r: dict[str, Any]) -> None:
+            try:
+                oid = int(r.get("id"))
+            except (TypeError, ValueError):
+                return
+            if oid in seen:
+                return
+            seen.add(oid)
+            buckets[kind].append(r)
+
+        for r in rows:
+            kind: str | None = None  # лучший разряд совпадения внутри объекта
+            for f in (r.get("stateNumber"), r.get("name"), r.get("number")):
+                nf = self._norm_plate(f)
+                if not nf:
+                    continue
+                if nf == needle:
+                    kind = "exact"
+                    break
+                if needle in nf:
+                    kind = kind or "partial"
+                elif core and core in nf:
+                    kind = kind or "core"
+                elif special and (special[0] in nf or special[1] in nf):
+                    kind = kind or "special"
+            if kind:
+                _add(kind, r)
+        return buckets["exact"] + buckets["partial"] + buckets["core"] + buckets["special"]
+
     async def find_object_by_plate(self, plate: str) -> dict[str, Any] | None:
         """Find a tracked object by license plate (gosnumber).
 
@@ -163,32 +211,17 @@ class GpsposGeoService:
         sometimes in ``stateNumber``/``number``. The region code may be missing in
         geo (``"Х371РХ ГАЗ"`` vs issue ``"Х371РХ64"``), so we also match by the plate
         core (letters+digits without region). Returns the raw object dict or None.
+
+        Возвращает наиболее вероятного кандидата; при неоднозначности (номер без
+        региона) полный список доступен через ``find_objects_by_plate``.
         """
         needle = self._norm_plate(plate)
         if not needle:
             return None
-        core = self._plate_core(needle)
-        special = self._special_candidates(needle)  # for спецтехника (5297СУ / СУ5297)
+        candidates = await self.find_objects_by_plate(plate)
+        if candidates:
+            return candidates[0]
         rows = await self._objects_cached()
-        partial: dict[str, Any] | None = None
-        core_match: dict[str, Any] | None = None
-        special_match: dict[str, Any] | None = None
-        for r in rows:
-            for f in (r.get("stateNumber"), r.get("name"), r.get("number")):
-                nf = self._norm_plate(f)
-                if not nf:
-                    continue
-                if nf == needle:
-                    return r
-                if needle in nf and partial is None:
-                    partial = r
-                elif core and core in nf and core_match is None:
-                    core_match = r
-                elif special and special_match is None and (special[0] in nf or special[1] in nf):
-                    special_match = r
-        found = partial or core_match or special_match
-        if found is not None:
-            return found
         return self._fuzzy_find(needle, rows, plate)
 
     @staticmethod
