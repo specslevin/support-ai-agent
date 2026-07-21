@@ -29,6 +29,12 @@ log = structlog.get_logger(__name__)
 _DEFAULT_TTL = 12 * 3600
 _DEFAULT_SECRET = "change-me-support-ai-secret"  # noqa: S105 — dev fallback only
 
+
+def _is_production() -> bool:
+    """production, если ENV/APP_ENV ∈ {production, prod}. Иначе — dev (по умолч.)."""
+    env = (os.getenv("APP_ENV") or os.getenv("ENV") or "").strip().lower()
+    return env in ("production", "prod")
+
 # Допустимые роли: admin (полный доступ + управление учётками), operator (доступ
 # к записи как admin, но без админ-эндпоинтов), demo (только просмотр).
 _ROLES = ("admin", "operator", "demo")
@@ -52,6 +58,16 @@ class AuthConfig:
     def __init__(self) -> None:
         self.secret = os.getenv("AUTH_SECRET") or _DEFAULT_SECRET
         if self.secret == _DEFAULT_SECRET:
+            # Пустой/дефолтный AUTH_SECRET = токены подписаны общеизвестным ключом
+            # (их можно подделать). В production это фатально — роняем старт, чтобы
+            # дыра не пряталась за warning'ом (пустой AUTH_SECRET= трактуется как
+            # «не задан»). В dev — оставляем прежний warning, чтобы zero-config
+            # запуск (admin:admin) продолжал работать.
+            if _is_production():
+                raise RuntimeError(
+                    "AUTH_SECRET не задан (пуст или равен дефолту) при ENV=production. "
+                    "Задайте стойкий секрет в .env, напр.: AUTH_SECRET=$(openssl rand -base64 48)"
+                )
             log.warning("auth_default_secret_in_use", hint="set AUTH_SECRET in production")
         try:
             self.ttl = int(os.getenv("AUTH_TOKEN_TTL_SEC", str(_DEFAULT_TTL)))
