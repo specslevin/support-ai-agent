@@ -1019,6 +1019,13 @@ class IssueAutomationService:
             or _from_iso(re.search(_fault + iso, text, re.I | re.S))
             or _from_match(re.search(r"в\s+системе(?:\s+с)?[^\d]{0,20}" + d, text, re.I))
             or _from_match(re.search(r"(?<!период\s)за\s*" + d, text, re.I))
+            # «за <дата>» с ДВУзначным годом (65702: «Отклонение за 21.07.26»).
+            # Раньше ловился только 4-значный год → дата терялась (date=None) и
+            # бралась откуда-то ещё (напр. из комментария) с неверным годом.
+            # ТОЛЬКО с маркером «за»: голую 2-значную дату где-то в тексте НЕ берём —
+            # это обычно дата отчёта/акта, а не неисправности (см. приоритет маркеров
+            # выше); общий скан по всему тексту дал бы ложную дату отчёта.
+            or _from_flex(re.search(r"(?<!период\s)за\s*" + d2, text, re.I))
             or _from_iso(re.search(r"(?<!период\s)за\s*" + iso, text, re.I))
             or _from_match(_DATE_RE.search(title))
             or _from_match(_DATE_RE.search(text))
