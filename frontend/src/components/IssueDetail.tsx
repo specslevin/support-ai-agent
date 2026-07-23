@@ -1255,7 +1255,7 @@ function ComposeAnswerButton({ issueId, hasExtractable, onUseDraft }: { issueId:
   )
 }
 
-function BatchAnalysis({ issueId, issueTitle, onOpenExternal }: { issueId: number; issueTitle?: string | null; companyName?: string | null; onOpenExternal: (extId: number) => void }) {
+function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal }: { issueId: number; issueTitle?: string | null; issueDescription?: string | null; companyName?: string | null; onOpenExternal: (extId: number) => void }) {
   const queryClient = useQueryClient()
   const isDemo = useAuthStore(s => s.user?.role === 'demo')
   const openTrack = useIssuesStore(s => s.openTrack)
@@ -1316,15 +1316,17 @@ function BatchAnalysis({ issueId, issueTitle, onOpenExternal }: { issueId: numbe
     staleTime: 5 * 60_000,
   })
   const extractable = attachments.filter(a => a.extractable)
-  // Заявка без вложений, но с >=2 гос.номерами в теме — разбираем по теме (бэк умеет automate_batch).
-  const multiInSubject = countPlates(issueTitle) >= 2
+  // Заявка без вложений, но с >=2 гос.номерами в ТЕМЕ ИЛИ ТЕЛЕ письма — разбираем
+  // по тексту (бэк умеет automate_batch по теме+телу). Тело нужно для 65649: тема =
+  // дата, список ТС — в теле письма.
+  const multiInText = countPlates(`${issueTitle ?? ''}\n${stripHtml(issueDescription)}`) >= 2
   // Подтягиваем сохранённый разбор при наличии хотя бы одного извлекаемого вложения
   // (дешёвый GET — вернёт данные только если разбор уже делали). Нужно, чтобы
   // распознать агрегатность по кешу даже без подсказки в теме/компании.
   const cachedQ = useQuery({
     queryKey: ['batch-cached', issueId],
     queryFn: () => api.getCachedBatch(issueId),
-    enabled: extractable.length >= 1 || multiInSubject,
+    enabled: extractable.length >= 1 || multiInText,
     staleTime: 5 * 60_000,
   })
   const cached = cachedQ.data?.cached ? cachedQ.data : null
@@ -1412,7 +1414,7 @@ function BatchAnalysis({ issueId, issueTitle, onOpenExternal }: { issueId: numbe
   // Кнопка «Разбор по объектам» доступна для любой заявки с >=1 извлекаемым вложением —
   // оператор может вручную запустить разбор (напр. 63317: 1 файл, ~40 ТС). Авто-запуск
   // OCR не делаем; таблица рисуется из результата run/кеша (>=2 объекта → мультиобъект).
-  if (extractable.length < 1 && !multiInSubject) return null
+  if (extractable.length < 1 && !multiInText) return null
 
   const res = localBatch ?? run.data ?? (cached as BatchResult | null)
   const isCached = !localBatch && !run.data && !!cached
@@ -1815,7 +1817,10 @@ function ExtractedDataBlock({ issueId }: { issueId: number }) {
 // для подсчёта он не нужен. Нормализация совпадает с бэкендом _normalize_plate:
 // убрать пробелы/дефисы, upper-case, латиница→кириллица (иначе один и тот же ТС
 // в кириллице и латинице посчитается как два — рассинхрон с бэком, см. 64481).
-const PLATE_RE = /[АВЕКМНОРСТУХABEKMHOPCTYX]\s?\d{3}\s?[АВЕКМНОРСТУХABEKMHOPCTYX]{2}\d{0,3}/gi
+// Lookbehind как в бэковском `_PLATE_STD_RE`: номер не должен начинаться в середине
+// слова/числа (иначе «2.В524ОА» или «Акт122» ложно считаются номером) — чтобы
+// countPlates на фронте совпадал с распознаванием номеров на бэке.
+const PLATE_RE = /(?<![A-Za-zА-Яа-яЁё0-9.-])[АВЕКМНОРСТУХABEKMHOPCTYX]\s?\d{3}\s?[АВЕКМНОРСТУХABEKMHOPCTYX]{2}\d{0,3}/gi
 const LAT_TO_CYR: Record<string, string> = {
   A: 'А', B: 'В', E: 'Е', K: 'К', M: 'М', H: 'Н', O: 'О',
   P: 'Р', C: 'С', T: 'Т', Y: 'У', X: 'Х',
@@ -1823,6 +1828,10 @@ const LAT_TO_CYR: Record<string, string> = {
 function normPlate(raw: string): string {
   return raw.replace(/[\s-]/g, '').toUpperCase()
     .replace(/[ABEKMHOPCTYX]/g, c => LAT_TO_CYR[c] || c)
+    // Срезаем хвост региона (2-3 цифры после двух букв) — как `_plate_dedup_key` на
+    // бэке: «В418УО162» и «В418УО» = один ТС. Иначе countPlates считал их за 2 и
+    // показывал пакетный разбор там, где бэк видит 1 ТС и возвращает пусто.
+    .replace(/(?<=[АВЕКМНОРСТУХ]{2})\d{2,3}$/, '')
 }
 function countPlates(s?: string | null): number {
   if (!s) return 0
@@ -1841,21 +1850,25 @@ function countPlates(s?: string | null): number {
  */
 function AnalysisWizard({
   issue,
+  description,
   extractableCount,
   onUseDraft,
   latestAnalysis,
   onOpenExternal,
 }: {
   issue: { id: number; subject?: string | null; company_name?: string | null }
+  description?: string | null
   extractableCount: number
   onUseDraft: (text: string) => void
   latestAnalysis: Analysis | null
   onOpenExternal: (extId: number) => void
 }) {
   const hasAttachments = extractableCount > 0
-  // Заявки без вложений, но с ≥2 гос.номерами в теме → тоже пакетный разбор.
-  const multiInSubject = countPlates(issue.subject) >= 2
-  const useBatch = hasAttachments || multiInSubject
+  // Заявки без вложений, но с ≥2 гос.номерами в ТЕМЕ ИЛИ ТЕЛЕ → тоже пакетный
+  // разбор. Тело нужно для заявок вида 65649: тема = дата, а список из 20 ТС —
+  // в теле письма. Считаем номера по теме+телу вместе (дедуп внутри countPlates).
+  const multiInText = countPlates(`${issue.subject ?? ''}\n${stripHtml(description)}`) >= 2
+  const useBatch = hasAttachments || multiInText
 
   const steps: { n: number; title: string }[] = [
     { n: 1, title: 'Разбор заявки' },
@@ -1891,6 +1904,7 @@ function AnalysisWizard({
             key={issue.id}
             issueId={issue.id}
             issueTitle={issue.subject}
+            issueDescription={description}
             companyName={issue.company_name}
             onOpenExternal={onOpenExternal}
           />
@@ -2302,6 +2316,7 @@ export function IssueDetail() {
         <Block icon={Sparkles} title="Анализ заявки">
           <AnalysisWizard
             issue={issue}
+            description={od?.description}
             extractableCount={extractableCount}
             latestAnalysis={latest_analysis}
             onUseDraft={(text) => { setComment(text); setCommentPublic(true) }}

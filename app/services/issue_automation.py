@@ -2382,20 +2382,25 @@ class IssueAutomationService:
         # automate и анализировался ТОЛЬКО первый номер. Разбираем КАЖДЫЙ номер:
         # дата/пробег берём из общего разбора темы+тела (одна на всех, если своей нет).
         if not extractable:
-            # Триггер по ТЕМЕ (как во фронте: countPlates(issue.subject)) — чтобы
-            # фронт и бэк согласованно выбирали пакетный путь. Дату/пробег берём
-            # из темы+тела ниже (parse_issue).
-            plates = extract_all_plates(issue_title or "")
-            if len(plates) >= 2:
-                # Каждый ТС — СВОЯ дата и свой пробег из нумерованного тела (64455).
-                # Если для номера тело не разобралось — общая дата/ПЛ из разбора
-                # темы+тела (fallback).
-                body_map = {p: (d, s, g) for p, d, s, g in _parse_body_vehicles(issue_description)}
+            # Триггер по ТЕМЕ И ТЕЛУ письма (согласовано с фронтом: countPlates по
+            # subject+description). Раньше смотрели только тему — заявки со списком
+            # ТС в ТЕЛЕ, а не в теме (65649: тема = дата «01.07.2026», в теле 20
+            # номеров построчно) уходили в одиночный automate и теряли всех, кроме
+            # первого. Разбираем каждый номер: своя дата/пробег из тела, добор из темы.
+            body_rows = _parse_body_vehicles(issue_description)  # (plate,date,sheet,glonass)
+            body_keys = {_plate_dedup_key(p) for p, _, _, _ in body_rows}
+            title_plates = extract_all_plates(issue_title or "")
+            distinct = body_keys | {_plate_dedup_key(p) for p in title_plates}
+            if len(distinct) >= 2:
+                # Каждая строка тела — своя цель (своя дата/пробег, 64455/65649).
+                # Номера, встреченные только в ТЕМЕ, добираем с общей датой/ПЛ из
+                # разбора темы+тела (fallback), чтобы ТС из темы не потерялся.
                 p0 = self.parse_issue(issue_title, issue_description, None)
-                targets_subj = [
-                    (plate, *body_map.get(plate, (p0.date, p0.sheet_mileage_km, p0.declared_system_km)))
-                    for plate in plates
-                ]
+                targets_subj: list[tuple[str, str | None, float | None, float | None]] = list(body_rows)
+                for plate in title_plates:
+                    if _plate_dedup_key(plate) not in body_keys:
+                        targets_subj.append(
+                            (plate, p0.date, p0.sheet_mileage_km, p0.declared_system_km))
                 sem0 = asyncio.Semaphore(_BATCH_CONCURRENCY)
 
                 async def _one_subj(plate: str, pdate: str | None, psheet: float | None,
