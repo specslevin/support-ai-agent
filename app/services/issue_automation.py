@@ -305,14 +305,65 @@ def _plate_format_suspect(plate: str | None) -> bool:
     return not _PLATE_VALID_FULL.match(_normalize_plate(plate) or "")
 
 
-def extract_all_plates(text: str, limit: int = 40) -> list[str]:
-    """All distinct standard plates in order of appearance (для списков ТС)."""
+# Спецформаты спецтехники (без стандартного ЛЦЦЦЛЛ): 64СН3847 (регион+серия),
+# 2874СЕ / 5297СУ (4 цифры+серия), АА8941 / СУ5297 (серия+4 цифры). Цифры —
+# СЛИТНО (4 подряд): дефисные пары «NN-NN» намеренно НЕ ловим, т.к. это времена/
+# интервалы/номера документов («№ 10-20 от», «23-00 нет», «| 09-00 ТО |»), а
+# спецномера пишутся слитно. Плюс гейт _plate_special_ok (маркер ИЛИ ячейка).
+_PLATE_SPECIAL_RE = re.compile(
+    rf"(?<![A-Za-zА-Яа-яЁё0-9])(?:"
+    rf"\d{{2}}\s{{0,2}}[{_L}]{{2}}\s{{0,2}}\d{{4}}"   # 64СН3847
+    rf"|\d{{4}}\s?[{_L}]{{2}}"                         # 2874СЕ / 5297СУ
+    rf"|[{_L}]{{2}}\s?\d{{4}}"                         # АА8941 / СУ5297
+    rf")(?![A-Za-zА-Яа-яЁё0-9])",
+    re.I,
+)
+# Маркер гос.номера ВПЛОТНУЮ ПЕРЕД номером (хвост текста слева). Только однозначные
+# маркеры: бареные «№»/«знак» убраны — «№» = номер документа («накладная № 1020 от»),
+# «знак» ловит хвост «приЗНАК». Левая граница у «рег/гос» отсекает середину слова.
+_PLATE_MARKER_BEFORE_RE = re.compile(
+    r"(?:(?<![а-яёa-z])г\.?\s?н\.?|(?<![а-яёa-z])г\s?/\s?н|"
+    r"(?<![а-яёa-z])гос\.?\s?(?:рег\.?\s?)?номер|"
+    r"(?<![а-яёa-z])гос\.?\s?рег\.?\s?знак|(?<![а-яёa-z])рег\.?\s?(?:номер|знак))\s*$",
+    re.I,
+)
+
+
+def _plate_special_ok(text: str, m: "re.Match[str]") -> bool:
+    """Спецформат принимаем ТОЛЬКО в безопасном контексте, иначе это время/интервал/
+    номер документа: (а) сразу после маркера гос.номера, ЛИБО (б) изолирован как
+    ячейка таблицы — ближайший непробельный символ слева И справа = разделитель «|» /
+    перевод строки / край текста. «23-00 нет данных» → ни маркера, ни изоляции → отбой."""
+    if not _PLATE_VALID_FULL.match(_normalize_plate(m.group(0)) or ""):
+        return False
+    if _PLATE_MARKER_BEFORE_RE.search(text[max(0, m.start() - 25): m.start()]):
+        return True
+    left = text[:m.start()].rstrip(" \t")
+    right = text[m.end():].lstrip(" \t")
+    left_ok = (left == "" or left[-1] in "|\n\r")
+    right_ok = (right == "" or right[0] in "|\n\r")
+    return left_ok and right_ok
+
+
+def extract_all_plates(text: str, limit: int = 40,
+                       include_special: bool = False) -> list[str]:
+    """All distinct standard plates in order of appearance (для списков ТС).
+
+    include_special=True также извлекает спецномера (спецтехника), но лишь в
+    безопасном контексте (см. _plate_special_ok) — иначе спецформат ложно ловит
+    времена/интервалы. Стандартный формат распознаётся без гейта (он однозначен)."""
+    text = _unglue_plate_prefix(text or "")
+    hits: list[tuple[int, str]] = [(m.start(), m.group(0))
+                                   for m in _PLATE_STD_RE.finditer(text)]
+    if include_special:
+        hits += [(m.start(), m.group(0)) for m in _PLATE_SPECIAL_RE.finditer(text)
+                 if _plate_special_ok(text, m)]
+        hits.sort(key=lambda t: t[0])
     seen: set[str] = set()
     out: list[str] = []
-    text = _unglue_plate_prefix(text or "")
-    for m in _PLATE_STD_RE.finditer(text):
-        p = _normalize_plate(m.group(0))  # translit: «M203YO»→«М203УО» (64481)
-        if p not in seen:
+    for _pos, g in hits:
+        p = _normalize_plate(g)  # translit: «M203YO»→«М203УО» (64481)
+        if p and p not in seen:
             seen.add(p)
             out.append(p)
             if len(out) >= limit:
@@ -477,6 +528,22 @@ def _parse_act_blocks(text: str) -> list[tuple[str | None, str | None, float | N
     return out
 
 
+# ISO-дата YYYY-MM-DD (табличные отчёты спецтехники: «2026-07-10 10:46»). Ловим
+# ДО короткого DD.MM.YY, иначе _DATE_SHORT_RE цепляет хвост «26-07-10» → 2010-07-26.
+_ISO_DATE_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
+
+
+def _iso_date_from(win: str) -> str | None:
+    """Первая валидная ISO-дата YYYY-MM-DD в окне, иначе None."""
+    m = _ISO_DATE_RE.search(win)
+    if not m:
+        return None
+    try:
+        return _dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3))).isoformat()
+    except ValueError:
+        return None
+
+
 def _parse_body_vehicles(text: str | None) -> list[tuple[str, str | None, float | None, float | None]]:
     """Нумерованный тело-список «1. <номер> <модель>, … за <дата> … ГЛОНАСС X км,
     … одометр Y км; 2. …» (Прихоперское ПО, 64455): у каждого ТС СВОЯ дата, свой
@@ -493,8 +560,12 @@ def _parse_body_vehicles(text: str | None) -> list[tuple[str, str | None, float 
         plate = _normalize_plate(m.group(0))
         end = matches[i + 1].start() if i + 1 < len(matches) else len(body)
         win = body[m.end(): end]
-        dm = _DATE_RE.search(win) or _DATE_SHORT_RE.search(win)
-        date = _iso_from_dmy(dm.group(0)) if dm else _iso_from_month_name(win)
+        # ISO раньше короткого DD.MM.YY (табличные отчёты спецтехники дают
+        # «2026-07-10»; иначе хвост читался как 2010-07-26).
+        date = _iso_date_from(win)
+        if not date:
+            dm = _DATE_RE.search(win) or _DATE_SHORT_RE.search(win)
+            date = _iso_from_dmy(dm.group(0)) if dm else _iso_from_month_name(win)
         wm = _WAYBILL_KM_RE.search(win)
         gm = _GLONASS_KM_RE.search(win)
         sheet = _safe_km(wm.group(1)) if wm else None
@@ -2530,7 +2601,10 @@ class IssueAutomationService:
             if filename_plate:  # спец-формат (5297СУ) не ловится STD-регэкспом
                 fname_plates = list(dict.fromkeys([filename_plate, *fname_plates]))
             acts_segments = _split_acts(text)
-            text_plates = extract_all_plates(text)
+            # include_special: во вложениях/таблицах спецтехника (2874СЕ, АА8941)
+            # — гейт _plate_special_ok отсекает времена/интервалы (65676: 2 ТС в
+            # xlsx, раньше STD-регэксп давал [] → пакет находил лишь 1 из темы).
+            text_plates = extract_all_plates(text, include_special=True)
             # «Акт №» в теле может быть просто ссылкой («на основании акта №12») —
             # мульти-акт только когда НЕСКОЛЬКО сегментов содержат свои номера.
             act_segs_with_plates = sum(1 for seg in acts_segments if extract_all_plates(seg))
