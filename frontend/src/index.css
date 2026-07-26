@@ -69,3 +69,15 @@
     transform: rotate(45deg);
   }
 }
+
+@layer components {
+  /* Карточка заявки v3: две колонки — работа слева, рельс контекста справа.
+     Порог считаем по ШИРИНЕ ПАНЕЛИ (container query), а не по ширине окна:
+     справа может быть открыта панель трека, и тогда места на две колонки нет. */
+  .issue-body { container-type: inline-size; }
+
+  @container (min-width: 900px) {
+    .issue-cols { flex-direction: row; align-items: flex-start; }
+    .issue-rail { width: 22.5rem; flex-shrink: 0; }
+  }
+}

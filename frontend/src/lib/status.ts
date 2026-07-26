@@ -15,17 +15,17 @@ export const STATUS_COLOR: Record<string, string> = {
 }
 
 /**
- * Цвет текста на залитой статусом пилюле — выбран по контрасту с фоном.
- * Светлые статусы (бирюза, сирень, зелёный, оранжевый) с белым текстом дают
- * ~3:1 и не проходят AA, поэтому на них текст чёрный.
+ * Цвет текста на залитой статусом пилюле. Белый везде — решение по внешнему виду:
+ * пробовали чёрный на светлых статусах (opened/delayed/completed) ради контраста
+ * AA, выглядело хуже. Оставляем белый, как было исторически.
  */
 export const STATUS_TEXT: Record<string, string> = {
-  opened: '#000000',
+  opened: '#FFFFFF',
   wait: '#FFFFFF',
-  delayed: '#000000',
-  no_time: '#000000',
-  completed: '#000000',
-  inst_fin: '#000000',
+  delayed: '#FFFFFF',
+  no_time: '#FFFFFF',
+  completed: '#FFFFFF',
+  inst_fin: '#FFFFFF',
   closed: '#FFFFFF',
 }
 

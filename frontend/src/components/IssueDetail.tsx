@@ -66,21 +66,28 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   )
 }
 
-/** Верхнеуровневый блок карточки: иконка + заголовок + контент (логическое разделение) */
+/**
+ * Верхнеуровневый блок карточки заявки (макет v3): самостоятельная карточка
+ * с заголовком 15/Bold, счётчиком-пилюлей и слотом справа для мета-текста
+ * или действия блока. Иконка опциональна — в v3 заголовки монохромные, иконку
+ * оставляем только там, где она несёт смысл.
+ */
 function Block({ icon: Icon, title, count, right, children }: {
-  icon: LucideIcon
+  icon?: LucideIcon
   title: string
   count?: number | null
   right?: React.ReactNode
   children: React.ReactNode
 }) {
   return (
-    <section className="space-y-3">
+    <section className="bg-card rounded-lg p-4 space-y-3">
       <div className="flex items-center gap-2">
-        <Icon size={14} className="text-accent shrink-0" />
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-secondary">{title}</h3>
-        {count != null && <span className="text-[10px] text-muted">({count})</span>}
-        {right && <div className="ml-auto">{right}</div>}
+        {Icon && <Icon size={14} className="text-accent shrink-0" />}
+        <h3 className="text-[15px] font-bold leading-[18px] text-white">{title}</h3>
+        {count != null && (
+          <span className="bg-frame rounded-pill px-2 py-0.5 text-[11px] font-medium text-secondary tabular-nums">{count}</span>
+        )}
+        {right && <div className="ml-auto min-w-0">{right}</div>}
       </div>
       {children}
     </section>
@@ -382,7 +389,9 @@ function EditableParameters({ d, issueId }: { d: OkdeskDetail; issueId: number }
   )
 }
 
-function OkdeskInfo({ d, issueId, assigneeName, onOpenExternal }: { d: OkdeskDetail; issueId: number; assigneeName: string | null; onOpenExternal: (extId: number) => void }) {
+// Связанные заявки отсюда вынесены в RelatedIssuesSection (блок рельса v3),
+// поэтому onOpenExternal этому компоненту больше не нужен.
+function OkdeskInfo({ d, issueId, assigneeName }: { d: OkdeskDetail; issueId: number; assigneeName: string | null }) {
   const deadline = formatDate(d.deadline_at)
   const overdue = isOverdue(d.deadline_at)
   const description = stripHtml(d.description)
@@ -432,28 +441,49 @@ function OkdeskInfo({ d, issueId, assigneeName, onOpenExternal }: { d: OkdeskDet
         </p>
       </Section>
 
-      {/* Связанные заявки */}
-      {(d.parent_id || d.child_ids.length > 0) && (
-        <Section title="Связанные заявки">
-          <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
-            {d.parent_id && (
-              <MetaRow label="Родительская">
-                <button onClick={() => onOpenExternal(d.parent_id!)} className="text-accent hover:underline">#{d.parent_id}</button>
-              </MetaRow>
-            )}
-            {d.child_ids.length > 0 && (
-              <MetaRow label="Дочерние">
-                <span className="flex flex-wrap gap-x-2 gap-y-0.5">
-                  {d.child_ids.map(id => (
-                    <button key={id} onClick={() => onOpenExternal(id)} className="text-accent hover:underline">#{id}</button>
-                  ))}
-                </span>
-              </MetaRow>
-            )}
-          </div>
-        </Section>
-      )}
     </div>
+  )
+}
+
+/**
+ * Связанные заявки — отдельный блок правого рельса (v3). Раньше жил внутри
+ * «Деталей заявки»; вынесен, потому что это навигация, а не свойства заявки.
+ * Номер — белый (данные), кликабельность показываем подчёркиванием на ховере:
+ * лаймовый цвет в v3 зарезервирован за действиями.
+ */
+function RelatedIssuesSection({ d, onOpenExternal }: { d: OkdeskDetail; onOpenExternal: (extId: number) => void }) {
+  const total = (d.parent_id ? 1 : 0) + d.child_ids.length
+  if (total === 0) return null
+  return (
+    <Block title="Связанные заявки" count={total}>
+      <div className="space-y-2">
+        {d.parent_id && (
+          <div className="space-y-1">
+            <p className="text-[11px] font-medium text-muted">Родительская</p>
+            <button
+              onClick={() => onOpenExternal(d.parent_id!)}
+              className="w-full flex items-center gap-2 bg-frame rounded-md px-2.5 py-2 text-xs text-white hover:underline text-left"
+            >
+              №{d.parent_id}
+            </button>
+          </div>
+        )}
+        {d.child_ids.length > 0 && (
+          <div className="space-y-1">
+            <p className="text-[11px] font-medium text-muted">Дочерние ({d.child_ids.length})</p>
+            {d.child_ids.map(id => (
+              <button
+                key={id}
+                onClick={() => onOpenExternal(id)}
+                className="w-full flex items-center gap-2 bg-frame rounded-md px-2.5 py-2 text-xs text-white hover:underline text-left"
+              >
+                №{id}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </Block>
   )
 }
 
@@ -1850,36 +1880,45 @@ function countPlates(s?: string | null): number {
  * Переиспользует существующие компоненты (BatchAnalysis / AutoAnalysis /
  * ExtractedDataBlock / ComposeAnswerButton) без изменения их внутренностей.
  */
+/**
+ * Пакетный разбор нужен, если есть извлекаемые вложения ИЛИ в теме/теле ≥2
+ * гос.номеров. Тело важно для заявок вида 65649: тема = дата, а список из 20 ТС
+ * лежит в письме. Вынесено из AnalysisWizard, потому что тот же признак нужен
+ * блоку «Ответ» (шаг генерации живёт уже там).
+ */
+function isBatchIssue(
+  issue: { subject?: string | null },
+  description: string | null | undefined,
+  extractableCount: number,
+): boolean {
+  if (extractableCount > 0) return true
+  return countPlates(`${issue.subject ?? ''}\n${stripHtml(description)}`) >= 2
+}
+
 function AnalysisWizard({
   issue,
   description,
   extractableCount,
-  onUseDraft,
   latestAnalysis,
   onOpenExternal,
 }: {
   issue: { id: number; subject?: string | null; company_name?: string | null }
   description?: string | null
   extractableCount: number
-  onUseDraft: (text: string) => void
   latestAnalysis: Analysis | null
   onOpenExternal: (extId: number) => void
 }) {
-  const hasAttachments = extractableCount > 0
-  // Заявки без вложений, но с ≥2 гос.номерами в ТЕМЕ ИЛИ ТЕЛЕ → тоже пакетный
-  // разбор. Тело нужно для заявок вида 65649: тема = дата, а список из 20 ТС —
-  // в теле письма. Считаем номера по теме+телу вместе (дедуп внутри countPlates).
-  const multiInText = countPlates(`${issue.subject ?? ''}\n${stripHtml(description)}`) >= 2
-  const useBatch = hasAttachments || multiInText
+  const useBatch = isBatchIssue(issue, description, extractableCount)
 
+  // Шаг «Составить ответ» переехал в отдельный блок «Ответ» под этим мастером:
+  // там же композер, шаблоны и выбор публичный/приватный.
   const steps: { n: number; title: string }[] = [
     { n: 1, title: 'Разбор заявки' },
     { n: 2, title: 'Анализ заявки' },
-    { n: 3, title: 'Составить ответ' },
   ]
 
   return (
-    <div className="border border-border rounded-xl p-4 space-y-5">
+    <div className="space-y-5">
       {/* Компактный степпер: номера шагов с подписями */}
       <div className="flex items-center gap-2">
         {steps.map((s, i) => (
@@ -1936,23 +1975,94 @@ function AnalysisWizard({
         )}
       </div>
 
-      {/* Шаг 3. Предложение ответа */}
-      <div className="space-y-2">
-        <div className="flex items-center gap-2 text-xs font-semibold text-muted uppercase tracking-wide">
-          <span className="flex items-center justify-center w-4 h-4 rounded-full border border-border text-[10px] text-white/80">3</span>
-          Составить ответ
-        </div>
-        <ComposeAnswerButton
-          issueId={issue.id}
-          hasExtractable={useBatch}
-          onUseDraft={onUseDraft}
-        />
-        <p className="text-xs text-muted leading-relaxed">
-          Итоговое решение принимает оператор: проверьте вердикт и текст ниже, при
-          необходимости отредактируйте и отправьте.
-        </p>
-      </div>
     </div>
+  )
+}
+
+/**
+ * Блок «Ответ» (③ в макете v3): генерация черновика ИИ, шаблоны, выбор
+ * публичный/приватный и сам композер. Раньше композер лежал внутри
+ * «Комментариев», а кнопка генерации — третьим шагом мастера; в v3 это один
+ * блок, а смена статуса ушла в липкий бар.
+ */
+function AnswerBlock({
+  issueId,
+  useBatch,
+  comment,
+  setComment,
+  commentPublic,
+  setCommentPublic,
+  onSend,
+  sending,
+  isDemo,
+}: {
+  issueId: number
+  useBatch: boolean
+  comment: string
+  setComment: (v: string) => void
+  commentPublic: boolean
+  setCommentPublic: (v: boolean) => void
+  onSend: () => void
+  sending: boolean
+  isDemo: boolean
+}) {
+  return (
+    <Block title="Ответ" right={<span className="text-xs text-muted">черновик ИИ — можно править</span>}>
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="flex items-center gap-2">
+          <ComposeAnswerButton
+            issueId={issueId}
+            hasExtractable={useBatch}
+            onUseDraft={text => { setComment(text); setCommentPublic(true) }}
+          />
+          <TemplatePicker onSelect={text => setComment(text)} issueId={issueId} />
+        </div>
+        {/* Сегмент видимости: публичный ответ уходит клиенту — помечаем янтарём */}
+        <div className="flex items-center gap-0.5 bg-frame rounded-md p-0.5 shrink-0">
+          {([true, false] as const).map(pub => (
+            <button
+              key={String(pub)}
+              onClick={() => setCommentPublic(pub)}
+              className={`px-2.5 py-1 rounded text-[11px] font-medium transition-colors ${
+                commentPublic === pub
+                  ? pub
+                    ? 'bg-warning/15 text-warning'
+                    : 'bg-border text-white'
+                  : 'text-muted hover:text-white'
+              }`}
+            >
+              {pub ? 'Публичный' : 'Приватный'}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <textarea
+        placeholder="Написать ответ или комментарий..."
+        value={comment}
+        onChange={e => setComment(e.target.value)}
+        onKeyDown={e => {
+          if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && comment) onSend()
+        }}
+        rows={5}
+        className="w-full bg-frame border border-border rounded-md px-3 py-2.5 text-[13px] leading-5 resize-y focus:outline-none focus:border-accent"
+      />
+
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-[11px] text-muted">
+          {commentPublic ? 'Ответ уйдёт клиенту публичным комментарием' : 'Приватный — виден только сотрудникам'}
+          {' · Ctrl+Enter — отправить'}
+        </p>
+        <button
+          disabled={!comment || sending || isDemo}
+          onClick={onSend}
+          title={isDemo ? 'Недоступно в демо-режиме' : 'Отправить комментарий (Ctrl+Enter)'}
+          className={`flex items-center gap-1.5 bg-frame border border-border hover:border-accent rounded-md px-3 py-1.5 text-[13px] font-medium transition-colors disabled:opacity-40 text-secondary hover:text-accent shrink-0 ${isDemo ? 'cursor-not-allowed' : ''}`}
+        >
+          {sending ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />} Отправить
+        </button>
+      </div>
+    </Block>
   )
 }
 
@@ -2012,12 +2122,9 @@ function AiFeedbackPanel({ issueId }: { issueId: number }) {
       ...(correctCategory.trim() ? { correct_category: correctCategory.trim() } : {}),
     })
 
+  // Заголовок даёт внешний Block (в v3 это самостоятельный блок правого рельса).
   return (
-    <div className="space-y-2 pt-3 border-t border-border">
-      <div className="flex items-center gap-2 text-xs font-semibold text-muted uppercase tracking-wide">
-        <Sparkles size={12} className="text-accent" /> Оценка разбора
-      </div>
-
+    <div className="space-y-2">
       {/* Текущая оценка */}
       {feedback && (
         <div className="bg-frame rounded-lg px-3 py-2 space-y-1 text-[11px]">
@@ -2134,6 +2241,7 @@ export function IssueDetail() {
   const [comment, setComment] = useState('')
   const [commentPublic, setCommentPublic] = useState(true)
   const [statusDropdownOpen, setStatusDropdownOpen] = useState(false)
+  const [moreActionsOpen, setMoreActionsOpen] = useState(false)
   const [pendingStatus, setPendingStatus] = useState<typeof ALL_STATUSES[number] | null>(null)
   const [resolveNotice, setResolveNotice] = useState<string | null>(null)
   const [toast, setToast] = useState<string | null>(null)
@@ -2223,11 +2331,14 @@ export function IssueDetail() {
 
   const { issue, okdesk_detail: od, latest_analysis } = data
 
+  const overdue = isOverdue(od?.deadline_at)
+  const useBatch = isBatchIssue(issue, od?.description, extractableCount)
+
   return (
     <>
-    <div className="flex flex-col h-full overflow-y-auto">
+    <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-border shrink-0 sticky top-0 bg-base z-20">
+      <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-border shrink-0 bg-base z-20">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1">
             <span className="text-muted text-xs font-mono">#{issue.external_id}</span>
@@ -2262,8 +2373,22 @@ export function IssueDetail() {
               <StatusBadge status={issue.status} />
             )}
             {issue.priority && <span className="text-xs text-muted">{issue.priority}</span>}
+            {overdue && (
+              <span
+                title={`Срок: ${formatDate(od?.deadline_at) ?? '—'}`}
+                className="inline-flex items-center gap-1 bg-warning/15 text-warning rounded-pill px-2 py-0.5 text-[9px] font-medium uppercase tracking-wide"
+              >
+                <AlertTriangle size={10} /> Просрочено
+              </span>
+            )}
+            {issue.company_name && (
+              <>
+                <span className="text-muted text-xs">·</span>
+                <span className="text-xs text-secondary truncate">{issue.company_name}</span>
+              </>
+            )}
           </div>
-          <h2 className="text-sm font-semibold leading-snug">{issue.subject ?? '—'}</h2>
+          <h2 className="text-[15px] font-bold leading-snug">{issue.subject ?? '—'}</h2>
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <button
@@ -2277,57 +2402,49 @@ export function IssueDetail() {
         </div>
       </div>
 
-      <div className="flex-1 px-5 py-4 space-y-6">
+      {/* Тело карточки. Раскладка v3: работа слева, контекст в рельсе справа.
+          Две колонки включаются по ШИРИНЕ ПАНЕЛИ (container query в index.css),
+          а не по ширине окна — рядом может быть открыта панель трека. */}
+      <div className="flex-1 overflow-y-auto px-5 py-4 issue-body">
         {resolveNotice && (
-          <div className="flex items-start gap-2 bg-warning/10 border border-warning/30 rounded-lg px-3 py-2 text-xs text-warning">
+          <div className="flex items-start gap-2 bg-warning/10 border border-warning/30 rounded-lg px-3 py-2 text-xs text-warning mb-4">
             <AlertTriangle size={14} className="shrink-0 mt-0.5" />
             <span className="flex-1">{resolveNotice}</span>
             <button onClick={() => setResolveNotice(null)} className="shrink-0 text-warning/60 hover:text-warning"><X size={14} /></button>
           </div>
         )}
 
-        {/* ── 1. Детали заявки ─────────────────────────────────── */}
-        <Block icon={Info} title="Детали заявки">
-          <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
-            <span className="text-muted">Компания</span>
-            <span>{issue.company_name ?? '—'}</span>
-            <span className="text-muted">Контакт</span>
-            <span>{issue.contact_name ?? '—'}</span>
-            <span className="text-muted">Создана</span>
-            <span>{formatDate(issue.created_at) ?? '—'}</span>
-            <span className="text-muted">Изменена</span>
-            <span>{formatDate(issue.updated_at) ?? '—'}</span>
-          </div>
-
-          {/* Live Okdesk info */}
-          {od && <div className="mt-4"><OkdeskInfo d={od} issueId={issue.id} assigneeName={issue.assignee_name ?? null} onOpenExternal={openExternal} /></div>}
-
-          {/* Если okdesk_detail пустой — показываем только assignee picker */}
-          {!od && (
-            <div className="mt-4"><AssigneeSection issueId={issue.id} assigneeName={issue.assignee_name ?? null} /></div>
-          )}
-        </Block>
-
-        {/* ── 2. Вложения (перед анализом — ИИ читает их) ───────── */}
-        <AttachmentsSection issueId={issue.id} />
-
-        {/* ── 2.5. Передать монтажнику (готовые тексты в буфер) ──── */}
-        <InstallerExportSection issueId={issue.id} />
-
-        {/* ── 3. Анализ заявки (единый мастер: Разбор → Анализ → Ответ) ── */}
+        <div className="flex flex-col gap-4 issue-cols">
+        {/* ── Левая колонка: работа оператора ──────────────────── */}
+        <div className="flex-1 min-w-0 space-y-4">
+        {/* Анализ заявки (мастер: ① Разбор → ② Анализ) */}
         <Block icon={Sparkles} title="Анализ заявки">
           <AnalysisWizard
             issue={issue}
             description={od?.description}
             extractableCount={extractableCount}
             latestAnalysis={latest_analysis}
-            onUseDraft={(text) => { setComment(text); setCommentPublic(true) }}
             onOpenExternal={openExternal}
           />
-          <AiFeedbackPanel issueId={issue.id} />
         </Block>
 
-        {/* ── 4. Комментарии ───────────────────────────────────── */}
+        {/* ③ Ответ: генерация черновика, шаблоны, композер */}
+        <AnswerBlock
+          issueId={issue.id}
+          useBatch={useBatch}
+          comment={comment}
+          setComment={setComment}
+          commentPublic={commentPublic}
+          setCommentPublic={setCommentPublic}
+          onSend={() => addComment.mutate(comment)}
+          sending={addComment.isPending}
+          isDemo={isDemo}
+        />
+
+        {/* Передать монтажнику — альтернативный исход заявки */}
+        <InstallerExportSection issueId={issue.id} />
+
+        {/* Комментарии — только лента: композер переехал в блок «Ответ» */}
         <Block icon={MessageSquare} title="Комментарии" count={comments.length > 0 ? comments.length : null}>
           <div className="space-y-2">
             {comments.map(c => {
@@ -2390,85 +2507,101 @@ export function IssueDetail() {
             {comments.length === 0 && <p className="text-xs text-muted">Комментариев нет</p>}
           </div>
 
-          <div className="space-y-2 mt-3">
-            <div className="flex items-start gap-2">
-              <textarea
-                placeholder="Написать комментарий..."
-                value={comment}
-                onChange={e => setComment(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && comment) {
-                    addComment.mutate(comment)
-                  }
-                }}
-                rows={3}
-                className="flex-1 bg-frame border border-border rounded-lg px-3 py-1.5 text-xs resize-none focus:outline-none focus:border-accent"
-              />
-              <div className="flex flex-col gap-1.5 shrink-0">
-                <TemplatePicker onSelect={text => setComment(text)} issueId={selectedIssueId ?? undefined} />
-                <button
-                  disabled={!comment || addComment.isPending || isDemo}
-                  onClick={() => addComment.mutate(comment)}
-                  title={isDemo ? 'Недоступно в демо-режиме' : 'Отправить (Ctrl+Enter)'}
-                  className={`flex items-center justify-center bg-frame border border-border hover:border-accent rounded-lg px-2.5 py-1.5 text-xs transition-colors disabled:opacity-40 text-muted hover:text-accent ${isDemo ? 'cursor-not-allowed' : ''}`}
-                >
-                  {addComment.isPending ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
-                </button>
-              </div>
-            </div>
-            <div className="flex items-center justify-between">
-              <label className="flex items-center gap-1.5 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={commentPublic}
-                  onChange={e => setCommentPublic(e.target.checked)}
-                  className="w-3 h-3 accent-accent"
-                />
-                <span className={`text-[10px] ${commentPublic ? 'text-white' : 'text-muted'}`}>
-                  {commentPublic ? 'Публичный' : 'Приватный'}
-                </span>
-              </label>
-              {comment && <p className="text-[10px] text-muted">Ctrl+Enter — отправить</p>}
+        </Block>
+        </div>
+
+        {/* ── Правый рельс: контекст заявки ────────────────────── */}
+        <div className="space-y-4 issue-rail">
+          <Block title="Детали заявки">
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
+              <span className="text-muted">Компания</span>
+              <span>{issue.company_name ?? '—'}</span>
+              <span className="text-muted">Контакт</span>
+              <span>{issue.contact_name ?? '—'}</span>
+              <span className="text-muted">Создана</span>
+              <span>{formatDate(issue.created_at) ?? '—'}</span>
             </div>
 
-            {/* Быстрое решение: комментарий + смена статуса одним кликом */}
-            <div className="flex items-center gap-2">
-              <button
-                disabled={quickResolve.isPending || isDemo}
-                onClick={() => quickResolve.mutate('wait')}
-                title={isDemo ? 'Недоступно в демо-режиме' : 'Перевести в «В работе» (комментарий необязателен)'}
-                style={statusPillStyle('wait')}
-                className={`flex items-center justify-center gap-1.5 flex-1 text-xs font-semibold py-1.5 rounded-lg transition-all hover:brightness-110 disabled:opacity-50 ${quickResolve.isPending && quickResolve.variables === 'wait' ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
-              >
-                {quickResolve.isPending && quickResolve.variables === 'wait' ? <Working label="Меняю…" /> : <><Play size={14} /> В работе</>}
-              </button>
-              <button
-                disabled={!comment || quickResolve.isPending || isDemo}
-                onClick={() => quickResolve.mutate('delayed')}
-                title={isDemo ? 'Недоступно в демо-режиме' : 'Отправить ответ и перевести в «Ожидание ответа» (+3 дня)'}
-                style={statusPillStyle('delayed')}
-                className={`flex items-center justify-center gap-1.5 flex-1 text-xs font-semibold py-1.5 rounded-lg transition-all hover:brightness-110 disabled:opacity-50 ${quickResolve.isPending && quickResolve.variables === 'delayed' ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
-              >
-                {quickResolve.isPending && quickResolve.variables === 'delayed' ? <Working label="Отправляю…" /> : <><Pause size={14} /> Ожидание ответа</>}
-              </button>
-              <button
-                disabled={!comment || quickResolve.isPending || isDemo}
-                onClick={() => {
-                  if (!od?.type_code || od.type_code === 'inner') {
-                    setToast('Сначала укажите тип заявки')
-                    return
-                  }
-                  quickResolve.mutate('completed')
-                }}
-                title={isDemo ? 'Недоступно в демо-режиме' : 'Отправить ответ клиенту и перевести в «Решена»'}
-                style={statusPillStyle('completed')}
-                className={`flex items-center justify-center gap-1.5 flex-1 text-xs font-semibold py-1.5 rounded-lg transition-all hover:brightness-110 disabled:opacity-50 ${quickResolve.isPending && quickResolve.variables === 'completed' ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
-              >
-                {quickResolve.isPending && quickResolve.variables === 'completed' ? <Working label="Отправляю…" /> : <><Check size={14} /> Решить</>}
-              </button>
-            </div>
+            {/* Live Okdesk info */}
+            {od && <div className="mt-4"><OkdeskInfo d={od} issueId={issue.id} assigneeName={issue.assignee_name ?? null} /></div>}
+
+            {/* Если okdesk_detail пустой — показываем только assignee picker */}
+            {!od && (
+              <div className="mt-4"><AssigneeSection issueId={issue.id} assigneeName={issue.assignee_name ?? null} /></div>
+            )}
+          </Block>
+
+          <AttachmentsSection issueId={issue.id} />
+
+          {od && <RelatedIssuesSection d={od} onOpenExternal={openExternal} />}
+
+          <Block icon={Sparkles} title="Оценка разбора" right={<span className="text-xs text-muted">влияет на обучение ИИ</span>}>
+            <AiFeedbackPanel issueId={issue.id} />
+          </Block>
+        </div>
+        </div>
+      </div>
+
+      {/* ── Липкий бар действий: главное действие всегда на виду ── */}
+      <div className="shrink-0 border-t border-border bg-card px-5 py-3 flex items-center justify-between gap-3">
+        <p className="text-[11px] text-muted min-w-0 truncate">
+          {comment
+            ? commentPublic
+              ? 'Ответ уйдёт клиенту публичным комментарием, заявка перейдёт в «Решена»'
+              : 'Комментарий приватный — клиент его не увидит, заявка перейдёт в «Решена»'
+            : 'Напишите ответ в блоке «Ответ», чтобы решить заявку'}
+        </p>
+        <div className="flex items-center gap-2 shrink-0">
+          <div className="relative">
+            <button
+              onClick={() => setMoreActionsOpen(v => !v)}
+              disabled={isDemo}
+              title={isDemo ? 'Недоступно в демо-режиме' : 'Другие переходы статуса'}
+              className={`flex items-center gap-1 bg-frame border border-border hover:border-accent rounded-md px-3 py-2 text-[13px] font-medium text-secondary transition-colors disabled:opacity-40 ${isDemo ? 'cursor-not-allowed' : ''}`}
+            >
+              Ещё <ChevronDown size={13} />
+            </button>
+            {moreActionsOpen && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setMoreActionsOpen(false)} />
+                <div className="absolute right-0 bottom-full mb-1 z-50 w-[200px] rounded-md overflow-hidden border border-border bg-frame shadow-lg">
+                  <button
+                    disabled={quickResolve.isPending}
+                    onClick={() => { setMoreActionsOpen(false); quickResolve.mutate('wait') }}
+                    title="Перевести в «В работе» (комментарий необязателен)"
+                    className="w-full flex items-center gap-2 px-3 py-2.5 text-[13px] text-left hover:bg-card-hover disabled:opacity-40"
+                  >
+                    <Play size={13} style={{ color: STATUS_COLOR.wait }} /> В работе
+                  </button>
+                  <button
+                    disabled={!comment || quickResolve.isPending}
+                    onClick={() => { setMoreActionsOpen(false); quickResolve.mutate('delayed') }}
+                    title="Отправить ответ и перевести в «Ожидание ответа» (+3 дня)"
+                    className="w-full flex items-center gap-2 px-3 py-2.5 text-[13px] text-left hover:bg-card-hover disabled:opacity-40"
+                  >
+                    <Pause size={13} style={{ color: STATUS_COLOR.delayed }} /> Ожидание ответа
+                  </button>
+                </div>
+              </>
+            )}
           </div>
-        </Block>
+          <button
+            disabled={!comment || quickResolve.isPending || isDemo}
+            onClick={() => {
+              if (!od?.type_code || od.type_code === 'inner') {
+                setToast('Сначала укажите тип заявки')
+                return
+              }
+              quickResolve.mutate('completed')
+            }}
+            title={isDemo ? 'Недоступно в демо-режиме' : 'Отправить ответ клиенту и перевести в «Решена»'}
+            className={`flex items-center gap-1.5 bg-accent hover:bg-accent/90 text-black rounded-md px-4 py-2 text-[13px] font-medium transition-colors disabled:opacity-40 ${quickResolve.isPending && quickResolve.variables === 'completed' ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
+          >
+            {quickResolve.isPending && quickResolve.variables === 'completed'
+              ? <Working label="Отправляю…" />
+              : <><Check size={14} /> Ответить и решить</>}
+          </button>
+        </div>
       </div>
     </div>
 
