@@ -76,6 +76,11 @@
      справа может быть открыта панель трека, и тогда места на две колонки нет. */
   .issue-body { container-type: inline-size; }
 
+  /* Направление задаём ТОЛЬКО здесь: утилита flex-col из слоя utilities
+     перебила бы правило @container (слой components слабее), и рельс получал
+     бы ширину, оставаясь под левой колонкой. */
+  .issue-cols { flex-direction: column; }
+
   @container (min-width: 900px) {
     .issue-cols { flex-direction: row; align-items: flex-start; }
     .issue-rail { width: 22.5rem; flex-shrink: 0; }

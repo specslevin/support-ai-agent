@@ -2422,7 +2422,7 @@ export function IssueDetail() {
           </div>
         )}
 
-        <div className="flex flex-col gap-4 issue-cols">
+        <div className="flex gap-4 issue-cols">
         {/* ── Левая колонка: работа оператора ──────────────────── */}
         <div className="flex-1 min-w-0 space-y-4">
         {/* Анализ заявки (мастер: ① Разбор → ② Анализ) */}
