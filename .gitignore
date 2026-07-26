@@ -37,3 +37,13 @@ all_issues_raw.json
 dataset.json
 issues_analysis.json
 START_DEVELOPMENT.md
+
+# Хранилище паролей операторов (bootstrap admin/demo) — НЕ коммитить
+auth_users.json
+
+# Скриншоты макетов и дампы Figma — рабочие артефакты дизайн-сессий
+*.png
+figma_doc.json
+figma_doc2.json
+figma_page.json
+screenshots/

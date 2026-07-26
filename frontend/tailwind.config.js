@@ -27,9 +27,9 @@ export default {
 
         // Accent states
         orange: '#FB923C',          // Accent/Orange — ошибки
-        info: '#146EF5',            // Accent/Blue — инфо
+        info: '#60A5FA',            // Accent/Blue — инфо (осветлён с #146EF5: 3.6:1 → 6.4:1 на frame)
         warning: '#F3BA2F',         // Accent/Yellow — предупреждения
-        success: '#059345',         // Green/Deep — успех
+        success: '#22C55E',         // Green/500 — успех (осветлён с #059345: 3.6:1 → 6.3:1 на card)
 
         // Green palette
         'green-bright': '#96FF1F',  // link hover
