@@ -83,6 +83,10 @@
 
   @container (min-width: 900px) {
     .issue-cols { flex-direction: row; align-items: flex-start; }
-    .issue-rail { width: 22.5rem; flex-shrink: 0; }
+    /* Рельс растёт вместе с карточкой (в макете v3 это 464 из 1352 ≈ 34%),
+       иначе при развороте вся ширина уходит левой колонке и рельс выглядит
+       обрубком. Границы: не уже 20rem, не шире 32rem — дальше строки метаданных
+       становятся неоправданно длинными. */
+    .issue-rail { width: 34%; min-width: 20rem; max-width: 32rem; flex-shrink: 0; }
   }
 }

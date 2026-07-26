@@ -395,7 +395,6 @@ function EditableParameters({ d, issueId }: { d: OkdeskDetail; issueId: number }
 function OkdeskInfo({ d, issueId, assigneeName }: { d: OkdeskDetail; issueId: number; assigneeName: string | null }) {
   const deadline = formatDate(d.deadline_at)
   const overdue = isOverdue(d.deadline_at)
-  const description = stripHtml(d.description)
 
   return (
     <div className="space-y-4 text-xs">
@@ -435,14 +434,24 @@ function OkdeskInfo({ d, issueId, assigneeName }: { d: OkdeskDetail; issueId: nu
       {/* Параметры заявки (редактируемые custom fields) */}
       <EditableParameters d={d} issueId={issueId} />
 
-      {/* Описание (вопрос клиента) */}
-      <Section title="Вопрос клиента">
-        <p className="text-white/80 leading-relaxed whitespace-pre-wrap bg-frame rounded-lg px-3 py-2.5">
-          {description || <span className="text-muted/60">Текст отсутствует — см. тему и параметры заявки</span>}
-        </p>
-      </Section>
-
     </div>
+  )
+}
+
+/**
+ * Вопрос клиента — первый блок рабочей колонки. Раньше лежал внутри «Деталей
+ * заявки», то есть в рельсе на ~360px: длинное письмо там читать неудобно.
+ * Это исходный материал работы, а не свойство заявки, поэтому он слева и
+ * первым — до разбора ИИ.
+ */
+function ClientQuestionBlock({ description }: { description: string | null | undefined }) {
+  const text = stripHtml(description)
+  return (
+    <Block title="Вопрос клиента">
+      <p className="text-[13px] leading-5 text-white/80 whitespace-pre-wrap bg-frame rounded-md px-3 py-2.5">
+        {text || <span className="text-muted/60">Текст отсутствует — см. тему и параметры заявки</span>}
+      </p>
+    </Block>
   )
 }
 
@@ -2425,6 +2434,9 @@ export function IssueDetail() {
         <div className="flex gap-4 issue-cols">
         {/* ── Левая колонка: работа оператора ──────────────────── */}
         <div className="flex-1 min-w-0 space-y-4">
+        {/* Вопрос клиента — исходный материал, до разбора ИИ */}
+        <ClientQuestionBlock description={od?.description} />
+
         {/* Анализ заявки (мастер: ① Разбор → ② Анализ) */}
         <Block icon={Sparkles} title="Анализ заявки">
           <AnalysisWizard
