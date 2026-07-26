@@ -18,6 +18,7 @@ import { StatusBadge } from './StatusBadge'
 import { EmployeeMenu, TypeMenu } from './pickers'
 import type { OkdeskDetail, Template, AutomationResult, Analysis, BatchResult } from '../types'
 import { extractPlaceholders, hasPlaceholders, renderTemplate, computedPlaceholderValue } from '../lib/templates'
+import { STATUS_COLOR, statusPillStyle } from '../lib/status'
 
 function formatDate(iso: string | null | undefined) {
   if (!iso) return null
@@ -696,14 +697,15 @@ export function TemplatePicker({ onSelect, onSelectFull, issueId }: { onSelect: 
   )
 }
 
-// All Okdesk statuses with their actual colors and rules
+// Все статусы Okdesk с правилами перехода. Цвета — из src/lib/status.ts,
+// label здесь — это действие («Решить»), а не название статуса («Решена»).
 const ALL_STATUSES = [
-  { code: 'opened',   label: 'Открыть',            bg: '#3edad8', commentRequired: false, needsDelay: false },
-  { code: 'wait',     label: 'В работу',            bg: '#2b6684', commentRequired: false, needsDelay: false },
-  { code: 'delayed',  label: 'Ожидание ответа',     bg: '#bb7db2', commentRequired: true,  needsDelay: true  },
-  { code: 'no_time',  label: 'Отложить',            bg: '#f68741', commentRequired: true,  needsDelay: true  },
-  { code: 'completed',label: 'Решить',              bg: '#67a030', commentRequired: false, needsDelay: false },
-  { code: 'closed',   label: 'Закрыть',             bg: '#787880', commentRequired: false, needsDelay: false },
+  { code: 'opened',   label: 'Открыть',            bg: STATUS_COLOR.opened,    commentRequired: false, needsDelay: false },
+  { code: 'wait',     label: 'В работу',            bg: STATUS_COLOR.wait,      commentRequired: false, needsDelay: false },
+  { code: 'delayed',  label: 'Ожидание ответа',     bg: STATUS_COLOR.delayed,   commentRequired: true,  needsDelay: true  },
+  { code: 'no_time',  label: 'Отложить',            bg: STATUS_COLOR.no_time,   commentRequired: true,  needsDelay: true  },
+  { code: 'completed',label: 'Решить',              bg: STATUS_COLOR.completed, commentRequired: false, needsDelay: false },
+  { code: 'closed',   label: 'Закрыть',             bg: STATUS_COLOR.closed,    commentRequired: false, needsDelay: false },
 ]
 
 const DEPARTURE_TYPES = new Set(['departure', 'departure_fuel'])
@@ -814,8 +816,8 @@ function StatusActionModal({
           <button
             disabled={!canSubmit || mutation.isPending}
             onClick={() => mutation.mutate()}
-            style={{ background: canSubmit && !mutation.isPending ? targetStatus.bg : undefined }}
-            className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-white text-xs font-semibold transition-opacity disabled:opacity-50 disabled:cursor-not-allowed disabled:bg-frame disabled:border disabled:border-border ${mutation.isPending ? 'animate-pulse cursor-wait' : ''}`}
+            style={canSubmit && !mutation.isPending ? statusPillStyle(targetStatus.code) : undefined}
+            className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold transition-opacity disabled:opacity-50 disabled:cursor-not-allowed disabled:bg-frame disabled:border disabled:border-border disabled:text-white ${mutation.isPending ? 'animate-pulse cursor-wait' : ''}`}
           >
             {mutation.isPending ? <Working label="Отправляю…" /> : <><Check size={14} /> {targetStatus.label}</>}
           </button>
@@ -2246,8 +2248,8 @@ export function IssueDetail() {
                         <button
                           key={s.code}
                           onClick={() => { setStatusDropdownOpen(false); setPendingStatus(s) }}
-                          className="w-full text-left px-4 py-2.5 text-xs font-medium text-white hover:brightness-110 transition-all"
-                          style={{ background: s.bg }}
+                          className="w-full text-left px-4 py-2.5 text-xs font-medium hover:brightness-110 transition-all"
+                          style={statusPillStyle(s.code)}
                         >
                           {s.label}
                         </button>
@@ -2435,8 +2437,8 @@ export function IssueDetail() {
                 disabled={quickResolve.isPending || isDemo}
                 onClick={() => quickResolve.mutate('wait')}
                 title={isDemo ? 'Недоступно в демо-режиме' : 'Перевести в «В работе» (комментарий необязателен)'}
-                style={{ background: '#2bb3c0' }}
-                className={`flex items-center justify-center gap-1.5 flex-1 text-white text-xs font-semibold py-1.5 rounded-lg transition-all hover:brightness-110 disabled:opacity-50 ${quickResolve.isPending && quickResolve.variables === 'wait' ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
+                style={statusPillStyle('wait')}
+                className={`flex items-center justify-center gap-1.5 flex-1 text-xs font-semibold py-1.5 rounded-lg transition-all hover:brightness-110 disabled:opacity-50 ${quickResolve.isPending && quickResolve.variables === 'wait' ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
               >
                 {quickResolve.isPending && quickResolve.variables === 'wait' ? <Working label="Меняю…" /> : <><Play size={14} /> В работе</>}
               </button>
@@ -2444,8 +2446,8 @@ export function IssueDetail() {
                 disabled={!comment || quickResolve.isPending || isDemo}
                 onClick={() => quickResolve.mutate('delayed')}
                 title={isDemo ? 'Недоступно в демо-режиме' : 'Отправить ответ и перевести в «Ожидание ответа» (+3 дня)'}
-                style={{ background: '#bb7db2' }}
-                className={`flex items-center justify-center gap-1.5 flex-1 text-white text-xs font-semibold py-1.5 rounded-lg transition-all hover:brightness-110 disabled:opacity-50 ${quickResolve.isPending && quickResolve.variables === 'delayed' ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
+                style={statusPillStyle('delayed')}
+                className={`flex items-center justify-center gap-1.5 flex-1 text-xs font-semibold py-1.5 rounded-lg transition-all hover:brightness-110 disabled:opacity-50 ${quickResolve.isPending && quickResolve.variables === 'delayed' ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
               >
                 {quickResolve.isPending && quickResolve.variables === 'delayed' ? <Working label="Отправляю…" /> : <><Pause size={14} /> Ожидание ответа</>}
               </button>
@@ -2459,8 +2461,8 @@ export function IssueDetail() {
                   quickResolve.mutate('completed')
                 }}
                 title={isDemo ? 'Недоступно в демо-режиме' : 'Отправить ответ клиенту и перевести в «Решена»'}
-                style={{ background: '#67a030' }}
-                className={`flex items-center justify-center gap-1.5 flex-1 text-white text-xs font-semibold py-1.5 rounded-lg transition-all hover:brightness-110 disabled:opacity-50 ${quickResolve.isPending && quickResolve.variables === 'completed' ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
+                style={statusPillStyle('completed')}
+                className={`flex items-center justify-center gap-1.5 flex-1 text-xs font-semibold py-1.5 rounded-lg transition-all hover:brightness-110 disabled:opacity-50 ${quickResolve.isPending && quickResolve.variables === 'completed' ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
               >
                 {quickResolve.isPending && quickResolve.variables === 'completed' ? <Working label="Отправляю…" /> : <><Check size={14} /> Решить</>}
               </button>

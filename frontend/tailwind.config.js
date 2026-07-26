@@ -31,6 +31,19 @@ export default {
         warning: '#F3BA2F',         // Accent/Yellow — предупреждения
         success: '#22C55E',         // Green/500 — успех (осветлён с #059345: 3.6:1 → 6.3:1 на card)
 
+        // Статусы Okdesk — значения приходят из status.color в API.
+        // Единый источник для кода: src/lib/status.ts (там же контрастный текст).
+        // В Figma те же значения лежат переменными status/opened … status/closed.
+        status: {
+          opened: '#3EDAD8',
+          wait: '#2B6684',
+          delayed: '#BB7DB2',
+          'no-time': '#F68741',
+          completed: '#67A030',
+          'inst-fin': '#67A030',
+          closed: '#787880',
+        },
+
         // Green palette
         'green-bright': '#96FF1F',  // link hover
         'green-medium': '#80EE64',  // visited / icon stroke

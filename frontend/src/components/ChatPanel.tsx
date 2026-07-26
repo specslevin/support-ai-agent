@@ -3,6 +3,7 @@ import { MessageSquare, Send, Sparkles, Loader2 } from 'lucide-react'
 import { api } from '../api/client'
 import { useIssuesStore } from '../store/issuesStore'
 import { useAuthStore } from '../store/authStore'
+import { STATUS_LABEL } from '../lib/status'
 import type { ChatIssue } from '../types'
 
 const DEMO_CHAT_LIMIT = 2
@@ -13,18 +14,13 @@ interface ChatTurn {
   content: string
 }
 
-const STATUS_LABEL: Record<string, string> = {
-  opened: 'Открыта',
-  wait: 'В ожидании',
-  delayed: 'Отложена',
-  completed: 'Выполнена',
-  closed: 'Закрыта',
-}
-
+// Компактный бейдж для карточек чата: подписи берём из общего словаря
+// (раньше здесь были свои — «В ожидании» вместо «В работе» и т.п.),
+// а цветом статус не кодируем — в ленте чата это шум.
 function StatusBadge({ status }: { status: string | null }) {
   if (!status) return null
   return (
-    <span className="text-[10px] uppercase tracking-wide rounded bg-frame px-1.5 py-0.5 text-muted">
+    <span className="text-[10px] uppercase tracking-wide rounded-pill bg-frame px-1.5 py-0.5 text-muted">
       {STATUS_LABEL[status] ?? status}
     </span>
   )
