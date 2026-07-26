@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState, useMemo, useEffect, useRef } from 'react'
 import {
-  ChevronDown, AlertTriangle, X, Check, Star, Bot, RefreshCw, Database,
+  ChevronDown, ChevronUp, AlertTriangle, X, Check, Star, Bot, RefreshCw, Database,
   Lightbulb, Map, FilePlus, ExternalLink, Pause, Send,
   Layers, Power, RadioTower, Scissors, HelpCircle, FileText, Sheet,
   Image as ImageIcon, Paperclip, PanelRightClose, Info, MessageSquare, Sparkles, Wand2,
@@ -446,11 +446,35 @@ function OkdeskInfo({ d, issueId, assigneeName }: { d: OkdeskDetail; issueId: nu
  */
 function ClientQuestionBlock({ description }: { description: string | null | undefined }) {
   const text = stripHtml(description)
+  // Раскрыт по умолчанию: письмо клиента — первое, что читает оператор. Свернуть
+  // нужно, когда работа уже идёт по разбору и письмо только занимает место;
+  // в свёрнутом виде оставляем peek первой строки, чтобы блок не был пустым.
+  const [open, setOpen] = useState(true)
   return (
-    <Block title="Вопрос клиента">
-      <p className="text-[13px] leading-5 text-white/80 whitespace-pre-wrap bg-frame rounded-md px-3 py-2.5">
-        {text || <span className="text-muted/60">Текст отсутствует — см. тему и параметры заявки</span>}
-      </p>
+    <Block
+      title="Вопрос клиента"
+      right={
+        <button
+          onClick={() => setOpen(v => !v)}
+          title={open ? 'Свернуть вопрос клиента' : 'Показать вопрос клиента полностью'}
+          className="flex items-center gap-1 text-xs text-muted hover:text-white transition-colors"
+        >
+          {open ? <><ChevronUp size={13} /> Свернуть</> : <><ChevronDown size={13} /> Раскрыть</>}
+        </button>
+      }
+    >
+      {open ? (
+        <p className="text-[13px] leading-5 text-white/80 whitespace-pre-wrap bg-frame rounded-md px-3 py-2.5">
+          {text || <span className="text-muted/60">Текст отсутствует — см. тему и параметры заявки</span>}
+        </p>
+      ) : (
+        <button
+          onClick={() => setOpen(true)}
+          className="w-full text-left text-[13px] leading-5 text-muted truncate hover:text-white/80 transition-colors"
+        >
+          {text || 'Текст отсутствует — см. тему и параметры заявки'}
+        </button>
+      )}
     </Block>
   )
 }
