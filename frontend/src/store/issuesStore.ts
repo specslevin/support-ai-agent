@@ -18,6 +18,9 @@ interface FiltersState {
   trackOpen: boolean
   trackPlate: string | null
   trackDate: string | null
+  // Карточка заявки на всю ширину (список скрыт). Нужна для раскладки v3:
+  // две колонки включаются от ~900px, а обычная панель занимает 40% окна.
+  detailExpanded: boolean
   lastTemplate: string
   checkedIds: number[]
   // Per-issue created child issues: issueId → plate → { issue_id, ok }
@@ -37,6 +40,7 @@ interface FiltersState {
   selectIssue: (id: number | null) => void
   setTrackOpen: (open: boolean) => void
   openTrack: (plate?: string | null, date?: string | null) => void
+  setDetailExpanded: (expanded: boolean) => void
   setLastTemplate: (content: string) => void
   toggleChecked: (id: number) => void
   setChecked: (ids: number[]) => void
@@ -64,6 +68,7 @@ export const useIssuesStore = create<FiltersState>()(
       trackOpen: false,
       trackPlate: null,
       trackDate: null,
+      detailExpanded: false,
       lastTemplate: '',
       checkedIds: [],
       batchChildren: {},
@@ -99,9 +104,14 @@ export const useIssuesStore = create<FiltersState>()(
         trackOpen: false,
         trackPlate: null,
         trackDate: null,
+        // Закрытие карточки снимает разворот, иначе список останется скрытым.
+        detailExpanded: id == null ? false : state.detailExpanded,
       })),
-      setTrackOpen: open => set({ trackOpen: open }),
-      openTrack: (plate = null, date = null) => set({ trackOpen: true, trackPlate: plate, trackDate: date }),
+      // Трек-панель и развёрнутая карточка взаимоисключающи: трек выезжает
+      // оверлеем поверх списка и рассчитан на карточку в 40% ширины.
+      setTrackOpen: open => set(open ? { trackOpen: true, detailExpanded: false } : { trackOpen: false }),
+      openTrack: (plate = null, date = null) => set({ trackOpen: true, trackPlate: plate, trackDate: date, detailExpanded: false }),
+      setDetailExpanded: expanded => set(expanded ? { detailExpanded: true, trackOpen: false } : { detailExpanded: false }),
       setLastTemplate: content => set({ lastTemplate: content }),
       resetFilters: () => set({ status: '', company: '', search: '', assignee: '', issueId: '', page: 1, sort: 'deadline_at', order: 'asc' }),
       setBatchChild: (issueId, plate, info) => set(state => ({

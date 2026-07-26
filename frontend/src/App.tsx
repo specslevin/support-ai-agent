@@ -80,6 +80,7 @@ function LogoutButton() {
 function Dashboard() {
   const selectedIssueId = useIssuesStore(s => s.selectedIssueId)
   const trackOpen = useIssuesStore(s => s.trackOpen)
+  const detailExpanded = useIssuesStore(s => s.detailExpanded)
   const [section, setSection] = useState<Section>('issues')
   const [refreshing, setRefreshing] = useState(false)
   const [lastSynced, setLastSynced] = useState<number | null>(null)
@@ -136,11 +137,13 @@ function Dashboard() {
 
         {section === 'chat' ? (
           <div className="flex flex-1 min-h-0 relative">
-            <div className={`flex flex-col transition-all ${selectedIssueId ? 'w-3/5' : 'w-full'} min-h-0`}>
+            <div className={`flex flex-col transition-all min-h-0 ${
+              detailExpanded && selectedIssueId ? 'hidden' : selectedIssueId ? 'w-3/5' : 'w-full'
+            }`}>
               <ChatPanel />
             </div>
             {selectedIssueId && (
-              <div className="w-2/5 flex flex-col min-h-0 overflow-hidden border-l border-border">
+              <div className={`${detailExpanded ? 'w-full' : 'w-2/5 border-l border-border'} flex flex-col min-h-0 overflow-hidden`}>
                 <IssueDetail />
               </div>
             )}
@@ -165,11 +168,15 @@ function Dashboard() {
 
             {/* Content */}
             <div className="flex flex-1 min-h-0 relative">
-              <div className={`flex flex-col transition-all ${selectedIssueId ? 'w-3/5' : 'w-full'} border-r border-border min-h-0`}>
+              {/* В развёрнутом режиме список скрыт: карточке нужна вся ширина,
+                  чтобы включились две колонки раскладки v3. */}
+              <div className={`flex flex-col transition-all min-h-0 ${
+                detailExpanded && selectedIssueId ? 'hidden' : selectedIssueId ? 'w-3/5 border-r border-border' : 'w-full border-r border-border'
+              }`}>
                 <IssuesList viewMode={viewMode} onViewModeChange={setViewMode} />
               </div>
               {selectedIssueId && (
-                <div className="w-2/5 flex flex-col min-h-0 overflow-hidden">
+                <div className={`${detailExpanded ? 'w-full' : 'w-2/5'} flex flex-col min-h-0 overflow-hidden`}>
                   <IssueDetail />
                 </div>
               )}

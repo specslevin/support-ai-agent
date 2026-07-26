@@ -5,6 +5,7 @@ import {
   Lightbulb, Map, FilePlus, ExternalLink, Pause, Send,
   Layers, Power, RadioTower, Scissors, HelpCircle, FileText, Sheet,
   Image as ImageIcon, Paperclip, PanelRightClose, Info, MessageSquare, Sparkles, Wand2,
+  Maximize2, Minimize2,
   Loader2, Lock, User, Headset, Play, ThumbsUp, ThumbsDown,
   Copy, Calendar, Truck, Pencil,
   type LucideIcon,
@@ -2235,7 +2236,7 @@ function AiFeedbackPanel({ issueId }: { issueId: number }) {
 }
 
 export function IssueDetail() {
-  const { selectedIssueId, selectIssue, trackOpen, setTrackOpen, openTrack, lastTemplate } = useIssuesStore()
+  const { selectedIssueId, selectIssue, trackOpen, setTrackOpen, openTrack, lastTemplate, detailExpanded, setDetailExpanded } = useIssuesStore()
   const isDemo = useAuthStore(s => s.user?.role === 'demo')
   const queryClient = useQueryClient()
   const [comment, setComment] = useState('')
@@ -2391,6 +2392,13 @@ export function IssueDetail() {
           <h2 className="text-[15px] font-bold leading-snug">{issue.subject ?? '—'}</h2>
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={() => setDetailExpanded(!detailExpanded)}
+            title={detailExpanded ? 'Вернуть список заявок' : 'Развернуть карточку на всю ширину (две колонки)'}
+            className={`flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border transition-colors ${detailExpanded ? 'border-accent text-accent bg-accent/10' : 'border-border text-muted hover:text-white hover:border-accent'}`}
+          >
+            {detailExpanded ? <><Minimize2 size={14} /> Свернуть</> : <><Maximize2 size={14} /> Развернуть</>}
+          </button>
           <button
             onClick={() => trackOpen ? setTrackOpen(false) : openTrack()}
             title="Карта трека и графики телеметрии"
