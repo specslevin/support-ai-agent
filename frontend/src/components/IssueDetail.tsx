@@ -904,10 +904,6 @@ function AutoAnalysis({ issueId, issueTitle, companyName }: { issueId: number; i
   const queryClient = useQueryClient()
   const isDemo = useAuthStore(s => s.user?.role === 'demo')
   const [result, setResult] = useState<AutomationResult | null>(null)
-  // Ручное уточнение гос.номера/даты (опечатка клиента) → переанализ.
-  const [refineOpen, setRefineOpen] = useState(false)
-  const [refinePlate, setRefinePlate] = useState('')
-  const [refineDate, setRefineDate] = useState('')
 
   // Demo: allow analysis only once per issue. Track in localStorage.
   const demoAnalyzedKey = `demo_analyzed_${issueId}`
@@ -970,16 +966,6 @@ function AutoAnalysis({ issueId, issueTitle, companyName }: { issueId: number; i
   // Подозрение на ошибку клиента в гос.номере: не тот формат ИЛИ объект не найден в мониторинге.
   const plateSuspect = !!shown && (!!p?.plate_format_suspect || shown.error === 'object_not_found')
 
-  // Если номер под подозрением — сразу раскрываем блок ручного уточнения и предзаполняем инпуты.
-  useEffect(() => {
-    if (plateSuspect) {
-      setRefineOpen(true)
-      setRefinePlate(p?.plate ?? '')
-      setRefineDate(p?.date ?? '')
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [plateSuspect, p?.plate, p?.date])
-
   // У мультиобъектной заявки разбор ведёт BatchAnalysis в том же блоке —
   // одиночный автоанализ взял бы только первый ТС и вводил бы в заблуждение.
   if (isBatch) return null
@@ -1032,71 +1018,11 @@ function AutoAnalysis({ issueId, issueTitle, companyName }: { issueId: number; i
               <AlertTriangle size={15} className="shrink-0 mt-0.5" />
               <span className="text-[11px] leading-relaxed">
                 {p?.plate_format_suspect
-                  ? <>Гос.номер «<b className="font-semibold">{p?.plate ?? '—'}</b>» не соответствует формату — вероятно, ошибка клиента. Проверьте и укажите верный номер ниже.</>
-                  : <>Гос.номер «<b className="font-semibold">{p?.plate ?? '—'}</b>» не найден в системе мониторинга — возможно, ошибка клиента в номере. Уточните номер вручную ниже.</>}
+                  ? <>Гос.номер «<b className="font-semibold">{p?.plate ?? '—'}</b>» не соответствует формату — вероятно, ошибка клиента. Исправьте номер прямо в таблице разбора.</>
+                  : <>Гос.номер «<b className="font-semibold">{p?.plate ?? '—'}</b>» не найден в системе мониторинга — возможно, ошибка клиента в номере. Исправьте номер прямо в таблице разбора.</>}
               </span>
             </div>
           )}
-
-          {/* Ручное уточнение гос.номера/даты — на случай опечатки клиента; переанализ по верным данным. */}
-          <div className={`bg-card border rounded-lg px-3 py-2 space-y-2 transition-colors ${plateSuspect ? 'border-accent ring-1 ring-accent/40' : 'border-frame'}`}>
-            <button
-              type="button"
-              onClick={() => {
-                setRefineOpen(o => {
-                  const next = !o
-                  if (next) {
-                    setRefinePlate(p?.plate ?? '')
-                    setRefineDate(p?.date ?? '')
-                  }
-                  return next
-                })
-              }}
-              className={`flex items-center gap-1.5 text-[11px] font-semibold transition-colors ${plateSuspect ? 'text-accent hover:text-accent/80' : 'text-muted hover:text-secondary'}`}
-            >
-              <Pencil size={12} /> Уточнить номер/дату
-              <ChevronDown size={12} className={`transition-transform ${refineOpen ? 'rotate-180' : ''}`} />
-            </button>
-            {refineOpen && (
-              <div className="space-y-2">
-                <p className="text-[10px] text-muted/80 leading-relaxed">
-                  Если клиент ошибся в гос.номере или дате — исправьте и переанализируйте по верным данным.
-                </p>
-                <div className="grid grid-cols-2 gap-2">
-                  <label className="space-y-0.5">
-                    <span className="block text-[10px] text-muted">Гос.номер</span>
-                    <input
-                      type="text"
-                      value={refinePlate}
-                      onChange={e => setRefinePlate(e.target.value)}
-                      placeholder="напр. А123ВС777"
-                      className="w-full bg-frame border border-frame rounded-lg px-2 py-1 text-[11px] text-white/90 placeholder:text-muted/50 focus:border-accent/50 focus:outline-none"
-                    />
-                  </label>
-                  <label className="space-y-0.5">
-                    <span className="block text-[10px] text-muted">Дата неисправности</span>
-                    <input
-                      type="date"
-                      value={refineDate}
-                      onChange={e => setRefineDate(e.target.value)}
-                      className="w-full bg-frame border border-frame rounded-lg px-2 py-1 text-[11px] text-white/90 focus:border-accent/50 focus:outline-none"
-                    />
-                  </label>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => run.mutate({
-                    ...(refinePlate.trim() ? { plate: refinePlate.trim() } : {}),
-                    ...(refineDate ? { date: refineDate } : {}),
-                  })}
-                  disabled={run.isPending || (!refinePlate.trim() && !refineDate)}
-                  className="flex items-center justify-center gap-2 w-full bg-card border border-accent/40 text-accent hover:bg-accent/10 text-[11px] font-semibold py-1.5 rounded-lg transition-colors disabled:opacity-40"
-                >
-                  <RefreshCw size={12} /> Переанализировать с уточнением
-                </button>
-              </div>
-            )}
-          </div>
 
           {/* Сетка метрик и строка вердикта переехали в TelemetryPanel — блок
               «② Телеметрия и вердикт» рисует их по выбранному в таблице объекту. */}
@@ -1134,6 +1060,14 @@ function AutoAnalysis({ issueId, issueTitle, companyName }: { issueId: number; i
  * поля, и телеметрию.
  */
 function SingleParseTable({ issueId, onSelect }: { issueId: number; onSelect?: (obj: import('../types').BatchObject) => void }) {
+  const queryClient = useQueryClient()
+  const isDemo = useAuthStore(s => s.user?.role === 'demo')
+  // Какое поле сейчас правится / сохраняется. Правка только по клику на карандаш —
+  // защита от случайного изменения. cancelEditRef — отмена по Escape (blur без применения).
+  const [editingField, setEditingField] = useState<'plate' | 'date' | null>(null)
+  const [savingField, setSavingField] = useState<'plate' | 'date' | null>(null)
+  const cancelEditRef = useRef(false)
+
   const { data } = useQuery({
     queryKey: ['automate-cached', issueId],
     queryFn: () => api.getCachedAutomate(issueId),
@@ -1142,6 +1076,26 @@ function SingleParseTable({ issueId, onSelect }: { issueId: number; onSelect?: (
   const res = data?.cached ? (data as unknown as AutomationResult) : null
   const p = res?.parsed
   const t = res?.telemetry
+
+  // Уточнение номера/даты = переанализ заявки по исправленным данным.
+  const refine = useMutation({
+    mutationFn: (override: { plate?: string; date?: string }) => api.automateIssue(issueId, override),
+    onSettled: () => setSavingField(null),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['automate-cached', issueId] })
+      queryClient.invalidateQueries({ queryKey: ['issue', issueId] })
+      // Трек мог быть закэширован с ошибкой «номер не найден» до правки — сбрасываем.
+      queryClient.invalidateQueries({ queryKey: ['track', issueId] })
+    },
+  })
+
+  const applyEdit = (field: 'plate' | 'date', raw: string) => {
+    const val = raw.trim()
+    const current = (field === 'plate' ? p?.plate : p?.date) ?? ''
+    if (!val || val === current) return
+    setSavingField(field)
+    refine.mutate({ [field]: val })
+  }
 
   // Строку отдаём наверх, чтобы блок телеметрии показывал этот же объект.
   useEffect(() => {
@@ -1176,8 +1130,73 @@ function SingleParseTable({ issueId, onSelect }: { issueId: number; onSelect?: (
         </thead>
         <tbody>
           <tr className="border-t border-border/50">
-            <td className="py-1.5 pr-2 font-mono">{p?.plate ?? '—'}</td>
-            <td className="pr-2">{p?.date ?? '—'}</td>
+            <td className="py-1.5 pr-2 font-mono">
+              {isDemo ? (p?.plate ?? '—') : editingField === 'plate' ? (
+                <span className="inline-flex items-center gap-1">
+                  <input
+                    autoFocus
+                    defaultValue={p?.plate ?? ''}
+                    disabled={savingField === 'plate'}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+                      else if (e.key === 'Escape') { cancelEditRef.current = true; (e.target as HTMLInputElement).blur() }
+                    }}
+                    onBlur={e => {
+                      const val = e.target.value
+                      setEditingField(null)
+                      if (cancelEditRef.current) { cancelEditRef.current = false; return }
+                      applyEdit('plate', val)
+                    }}
+                    className="w-[5.5rem] bg-frame border border-accent rounded px-1 py-0.5 font-mono text-[11px] text-white outline-none disabled:opacity-50"
+                  />
+                  <span className="text-[9px] text-muted/60 shrink-0">Enter / Esc</span>
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1">
+                  <span className={p?.plate ? '' : 'text-warning'}>{p?.plate ?? 'нет номера'}</span>
+                  <button
+                    onClick={() => setEditingField('plate')}
+                    title={p?.plate ? 'Изменить гос.номер и перепроверить ТС в гео' : 'Вписать гос.номер вручную и проверить в гео'}
+                    className="text-muted/40 hover:text-accent shrink-0 transition-colors"
+                  ><Pencil size={11} /></button>
+                  {savingField === 'plate' && <span className="animate-spin text-muted shrink-0">↻</span>}
+                </span>
+              )}
+            </td>
+            <td className="pr-2">
+              {isDemo ? (p?.date ?? '—') : editingField === 'date' ? (
+                <span className="inline-flex items-center gap-1">
+                  <input
+                    type="date"
+                    autoFocus
+                    defaultValue={p?.date ?? ''}
+                    disabled={savingField === 'date'}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+                      else if (e.key === 'Escape') { cancelEditRef.current = true; (e.target as HTMLInputElement).blur() }
+                    }}
+                    onBlur={e => {
+                      const val = e.target.value
+                      setEditingField(null)
+                      if (cancelEditRef.current) { cancelEditRef.current = false; return }
+                      applyEdit('date', val)
+                    }}
+                    className="w-[8.5rem] bg-frame border border-accent rounded px-1 py-0.5 text-[11px] text-white outline-none disabled:opacity-50"
+                  />
+                  <span className="text-[9px] text-muted/60 shrink-0">Enter / Esc</span>
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1">
+                  <span className={p?.date ? '' : 'text-warning'}>{p?.date ?? 'нет даты'}</span>
+                  <button
+                    onClick={() => setEditingField('date')}
+                    title="Изменить дату неисправности и перепроверить в гео"
+                    className="text-muted/40 hover:text-accent shrink-0 transition-colors"
+                  ><Pencil size={11} /></button>
+                  {savingField === 'date' && <span className="animate-spin text-muted shrink-0">↻</span>}
+                </span>
+              )}
+            </td>
             <td className="pr-2">{p?.sheet_mileage_km ?? '—'}</td>
             <td className="pr-2">{p?.declared_system_km ?? '—'}</td>
             <td className="pr-2 text-white font-medium">{t?.system_mileage_km ?? '—'}</td>
