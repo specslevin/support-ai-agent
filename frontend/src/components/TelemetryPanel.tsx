@@ -71,7 +71,7 @@ function buildMetrics(t: AutomationTelemetry): Metric[] {
     },
     { key: 'packets', label: 'Пакетов', value: String(t.packets) },
     { key: 'max_speed', label: 'Макс. скорость', value: t.max_speed != null ? `${t.max_speed} км/ч` : null },
-    { key: 'move_time', label: 'В движении', value: t.move_time_min != null ? `${t.move_time_min} мин` : null },
+    { key: 'move_time', label: 'В движении', value: t.move_time_min != null ? formatMinutes(Math.round(t.move_time_min)) : null },
     { key: 'spikes', label: 'Выбросы скорости', value: String(t.speed_spike_count) },
     {
       key: 'implied',

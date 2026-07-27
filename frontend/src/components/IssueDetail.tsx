@@ -2258,12 +2258,12 @@ export function IssueDetail() {
             selectedIdx={selectedIdx}
             onSelectObject={(idx, objects) => { setSelectedIdx(idx); setSelectedObj(objects[idx] ?? null) }}
           />
+          <SingleParseTable issueId={issue.id} onSelect={obj => { setSelectedIdx(0); setSelectedObj(obj) }} />
           <AutoAnalysis
             issueId={issue.id}
             issueTitle={issue.subject}
             companyName={issue.company_name}
           />
-          <SingleParseTable issueId={issue.id} onSelect={obj => { setSelectedIdx(0); setSelectedObj(obj) }} />
         </Block>
 
         {/* ② Телеметрия и вердикт — по объекту, выбранному в таблице выше */}
@@ -2282,6 +2282,14 @@ export function IssueDetail() {
           {!selectedObj && (
             <p className="text-[13px] text-muted">
               Запустите разбор в блоке выше — телеметрия появится по выбранному объекту.
+            </p>
+          )}
+          {/* Разборы, сделанные до появления telemetry в ответе бэкенда, метрик
+              не содержат — объясняем, почему их нет, вместо пустого блока. */}
+          {selectedObj && !selectedObj.telemetry && (
+            <p className="text-[13px] text-muted">
+              В сохранённом разборе метрик нет — нажмите «Обновить разбор» в блоке выше,
+              чтобы пересчитать телеметрию по объектам.
             </p>
           )}
         </Block>
