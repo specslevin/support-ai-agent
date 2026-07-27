@@ -667,6 +667,15 @@ async def automate_issue(
             await cache.save_result_cache(external_id, "automate", json.dumps(result_dict, ensure_ascii=False))
         except Exception:
             log.warning("automate_cache_save_failed", issue_id=issue_id)
+        # Детерминированный срез того же прогона — в ОТДЕЛЬНЫЙ кэш фактов (kind
+        # "parse"). Телеметрия уже собрана, повторных запросов нет; зато факты
+        # переживут следующую инвалидацию ИИ-результата и отдадутся бесплатно.
+        try:
+            await cache.save_result_cache(
+                external_id, "parse",
+                json.dumps(automation.facts_dict(result), ensure_ascii=False))
+        except Exception:
+            log.warning("automate_facts_cache_save_failed", issue_id=issue_id)
         return result_dict
     except HTTPException:
         raise
@@ -693,6 +702,9 @@ async def automate_issue(
             ),
             "needs_review": True,
             "error": "automation_failed",
+            # Вердикта нет вообще — источник не указываем (не «rules» и не «ai»).
+            "verdict_source": None,
+            "heuristic_category": None,
         }
 
 
@@ -718,6 +730,118 @@ async def get_cached_automate(
         raise HTTPException(status_code=500, detail="Failed to read cached analysis")
 
 
+@router.post("/{issue_id}/parse")
+async def parse_issue_facts(
+    issue_id: int,
+    plate: str | None = Query(None, description="Manual override of the vehicle plate"),
+    date: str | None = Query(None, description="Manual override of the fault date (YYYY-MM-DD)"),
+    attachments: bool = Query(
+        False, description="Читать вложения (OCR): дорого по CPU, только по кнопке"),
+    cache: CacheService = Depends(get_cache_service),
+    okdesk: OkdeskService = Depends(get_okdesk_service),
+    automation: IssueAutomationService = Depends(get_issue_automation_service),
+) -> dict[str, object]:
+    """ДЕТЕРМИНИРОВАННЫЙ разбор: факты + предварительный вердикт БЕЗ DeepSeek.
+
+    Работает для заявки ЛЮБОГО типа, где нашёлся гос.номер: regex-парсер + реальная
+    телеметрия geo.gpspos.ru + лестница правил. Возвращает такую же таблицу строк
+    (``objects``), как разбор по вложениям, — и для 1 ТС, и для N. Ни одного токена.
+    По умолчанию вложения НЕ читаются (OCR запускается только с ``attachments=true``).
+    """
+    ocr_progress: dict[str, object] = {"complete": True, "attachments_total": 0,
+                                       "attachments_done": 0, "pages_done": 0}
+    try:
+        issue_data = await cache.get_issue_with_analysis(issue_id)
+        if not issue_data:
+            raise HTTPException(status_code=404, detail="Issue not found")
+        external_id = issue_data["issue"].external_id
+        live = await okdesk.get_issue(external_id)
+        params = _build_parameters(live.parameters)
+        # Комментарии — бесплатный (для токенов) источник: у форвард-писем тело
+        # лежит в первом комментарии, иначе номер/дата не найдутся.
+        comments_digest = await _build_comments_digest(external_id, okdesk)
+        payload = await automation.parse_facts(
+            external_id, live.title, live.description, params,
+            attachments=(live.attachments if attachments else None),
+            comments=comments_digest or None,
+            plate_override=plate, date_override=date,
+            ocr_cache=cache,
+            progress_out=(ocr_progress if attachments else None),
+        )
+        objects = payload.get("objects") or []
+        if not objects:
+            payload["note"] = (
+                "Не удалось определить гос.номер по теме и тексту заявки. "
+                "Укажите номер вручную или выполните разбор по вложениям."
+            )
+        company_name = getattr(issue_data["issue"], "company_name", None)
+        payload["is_aggregate"] = _is_aggregate(company_name, live.description, objects)
+        try:
+            await cache.save_result_cache(external_id, "parse",
+                                          json.dumps(payload, ensure_ascii=False))
+        except Exception:
+            log.warning("parse_cache_save_failed", issue_id=issue_id)
+        return payload
+    except HTTPException:
+        raise
+    except Exception:
+        # Как и в automate_batch: отдаём валидный пустой разбор с пояснением,
+        # а не 500 — оператор видит причину и работает вручную.
+        log.exception("parse_issue_facts_failed", issue_id=issue_id)
+        return {
+            "parsed": {}, "objects": [], "total": 0,
+            "jamming_count": 0, "ok_count": 0,
+            "telemetry": None, "verdict": None, "heuristic_category": None,
+            "verdict_source": None, "spec_vehicle": False,
+            "needs_remote_diagnostics": False, "is_aggregate": False,
+            "note": "Не удалось выполнить разбор по фактам. Обработайте заявку вручную.",
+        }
+
+
+@router.get("/{issue_id}/parse")
+async def get_cached_parse(
+    issue_id: int,
+    cache: CacheService = Depends(get_cache_service),
+) -> dict[str, object]:
+    """Вернуть последний детерминированный разбор из кэша (без пересчёта).
+
+    Переживает ИИ-прогон: kind ``parse`` отдельный от ``automate``.
+    """
+    try:
+        issue_data = await cache.get_issue_with_analysis(issue_id)
+        if not issue_data:
+            raise HTTPException(status_code=404, detail="Issue not found")
+        external_id = issue_data["issue"].external_id
+        cached = await cache.get_result_cache(external_id, "parse")
+        if not cached:
+            return {"cached": False}
+        return {"cached": True, "created_at": cached["created_at"], **cached["data"]}
+    except HTTPException:
+        raise
+    except Exception:
+        log.exception("get_cached_parse_failed", issue_id=issue_id)
+        raise HTTPException(status_code=500, detail="Failed to read cached parse")
+
+
+async def _cached_facts(cache: CacheService, external_id: int) -> dict | None:
+    """Разбор из кэша: сначала полный ИИ-прогон, затем детерминированные факты.
+
+    Оба kind несут одинаковые по форме поля ``parsed``/``telemetry``, поэтому
+    потребители (шаблоны, трек) получают полный набор полей и когда ИИ-разбор
+    сброшен/не запускался, а бесплатный разбор по фактам уже есть.
+    """
+    for kind in ("automate", "parse"):
+        try:
+            cached = await cache.get_result_cache(external_id, kind)
+        except Exception:
+            continue
+        if cached and isinstance(cached.get("data"), dict):
+            data = cached["data"]
+            if data.get("parsed"):
+                return data
+    return None
+
+
 @router.get("/{issue_id}/template_values")
 async def get_template_values(
     issue_id: int,
@@ -741,9 +865,8 @@ async def get_template_values(
         issue_data = await cache.get_issue_with_analysis(issue_id)
         if issue_data:
             external_id = issue_data["issue"].external_id
-            cached = await cache.get_result_cache(external_id, "automate")
-            if cached and isinstance(cached.get("data"), dict):
-                data = cached["data"]
+            data = await _cached_facts(cache, external_id)
+            if data:
                 parsed = data.get("parsed") or {}
                 telemetry = data.get("telemetry") or {}
 
@@ -952,6 +1075,19 @@ def _norm_plate(p: object) -> str:
     return re.sub(r"[\s\-]", "", str(p or "")).upper().translate(_PLATE_TRANSLIT)
 
 
+async def _objects_doc(cache: CacheService, external_id: int) -> tuple[str, dict]:
+    """Документ разбора по объектам для ручных правок оператора.
+
+    Приоритет — «batch» (разбор по вложениям, там уже могут быть правки), при его
+    отсутствии — детерминированный «parse»: строки в нём того же формата, поэтому
+    вердикт/номер правятся так же. Возвращает (kind, data)."""
+    for kind in ("batch", "parse"):
+        cached = await cache.get_result_cache(external_id, kind)
+        if cached and (cached.get("data") or {}).get("objects"):
+            return kind, cached["data"]
+    raise HTTPException(status_code=400, detail="Сначала выполните разбор по вложениям")
+
+
 @router.post("/{issue_id}/batch/verdict")
 async def update_batch_verdict(
     issue_id: int,
@@ -968,10 +1104,7 @@ async def update_batch_verdict(
     if not issue_data:
         raise HTTPException(status_code=404, detail="Issue not found")
     external_id = issue_data["issue"].external_id
-    cached = await cache.get_result_cache(external_id, "batch")
-    if not cached or not cached.get("data", {}).get("objects"):
-        raise HTTPException(status_code=400, detail="Сначала выполните разбор по вложениям")
-    data = cached["data"]
+    kind, data = await _objects_doc(cache, external_id)
     objects = data.get("objects") or []
     target = _norm_plate(body.plate)
     updated = 0
@@ -983,13 +1116,19 @@ async def update_batch_verdict(
                 and (not body.date or o.get("date") == body.date)):
             o["verdict"] = body.verdict
             o["verdict_edited"] = True
+            # Вердикт больше не «правила» и не ИИ — это решение оператора.
+            o["verdict_source"] = "operator"
             updated += 1
     if not updated:
         raise HTTPException(status_code=404, detail="ТС не найдено в разборе")
     data["jamming_count"] = sum(1 for o in objects if o.get("verdict") == "Глушение")
     data["ok_count"] = sum(1 for o in objects if o.get("verdict") == "Данные верны")
+    if kind == "parse" and len(objects) == 1:
+        # Сводные поля одиночного разбора дублируют единственную строку.
+        data["verdict"] = objects[0].get("verdict")
+        data["verdict_source"] = objects[0].get("verdict_source")
     try:
-        await cache.save_result_cache(external_id, "batch", json.dumps(data, ensure_ascii=False))
+        await cache.save_result_cache(external_id, kind, json.dumps(data, ensure_ascii=False))
     except Exception:
         log.warning("batch_verdict_save_failed", issue_id=issue_id)
         raise HTTPException(status_code=500, detail="Не удалось сохранить вердикт")
@@ -1027,10 +1166,7 @@ async def update_batch_plate(
     if not issue_data:
         raise HTTPException(status_code=404, detail="Issue not found")
     external_id = issue_data["issue"].external_id
-    cached = await cache.get_result_cache(external_id, "batch")
-    if not cached or not cached.get("data", {}).get("objects"):
-        raise HTTPException(status_code=400, detail="Сначала выполните разбор по вложениям")
-    data = cached["data"]
+    kind, data = await _objects_doc(cache, external_id)
     objects: list[dict] = data.get("objects") or []
     target = _norm_plate(body.old_plate)
     # Точный индекс строки (если передан и валиден) — единственный надёжный селектор
@@ -1066,8 +1202,18 @@ async def update_batch_plate(
     data["total"] = len(objects)
     data["jamming_count"] = sum(1 for o in objects if o.get("verdict") == "Глушение")
     data["ok_count"] = sum(1 for o in objects if o.get("verdict") == "Данные верны")
+    if kind == "parse" and len(objects) == 1:
+        # Сводные поля одиночного разбора идут за единственной строкой.
+        row = objects[0]
+        data["verdict"] = row.get("verdict")
+        data["verdict_source"] = row.get("verdict_source")
+        data["telemetry"] = row.get("telemetry")
+        data["heuristic_category"] = row.get("heuristic_category")
+        parsed0 = data.get("parsed")
+        if isinstance(parsed0, dict):
+            parsed0["plate"] = row.get("plate")
     try:
-        await cache.save_result_cache(external_id, "batch", json.dumps(data, ensure_ascii=False))
+        await cache.save_result_cache(external_id, kind, json.dumps(data, ensure_ascii=False))
     except Exception:
         log.warning("batch_plate_save_failed", issue_id=issue_id)
         raise HTTPException(status_code=500, detail="Не удалось сохранить гос.номер")
@@ -1380,9 +1526,9 @@ async def get_issue_track(
         # трека взял бы исходный (неверный) номер из темы и построил трек по
         # чужому объекту, расходясь с анализом.
         try:
-            cached = await cache.get_result_cache(external_id, "automate")
-            if cached and isinstance(cached.get("data"), dict):
-                cp = cached["data"].get("parsed") or {}
+            data0 = await _cached_facts(cache, external_id)
+            if data0:
+                cp = data0.get("parsed") or {}
                 cplate, cdate = cp.get("plate"), cp.get("date")
                 if isinstance(cplate, str) and cplate and isinstance(cdate, str) and cdate:
                     return await automation.build_track(
@@ -1427,9 +1573,9 @@ async def get_issue_track(
             if isinstance(parsed0.get("date"), str) and parsed0.get("date"):
                 fb_date = parsed0["date"][:10]
             try:
-                cached = await cache.get_result_cache(external_id, "automate")
-                if cached and isinstance(cached.get("data"), dict):
-                    parsed = cached["data"].get("parsed") or {}
+                data1 = await _cached_facts(cache, external_id)
+                if data1:
+                    parsed = data1.get("parsed") or {}
                     p = parsed.get("plate")
                     d = parsed.get("date")
                     if isinstance(p, str) and p:
@@ -1921,8 +2067,12 @@ async def resolve_issue(
         except Exception:
             log.warning("training_sample_record_failed", issue_id=issue_id)
 
-        # Инвалидация кэша анализа (1.4): после решения/комментария старый разбор устарел.
+        # Инвалидация кэша анализа (1.4): после решения/комментария старый разбор
+        # устарел. Факты (kind "parse") устаревают так же — в комментарии может
+        # прийти новая дата/номер. Кэш вложений (ocr:*) и разбор по объектам
+        # ("batch", там правки оператора) НЕ трогаем — они дорогие/ручные.
         await cache.delete_result_cache(external_id, "automate")
+        await cache.delete_result_cache(external_id, "parse")
 
         return {
             "ok": True,
@@ -1961,8 +2111,10 @@ async def add_comment(
             raise HTTPException(status_code=404, detail="Issue not found")
         external_id = issue_data["issue"].external_id
         result = await okdesk.add_comment(external_id, text, public=is_public)
-        # Новый комментарий может изменить верный ответ — сбрасываем кэш анализа (1.4).
+        # Новый комментарий может изменить верный ответ (в т.ч. дату/номер) —
+        # сбрасываем и ИИ-разбор, и детерминированные факты (1.4).
         await cache.delete_result_cache(external_id, "automate")
+        await cache.delete_result_cache(external_id, "parse")
         return {"ok": True, "result": result}
     except HTTPException:
         raise

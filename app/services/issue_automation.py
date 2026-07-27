@@ -922,6 +922,13 @@ class AutomationResult:
     # проверки). True только если needs_review=False, confidence>=0.8, категория
     # «Глушение»/«Данные верны» и есть гос.номер + дата.
     auto_eligible: bool = False
+    # Чем получена ``category``: "rules" — детерминированной эвристикой/правилами,
+    # "ai" — категорию назвал LLM. Нужно фронту, чтобы отличать бесплатный
+    # предварительный вердикт от полноценного ИИ-разбора.
+    verdict_source: str = "rules"
+    # Значение детерминированной эвристики (_heuristic_category) — отдаём наружу
+    # ВСЕГДА, даже когда категорию переопределил LLM: видно расхождение правил и ИИ.
+    heuristic_category: str | None = None
 
 
 # Canonical answer catalogue mirroring okdesk-console templates (category -> guidance).
@@ -1964,6 +1971,8 @@ class IssueAutomationService:
             reasoning=reasoning,
             needs_review=True,  # general path always wants operator confirmation
             error=None,
+            # Общий путь целиком построен на LLM (интент + ответ) — вердикт ИИ-шный.
+            verdict_source="ai",
         )
 
     async def _extract_with_llm(self, title: str | None, body: str | None,
@@ -2276,6 +2285,9 @@ class IssueAutomationService:
             comment_date_facts=comment_date_facts,
         )
         category = llm.get("category") or hint
+        # Источник вердикта: категорию назвал LLM или (пустой ответ модели) она
+        # осталась детерминированной эвристикой. Фронт показывает это явно.
+        verdict_source = "ai" if llm.get("category") else "rules"
         draft = _clean_answer(llm.get("answer") or "")
         confidence = float(llm.get("confidence") or 0.0)
         reasoning = llm.get("reasoning") or ""
@@ -2306,6 +2318,7 @@ class IssueAutomationService:
             confidence=min(confidence, 0.6) if force_review else confidence,
             draft_answer=draft, reasoning=reasoning,
             needs_review=confidence < 0.85 or bool(under_recording) or force_review,
+            verdict_source=verdict_source, heuristic_category=hint,
         ))
 
     async def build_track(self, title: str | None, description: str | None,
@@ -2468,17 +2481,27 @@ class IssueAutomationService:
             body_rows = _parse_body_vehicles(issue_description)  # (plate,date,sheet,glonass)
             body_keys = {_plate_dedup_key(p) for p, _, _, _ in body_rows}
             title_plates = extract_all_plates(issue_title or "")
-            distinct = body_keys | {_plate_dedup_key(p) for p in title_plates}
-            if len(distinct) >= 2:
-                # Каждая строка тела — своя цель (своя дата/пробег, 64455/65649).
-                # Номера, встреченные только в ТЕМЕ, добираем с общей датой/ПЛ из
-                # разбора темы+тела (fallback), чтобы ТС из темы не потерялся.
-                p0 = self.parse_issue(issue_title, issue_description, None)
-                targets_subj: list[tuple[str, str | None, float | None, float | None]] = list(body_rows)
-                for plate in title_plates:
-                    if _plate_dedup_key(plate) not in body_keys:
-                        targets_subj.append(
-                            (plate, p0.date, p0.sheet_mileage_km, p0.declared_system_km))
+            # ОДИН объект разбираем ТЕМ ЖЕ движком, что и N (раньше требовалось
+            # >= 2 номера, и одиночная заявка возвращала пустой список — факты и
+            # предварительный вердикт можно было получить только через LLM-прогон).
+            # Порог снят: фронт получает одинаковую таблицу для 1 и для N ТС, не
+            # потратив ни одного токена. OCR здесь не запускается — ветка работает
+            # только когда извлекаемых вложений нет.
+            p0 = self.parse_issue(issue_title, issue_description, None)
+            targets_subj: list[tuple[str, str | None, float | None, float | None]] = list(body_rows)
+            # Каждая строка тела — своя цель (своя дата/пробег, 64455/65649).
+            # Номера, встреченные только в ТЕМЕ, добираем с общей датой/ПЛ из
+            # разбора темы+тела (fallback), чтобы ТС из темы не потерялся.
+            for plate in title_plates:
+                if _plate_dedup_key(plate) not in body_keys:
+                    targets_subj.append(
+                        (plate, p0.date, p0.sheet_mileage_km, p0.declared_system_km))
+            if not targets_subj and p0.plate:
+                # Номер есть только в общем разборе темы+тела (нестандартная
+                # разметка строки) — одиночная заявка не должна остаться без строки.
+                targets_subj.append(
+                    (p0.plate, p0.date, p0.sheet_mileage_km, p0.declared_system_km))
+            if targets_subj:
                 sem0 = asyncio.Semaphore(_BATCH_CONCURRENCY)
 
                 async def _one_subj(plate: str, pdate: str | None, psheet: float | None,
@@ -2837,6 +2860,13 @@ class IssueAutomationService:
             "telemetry": None,
             "spec_vehicle": _is_special_vehicle(plate, file),
             "verdict": "Нет номера/даты",
+            # Вердикт строки получен ПРАВИЛАМИ (детерминированно, без DeepSeek).
+            # Оператор может переписать его через /batch/verdict — тогда рядом
+            # проставляется verdict_edited=True.
+            "verdict_source": "rules",
+            # Вторая, более простая эвристика (та, что уходит в LLM как hint) —
+            # наружу, чтобы было видно расхождение двух детерминированных оценок.
+            "heuristic_category": None,
         }
         # Акт распознан (есть дата/пробег), но OCR не прочитал гос.номер — отдельный
         # вердикт, чтобы оператор увидел такую строку и вписал номер вручную (64725).
@@ -2851,42 +2881,176 @@ class IssueAutomationService:
                 # Плоские поля выше оставлены как есть (на них завязаны фронт и кэш),
                 # telemetry — полный набор метрик для панели телеметрии по строке.
                 item["telemetry"] = asdict(t)
-                system = t.system_mileage_km
-                # Order matters: jamming/power-off take precedence over a mileage
-                # match (spoofing makes the track unreliable even if mileage coincides).
-                if "object_not_found" in t.flags:
-                    item["verdict"] = "Объект не найден"
-                elif "no_data" in t.flags:
-                    item["verdict"] = "Нет данных"
-                elif "power_off" in t.flags:
-                    item["verdict"] = "Не было питания"
-                elif item["spec_vehicle"]:
-                    # Спецтехника: км-вердикт (Глушение/Данные верны) ненадёжен —
-                    # данные есть, оценивать по факту работы/моточасам вручную.
-                    item["verdict"] = "Проверить"
-                elif "jamming" in t.flags:
-                    item["verdict"] = "Глушение"
-                elif sheet and system is not None and abs(sheet - system) <= max(5.0, sheet * 0.1):
-                    item["verdict"] = "Данные верны"
-                elif (declared is not None and system is not None and sheet
-                      and abs(declared - system) <= max(5.0, system * 0.1)):
-                    # 63317: реальная телеметрия сходится с тем, что клиент видит в
-                    # системе, а расходится только его ПЛ — проблема на стороне
-                    # учёта клиента (одометр/пробуксовка), данные мониторинга верны.
-                    item["verdict"] = "Данные верны"
-                elif (declared is not None and system is not None and sheet
-                      and system - declared > max(5.0, system * 0.25)
-                      and abs(sheet - system) <= max(5.0, sheet * 0.25)):
-                    # Клиент видит в системе заметно меньше, чем реально есть в
-                    # телеметрии, а реальный пробег уже примерно сошёлся с ПЛ —
-                    # данные догрузились позже (чёрный ящик). Если же system всё
-                    # ещё далёк от ПЛ — это «Проверить», а не ложное «догрузилось».
-                    item["verdict"] = "Терминал подключился"
-                else:
-                    item["verdict"] = "Проверить"
+                item["verdict"] = self._verdict_from_facts(
+                    t, sheet, declared, bool(item["spec_vehicle"]))
+                item["heuristic_category"] = self._heuristic_category(
+                    ParsedIssue(plate=plate, date=date, sheet_mileage_km=sheet), t)
             except Exception:
                 item["verdict"] = "Ошибка данных"
         return item
+
+    @staticmethod
+    def _verdict_from_facts(t: TelemetryFacts, sheet: float | None,
+                            declared: float | None, spec_vehicle: bool) -> str:
+        """ДЕТЕРМИНИРОВАННАЯ лестница вердиктов по фактам телеметрии (без LLM).
+
+        Вынесена из ``_analyze_object`` без изменения порядка правил, чтобы тот же
+        вердикт можно было получить по УЖЕ собранной телеметрии (см. ``rules_row``).
+        """
+        system = t.system_mileage_km
+        # Order matters: jamming/power-off take precedence over a mileage
+        # match (spoofing makes the track unreliable even if mileage coincides).
+        if "object_not_found" in t.flags:
+            return "Объект не найден"
+        if "no_data" in t.flags:
+            return "Нет данных"
+        if "power_off" in t.flags:
+            return "Не было питания"
+        if spec_vehicle:
+            # Спецтехника: км-вердикт (Глушение/Данные верны) ненадёжен —
+            # данные есть, оценивать по факту работы/моточасам вручную.
+            return "Проверить"
+        if "jamming" in t.flags:
+            return "Глушение"
+        if sheet and system is not None and abs(sheet - system) <= max(5.0, sheet * 0.1):
+            return "Данные верны"
+        if (declared is not None and system is not None and sheet
+                and abs(declared - system) <= max(5.0, system * 0.1)):
+            # 63317: реальная телеметрия сходится с тем, что клиент видит в
+            # системе, а расходится только его ПЛ — проблема на стороне
+            # учёта клиента (одометр/пробуксовка), данные мониторинга верны.
+            return "Данные верны"
+        if (declared is not None and system is not None and sheet
+                and system - declared > max(5.0, system * 0.25)
+                and abs(sheet - system) <= max(5.0, sheet * 0.25)):
+            # Клиент видит в системе заметно меньше, чем реально есть в
+            # телеметрии, а реальный пробег уже примерно сошёлся с ПЛ —
+            # данные догрузились позже (чёрный ящик). Если же system всё
+            # ещё далёк от ПЛ — это «Проверить», а не ложное «догрузилось».
+            return "Терминал подключился"
+        return "Проверить"
+
+    def rules_row(self, parsed: ParsedIssue, t: TelemetryFacts,
+                  file: str = "(из текста заявки)") -> dict[str, Any]:
+        """Строка разбора из УЖЕ собранной телеметрии — БЕЗ сетевых вызовов.
+
+        Формат идентичен строкам ``analyze_batch``/``_analyze_object`` (фронт
+        рисует одну и ту же таблицу для 1 и для N объектов).
+        """
+        spec = _is_special_vehicle(parsed.plate, file)
+        has_facts = bool(parsed.plate and parsed.date)
+        return {
+            "file": file, "plate": parsed.plate, "date": parsed.date,
+            "sheet_mileage_km": parsed.sheet_mileage_km,
+            "declared_system_km": parsed.declared_system_km,
+            "system_mileage_km": t.system_mileage_km,
+            "address": None, "flags": list(t.flags), "teleport_jumps": t.teleport_jumps,
+            "telemetry": asdict(t) if has_facts else None,
+            "spec_vehicle": spec,
+            "verdict": (self._verdict_from_facts(
+                t, parsed.sheet_mileage_km, parsed.declared_system_km, spec)
+                if has_facts else "Нет номера/даты"),
+            "verdict_source": "rules",
+            "heuristic_category": (self._heuristic_category(parsed, t)
+                                   if has_facts else None),
+        }
+
+    @staticmethod
+    def _facts_payload(parsed: dict[str, Any], objects: list[dict[str, Any]],
+                       spec_vehicle: bool = False,
+                       needs_remote_diagnostics: bool = False,
+                       ocr_progress: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Единый формат ответа детерминированного разбора (kind ``parse``).
+
+        ``objects`` — строки разбора (1 или N, один и тот же движок). Сводные
+        поля дублируют первую строку: одиночной карточке не нужно лезть в массив.
+        """
+        first = objects[0] if len(objects) == 1 else None
+        payload: dict[str, Any] = {
+            "parsed": parsed,
+            "objects": objects,
+            "total": len(objects),
+            "jamming_count": sum(1 for o in objects if o.get("verdict") == "Глушение"),
+            "ok_count": sum(1 for o in objects if o.get("verdict") == "Данные верны"),
+            "telemetry": (first or {}).get("telemetry") if first else None,
+            "verdict": (first or {}).get("verdict") if first else None,
+            "heuristic_category": (first or {}).get("heuristic_category") if first else None,
+            "verdict_source": "rules",
+            "spec_vehicle": spec_vehicle,
+            "needs_remote_diagnostics": needs_remote_diagnostics,
+        }
+        if ocr_progress is not None:
+            payload["ocr_progress"] = ocr_progress
+        return payload
+
+    async def parse_facts(self, issue_external_id: int,
+                          title: str | None, description: str | None,
+                          params: list[dict[str, Any]] | None = None,
+                          attachments: list[Any] | None = None,
+                          attachments_text: str | None = None,
+                          comments: str | None = None,
+                          plate_override: str | None = None,
+                          date_override: str | None = None,
+                          ocr_cache: Any = None,
+                          progress_out: dict[str, Any] | None = None) -> dict[str, Any]:
+        """ДЕТЕРМИНИРОВАННЫЙ разбор заявки: факты + предварительный вердикт.
+
+        Ни одного обращения к DeepSeek: только regex-парсер, телеметрия из гео и
+        лестница правил ``_verdict_from_facts``. ``attachments=None`` (по умолчанию)
+        — вложения НЕ читаются и OCR не запускается; список вложений передаёт
+        только «кнопочный» разбор, который сознательно платит за OCR.
+        """
+        parse_extra = attachments_text
+        if comments and not _strip_html(description).strip():
+            # 64871: у форвард-писем тело письма лежит в первом комментарии.
+            parse_extra = f"{attachments_text or ''}\n{_scrub_iso_dates(comments)}"
+        parsed = self.parse_issue(title, description, params, extra_text=parse_extra)
+        if plate_override:
+            norm = _normalize_plate(plate_override)
+            parsed.plate = norm or plate_override.strip()
+        if date_override:
+            parsed.date = date_override.strip()
+        spec = _is_special_vehicle(
+            parsed.plate, f"{title or ''} {_strip_html(description)} {attachments_text or ''}")
+        awaiting_diag = _client_awaiting_remote_diag(comments)
+        parsed_out = asdict(parsed)
+        parsed_out["plate_format_suspect"] = _plate_format_suspect(parsed.plate)
+
+        objects: list[dict[str, Any]] = []
+        if plate_override or date_override:
+            # Ручная правка оператора важнее любого авто-разбора текста: одна
+            # строка строго по заданным номеру/дате.
+            objects = [await self._analyze_object(
+                parsed.plate or "", parsed.date, parsed.sheet_mileage_km, None,
+                "(из текста заявки)", declared=parsed.declared_system_km)]
+        else:
+            try:
+                objects = await self.analyze_batch(
+                    issue_external_id, attachments or [],
+                    issue_title=title, issue_description=description,
+                    ocr_cache=ocr_cache, progress_out=progress_out)
+            except Exception:  # pragma: no cover - analyze_batch и так best-effort
+                log.warning("parse_facts_batch_failed", issue=issue_external_id)
+                objects = []
+        if not objects and parsed.plate:
+            # Парсер тела/темы номер нашёл, а построчный движок — нет
+            # (нестандартная разметка): всё равно отдаём одну строку.
+            objects = [await self._analyze_object(
+                parsed.plate, parsed.date, parsed.sheet_mileage_km, None,
+                "(из текста заявки)", declared=parsed.declared_system_km)]
+        # Одна строка — синхронизируем сводный parsed с тем, что реально разобрано
+        # (номер/дата могли прийти из построчного разбора тела, а не из parse_issue).
+        if len(objects) == 1:
+            row = objects[0]
+            if not parsed_out.get("plate") and row.get("plate"):
+                parsed_out["plate"] = row.get("plate")
+                parsed_out["plate_format_suspect"] = _plate_format_suspect(row.get("plate"))
+            if not parsed_out.get("date") and row.get("date"):
+                parsed_out["date"] = row.get("date")
+        return self._facts_payload(
+            parsed_out, objects, spec_vehicle=spec,
+            needs_remote_diagnostics=awaiting_diag,
+            ocr_progress=progress_out if attachments else None)
 
     async def build_training_sample(
         self, title: str | None, description: str | None,
@@ -2934,4 +3098,26 @@ class IssueAutomationService:
             "needs_remote_diagnostics": r.needs_remote_diagnostics,
             "spec_vehicle": r.spec_vehicle,
             "auto_eligible": r.auto_eligible,
+            # Чем получена category ("rules"/"ai") и что сказала эвристика.
+            "verdict_source": r.verdict_source,
+            "heuristic_category": r.heuristic_category,
         }
+
+    def facts_dict(self, r: AutomationResult) -> dict[str, Any]:
+        """Детерминированный СРЕЗ полного разбора — то же, что отдаёт parse_facts.
+
+        Нужен, чтобы после полного прогона (``automate``) факты легли в кэш
+        ``parse`` БЕЗ повторного обращения к телеметрии: они переживут следующую
+        инвалидацию ИИ-результата и отдадутся фронту бесплатно.
+        """
+        parsed = asdict(r.parsed)
+        parsed["plate_format_suspect"] = _plate_format_suspect(r.parsed.plate)
+        # Строку строим ТОЛЬКО когда телеметрия реально собиралась. У общего
+        # (не-пробегового) пути TelemetryFacts пустой — без флагов и пакетов
+        # лестница правил выдала бы бессмысленное «Проверить».
+        t = r.telemetry
+        has_telemetry = bool(t.packets or t.flags or t.system_mileage_km is not None)
+        rows = ([self.rules_row(r.parsed, t)]
+                if (r.parsed.plate and r.parsed.date and has_telemetry) else [])
+        return self._facts_payload(parsed, rows, spec_vehicle=r.spec_vehicle,
+                                   needs_remote_diagnostics=r.needs_remote_diagnostics)
