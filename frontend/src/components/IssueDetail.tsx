@@ -2432,7 +2432,9 @@ export function IssueDetail() {
                     </span>
                     <span className="shrink-0 tabular-nums text-muted" title="Дата и время комментария">{formatDate(c.created_at) ?? '—'}</span>
                   </div>
-                  <p className={['leading-relaxed whitespace-pre-wrap', isNotification ? 'text-muted/80' : ''].join(' ')}>{c.content ?? ''}</p>
+                  {/* Комментарии из Okdesk приходят с HTML (письма из Google Docs
+                      тащат <strong id="docs-internal-guid-…">) — показывали сырые теги. */}
+                  <p className={['leading-relaxed whitespace-pre-wrap', isNotification ? 'text-muted/80' : ''].join(' ')}>{stripHtml(c.content)}</p>
                 </div>
               )
             })}
