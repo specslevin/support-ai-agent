@@ -164,7 +164,7 @@ function InstallerExportSection({ issueId }: { issueId: number }) {
             onClick={() => handleCopy('calendar')}
             disabled={isFetching}
             title={copied === 'calendar' ? 'Скопировано' : 'Скопировать текст для календаря'}
-            className="flex items-center justify-center bg-frame border border-border hover:border-accent rounded-lg p-1.5 text-muted hover:text-accent transition-colors disabled:opacity-50"
+            className="flex items-center justify-center bg-frame border border-border hover:border-accent rounded-md p-1.5 text-muted hover:text-accent transition-colors disabled:opacity-50"
           >
             {copied === 'calendar' ? <Check size={15} className="text-success" /> : <Calendar size={15} />}
           </button>
@@ -172,7 +172,7 @@ function InstallerExportSection({ issueId }: { issueId: number }) {
             onClick={() => handleCopy('messenger')}
             disabled={isFetching}
             title={copied === 'messenger' ? 'Скопировано' : 'Скопировать текст для мессенджера'}
-            className="flex items-center justify-center bg-frame border border-border hover:border-accent rounded-lg p-1.5 text-muted hover:text-accent transition-colors disabled:opacity-50"
+            className="flex items-center justify-center bg-frame border border-border hover:border-accent rounded-md p-1.5 text-muted hover:text-accent transition-colors disabled:opacity-50"
           >
             {copied === 'messenger' ? <Check size={15} className="text-success" /> : <MessageSquare size={15} />}
           </button>
@@ -212,7 +212,7 @@ function PreviewCard({ icon: Icon, title, text, onCopy }: {
   icon: LucideIcon; title: string; text: string; onCopy: () => void
 }) {
   return (
-    <div className="rounded-lg border border-border bg-frame p-2.5 space-y-1.5">
+    <div className="rounded-md border border-border bg-frame p-2.5 space-y-1.5">
       <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-muted">
         <Icon size={11} className="text-accent" />
         <span>{title}</span>
@@ -250,7 +250,7 @@ function AssigneeSection({ issueId, assigneeName }: { issueId: number; assigneeN
         <button
           onClick={() => assignMutation.mutate(currentUser.id)}
           disabled={assignMutation.isPending}
-          className="text-[10px] px-2 py-0.5 rounded-lg border border-accent/50 text-accent hover:bg-accent/10 transition-colors disabled:opacity-40 shrink-0"
+          className="text-[10px] px-2 py-0.5 rounded-md border border-accent/50 text-accent hover:bg-accent/10 transition-colors disabled:opacity-40 shrink-0"
         >
           Взять себе
         </button>
@@ -260,13 +260,13 @@ function AssigneeSection({ issueId, assigneeName }: { issueId: number; assigneeN
         <button
           onClick={() => setPickerOpen(o => !o)}
           disabled={assignMutation.isPending}
-          className="flex items-center px-1.5 py-0.5 rounded-lg border border-border hover:border-accent text-muted hover:text-white transition-colors disabled:opacity-40"
+          className="flex items-center px-1.5 py-0.5 rounded-md border border-border hover:border-accent text-muted hover:text-white transition-colors disabled:opacity-40"
         >
           <ChevronDown size={13} />
         </button>
 
         {pickerOpen && (
-          <div className="absolute right-0 top-full mt-1 bg-card border border-border rounded-lg py-1 z-50 w-40 shadow-lg">
+          <div className="absolute right-0 top-full mt-1 bg-card border border-border rounded-md py-1 z-50 w-40 shadow-lg">
             <EmployeeMenu selectedName={assigneeName} onPick={emp => assignMutation.mutate(emp.id)} />
           </div>
         )}
@@ -308,7 +308,7 @@ function TypeSection({ issueId, typeName, typeCode }: { issueId: number; typeNam
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute left-10 top-full mt-1 z-50 bg-card border border-border rounded-lg py-1 min-w-[200px] max-h-72 overflow-y-auto shadow-lg">
+          <div className="absolute left-10 top-full mt-1 z-50 bg-card border border-border rounded-md py-1 min-w-[200px] max-h-72 overflow-y-auto shadow-lg">
             <TypeMenu selectedCode={typeCode} onPick={t => { mutation.mutate(t.code); setOpen(false) }} />
           </div>
         </>
@@ -372,7 +372,7 @@ function EditableParameters({ d, issueId }: { d: OkdeskDetail; issueId: number }
               onChange={e => setVals(v => ({ ...v, [ep.code]: e.target.value }))}
               disabled={isDemo || mutation.isPending}
               placeholder="—"
-              className="bg-frame border border-border rounded-lg px-2 py-1 text-xs text-white placeholder:text-muted/50 focus:border-accent outline-none disabled:opacity-50 disabled:cursor-not-allowed"
+              className="bg-frame border border-border rounded-md px-2 py-1 text-xs text-white placeholder:text-muted/50 focus:border-accent outline-none disabled:opacity-50 disabled:cursor-not-allowed"
             />
           </div>
         ))}
@@ -393,7 +393,7 @@ function EditableParameters({ d, issueId }: { d: OkdeskDetail; issueId: number }
         onClick={() => mutation.mutate()}
         disabled={isDemo || mutation.isPending || !dirty}
         title={isDemo ? 'Недоступно в демо-режиме' : 'Сохранить параметры в Okdesk'}
-        className={`flex items-center justify-center gap-1.5 w-full bg-card border border-border hover:border-accent text-xs font-semibold py-1.5 rounded-lg transition-colors disabled:opacity-40 text-muted hover:text-accent ${mutation.isPending ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
+        className={`flex items-center justify-center gap-1.5 w-full bg-card border border-border hover:border-accent text-xs font-semibold py-1.5 rounded-md transition-colors disabled:opacity-40 text-muted hover:text-accent ${mutation.isPending ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
       >
         {mutation.isPending ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
         {mutation.isPending ? 'Сохраняю…' : 'Сохранить параметры'}
@@ -641,7 +641,7 @@ export function TemplatePicker({ onSelect, onSelectFull, issueId }: { onSelect: 
       <button
         onClick={() => setOpen(true)}
         title="Шаблоны ответов"
-        className="flex items-center justify-center shrink-0 px-2.5 py-1.5 bg-frame border border-border hover:border-accent rounded-lg transition-colors text-muted hover:text-accent"
+        className="flex items-center justify-center shrink-0 px-2.5 py-1.5 bg-frame border border-border hover:border-accent rounded-md transition-colors text-muted hover:text-accent"
       >
         <FileText size={15} />
       </button>
@@ -674,13 +674,13 @@ export function TemplatePicker({ onSelect, onSelectFull, issueId }: { onSelect: 
                     setFill(f => f && { ...f, values: { ...f.values, [name]: e.target.value } })
                   }
                   placeholder={`[${name}]`}
-                  className="w-full bg-frame border border-border rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:border-accent"
+                  className="w-full bg-frame border border-border rounded-md px-3 py-1.5 text-xs focus:outline-none focus:border-accent"
                 />
               </div>
             ))}
             <div>
               <span className="block text-[10px] uppercase tracking-widest text-muted mb-1">Предпросмотр</span>
-              <p className="text-[11px] text-white whitespace-pre-wrap bg-frame border border-border rounded-lg px-3 py-2 leading-relaxed">{preview}</p>
+              <p className="text-[11px] text-white whitespace-pre-wrap bg-frame border border-border rounded-md px-3 py-2 leading-relaxed">{preview}</p>
             </div>
           </div>
           <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-border shrink-0">
@@ -717,14 +717,14 @@ export function TemplatePicker({ onSelect, onSelectFull, issueId }: { onSelect: 
             placeholder="Поиск..."
             value={search}
             onChange={e => setSearch(e.target.value)}
-            className="flex-1 bg-frame border border-border rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:border-accent"
+            className="flex-1 bg-frame border border-border rounded-md px-3 py-1.5 text-xs focus:outline-none focus:border-accent"
           />
           {categoryNames.length > 0 && (
             <select
               value={catFilter}
               onChange={e => setCatFilter(e.target.value)}
               title="Фильтр по категории"
-              className="shrink-0 max-w-[40%] bg-frame border border-border rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-accent"
+              className="shrink-0 max-w-[40%] bg-frame border border-border rounded-md px-2 py-1.5 text-xs focus:outline-none focus:border-accent"
             >
               <option value="">Все категории</option>
               {categoryNames.map(c => (
@@ -855,7 +855,7 @@ function StatusActionModal({
                 type="datetime-local"
                 value={delayTo}
                 onChange={e => setDelayTo(e.target.value)}
-                className="w-full bg-frame border border-border rounded-lg px-3 py-2 text-xs focus:outline-none focus:border-accent"
+                className="w-full bg-frame border border-border rounded-md px-3 py-2 text-xs focus:outline-none focus:border-accent"
               />
             </div>
           )}
@@ -871,7 +871,7 @@ function StatusActionModal({
                 value={comment}
                 onChange={e => setComment(e.target.value)}
                 rows={4}
-                className="flex-1 bg-frame border border-border rounded-lg px-3 py-2 text-xs resize-none focus:outline-none focus:border-accent leading-relaxed"
+                className="flex-1 bg-frame border border-border rounded-md px-3 py-2 text-xs resize-none focus:outline-none focus:border-accent leading-relaxed"
               />
               <TemplatePicker onSelect={text => setComment(text)} issueId={issueId} />
             </div>
@@ -893,7 +893,7 @@ function StatusActionModal({
             disabled={!canSubmit || mutation.isPending}
             onClick={() => mutation.mutate()}
             style={canSubmit && !mutation.isPending ? statusPillStyle(targetStatus.code) : undefined}
-            className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold transition-opacity disabled:opacity-50 disabled:cursor-not-allowed disabled:bg-frame disabled:border disabled:border-border disabled:text-white ${mutation.isPending ? 'animate-pulse cursor-wait' : ''}`}
+            className={`flex items-center gap-1.5 px-4 py-2 rounded-md text-xs font-semibold transition-opacity disabled:opacity-50 disabled:cursor-not-allowed disabled:bg-frame disabled:border disabled:border-border disabled:text-white ${mutation.isPending ? 'animate-pulse cursor-wait' : ''}`}
           >
             {mutation.isPending ? <Working label="Отправляю…" /> : <><Check size={14} /> {targetStatus.label}</>}
           </button>
@@ -993,7 +993,7 @@ function AutoAnalysis({ issueId, issueTitle, companyName }: { issueId: number; i
           onClick={() => run.mutate()}
           disabled={run.isPending || demoAlreadyAnalyzed}
           title={demoAlreadyAnalyzed ? 'Демо: анализ доступен один раз' : compact ? 'Обновить анализ' : undefined}
-          className={`flex items-center justify-center gap-2 bg-card border border-accent/40 text-accent hover:bg-accent/10 text-xs font-semibold rounded-lg transition-colors disabled:opacity-40 ${compact ? (run.isPending ? 'px-2.5 py-1.5' : 'p-1.5') : 'w-full py-2'} ${run.isPending ? 'animate-pulse cursor-wait' : ''} ${demoAlreadyAnalyzed ? 'cursor-not-allowed' : ''}`}
+          className={`flex items-center justify-center gap-2 bg-card border border-accent/40 text-accent hover:bg-accent/10 text-xs font-semibold rounded-md transition-colors disabled:opacity-40 ${compact ? (run.isPending ? 'px-2.5 py-1.5' : 'p-1.5') : 'w-full py-2'} ${run.isPending ? 'animate-pulse cursor-wait' : ''} ${demoAlreadyAnalyzed ? 'cursor-not-allowed' : ''}`}
         >
           {run.isPending ? (
             <Working label={compact ? 'Анализирую…' : 'Анализирую заявку и данные geo…'} />
@@ -1015,7 +1015,7 @@ function AutoAnalysis({ issueId, issueTitle, companyName }: { issueId: number; i
 
       {/* Пока идёт ПЕРВЫЙ анализ (результата ещё нет) — заметная заглушка в области данных */}
       {run.isPending && !shown && (
-        <div className="flex items-center gap-2 bg-frame border border-accent/30 rounded-lg px-3 py-3 text-xs text-secondary animate-pulse">
+        <div className="flex items-center gap-2 bg-frame border border-accent/30 rounded-md px-3 py-3 text-xs text-secondary animate-pulse">
           <Loader2 size={15} className="animate-spin text-accent shrink-0" />
           <span>ИИ анализирует заявку и данные… это может занять несколько секунд.</span>
         </div>
@@ -1032,7 +1032,7 @@ function AutoAnalysis({ issueId, issueTitle, companyName }: { issueId: number; i
 
           {/* Заметное предупреждение о вероятной ошибке клиента в гос.номере. */}
           {plateSuspect && (
-            <div className="flex items-start gap-2 bg-warning/10 border border-warning/40 rounded-lg px-3 py-2.5 text-warning">
+            <div className="flex items-start gap-2 bg-warning/10 border border-warning/40 rounded-md px-3 py-2.5 text-warning">
               <AlertTriangle size={15} className="shrink-0 mt-0.5" />
               <span className="text-[11px] leading-relaxed">
                 {p?.plate_format_suspect
@@ -1048,12 +1048,12 @@ function AutoAnalysis({ issueId, issueTitle, companyName }: { issueId: number; i
           {shown.draft_answer && (
             <div className="space-y-1.5">
               {shown.needs_remote_diagnostics && (
-                <div className="flex items-start gap-1.5 bg-warning/10 border border-warning/30 rounded-lg px-3 py-2 text-[11px] text-warning leading-relaxed">
+                <div className="flex items-start gap-1.5 bg-warning/10 border border-warning/30 rounded-md px-3 py-2 text-[11px] text-warning leading-relaxed">
                   <AlertTriangle size={13} className="shrink-0 mt-0.5" /> Требуется удалённая диагностика (клиент подтвердил питание)
                 </div>
               )}
               {shown.spec_vehicle && (
-                <div className="flex items-start gap-1.5 bg-warning/10 border border-warning/30 rounded-lg px-3 py-2 text-[11px] text-warning leading-relaxed">
+                <div className="flex items-start gap-1.5 bg-warning/10 border border-warning/30 rounded-md px-3 py-2 text-[11px] text-warning leading-relaxed">
                   <AlertTriangle size={13} className="shrink-0 mt-0.5" /> Спецтехника — оценивать по факту работы
                 </div>
               )}
@@ -1220,7 +1220,7 @@ function SingleParseTable({ issueId, onSelect }: { issueId: number; onSelect?: (
             <td className="pr-2">
               <span className={VERDICT_STYLE[res.category] ?? 'text-white'}>{res.category}</span>
               {res.spec_vehicle && (
-                <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-full bg-warning/15 text-warning text-[9px] font-medium align-middle">
+                <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-pill bg-warning/15 text-warning text-[9px] font-medium align-middle">
                   спецтехника
                 </span>
               )}
@@ -1501,7 +1501,7 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
           onClick={startRun}
           disabled={ocrBusy || isDemo}
           title={isDemo ? 'Недоступно в демо-режиме' : compact ? 'Обновить разбор' : undefined}
-          className={`flex items-center justify-center gap-2 bg-card border border-info/40 text-info hover:bg-info/10 text-xs font-semibold rounded-lg transition-colors disabled:opacity-40 ${compact ? (ocrBusy ? 'px-2.5 py-1.5' : 'p-1.5') : 'w-full py-2'} ${ocrBusy ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
+          className={`flex items-center justify-center gap-2 bg-card border border-info/40 text-info hover:bg-info/10 text-xs font-semibold rounded-md transition-colors disabled:opacity-40 ${compact ? (ocrBusy ? 'px-2.5 py-1.5' : 'p-1.5') : 'w-full py-2'} ${ocrBusy ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
         >
           {ocrBusy ? (
             <Working label={compact ? 'Распознаю…' : 'Распознаю вложения…'} />
@@ -1515,7 +1515,7 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
         </button>
       </div>
       {ocrProg && ocrProg.complete === false && (
-        <div className="flex items-center gap-2 bg-frame border border-info/30 rounded-lg px-3 py-2 text-[11px] text-secondary">
+        <div className="flex items-center gap-2 bg-frame border border-info/30 rounded-md px-3 py-2 text-[11px] text-secondary">
           <Loader2 size={13} className={`text-info shrink-0 ${ocrBusy ? 'animate-spin' : ''}`} />
           <span>
             Распознавание больших сканов: вложений {ocrProg.attachments_done}/{ocrProg.attachments_total}, страниц {ocrProg.pages_done}.
@@ -1529,7 +1529,7 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
 
       {/* Первый разбор (результата ещё нет) — заметная заглушка */}
       {run.isPending && !res && (
-        <div className="flex items-center gap-2 bg-frame border border-info/30 rounded-lg px-3 py-3 text-xs text-secondary animate-pulse">
+        <div className="flex items-center gap-2 bg-frame border border-info/30 rounded-md px-3 py-3 text-xs text-secondary animate-pulse">
           <Loader2 size={15} className="animate-spin text-info shrink-0" />
           <span>ИИ разбирает объекты заявки… это может занять несколько секунд.</span>
         </div>
@@ -1645,7 +1645,7 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
                         {o.spec_vehicle && (
                           <span
                             title="Спецтехника без км-пробега — оценивать по факту работы/моточасам"
-                            className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-full bg-warning/15 text-warning text-[9px] font-medium align-middle"
+                            className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-pill bg-warning/15 text-warning text-[9px] font-medium align-middle"
                           >
                             спецтехника
                           </span>
@@ -1768,7 +1768,7 @@ function AttachmentsSection({ issueId }: { issueId: number }) {
               target="_blank"
               rel="noreferrer"
               title="Открыть / скачать вложение"
-              className="flex items-center gap-2.5 bg-frame border border-border hover:border-accent rounded-lg px-3 py-2 group transition-colors"
+              className="flex items-center gap-2.5 bg-frame border border-border hover:border-accent rounded-md px-3 py-2 group transition-colors"
             >
               <KI size={18} className="shrink-0 text-muted" />
               <div className="flex-1 min-w-0">
@@ -1988,14 +1988,14 @@ function AiFeedbackPanel({ issueId }: { issueId: number }) {
     <div className="space-y-2">
       {/* Текущая оценка */}
       {feedback && (
-        <div className="bg-frame rounded-lg px-3 py-2 space-y-1 text-[11px]">
+        <div className="bg-frame rounded-md px-3 py-2 space-y-1 text-[11px]">
           <div className="flex items-center gap-2">
             {feedback.rating === 'good' ? (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-green-500/15 text-green-400 font-medium">
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-pill bg-green-500/15 text-green-400 font-medium">
                 <Check size={11} /> верно
               </span>
             ) : (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-orange-500/15 text-orange-400 font-medium">
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-pill bg-orange-500/15 text-orange-400 font-medium">
                 <X size={11} /> с ошибкой
               </span>
             )}
@@ -2023,7 +2023,7 @@ function AiFeedbackPanel({ issueId }: { issueId: number }) {
           onClick={saveGood}
           disabled={submit.isPending || isDemo}
           title={isDemo ? 'Недоступно в демо-режиме' : 'Разобрано верно'}
-          className={`flex items-center justify-center p-1.5 rounded-lg border transition-colors disabled:opacity-40 ${
+          className={`flex items-center justify-center p-1.5 rounded-md border transition-colors disabled:opacity-40 ${
             feedback?.rating === 'good'
               ? 'border-green-500/60 bg-green-500/10 text-green-400'
               : 'border-border text-muted hover:text-green-400 hover:border-green-500/50'
@@ -2035,7 +2035,7 @@ function AiFeedbackPanel({ issueId }: { issueId: number }) {
           onClick={() => setShowBadForm(v => !v)}
           disabled={submit.isPending || isDemo}
           title={isDemo ? 'Недоступно в демо-режиме' : 'Ошибка разбора'}
-          className={`flex items-center justify-center p-1.5 rounded-lg border transition-colors disabled:opacity-40 ${
+          className={`flex items-center justify-center p-1.5 rounded-md border transition-colors disabled:opacity-40 ${
             feedback?.rating === 'bad' || showBadForm
               ? 'border-orange-500/60 bg-orange-500/10 text-orange-400'
               : 'border-border text-muted hover:text-orange-400 hover:border-orange-500/50'
@@ -2047,13 +2047,13 @@ function AiFeedbackPanel({ issueId }: { issueId: number }) {
 
       {/* Форма «ошибка разбора» */}
       {showBadForm && !isDemo && (
-        <div className="bg-frame border border-border rounded-lg px-3 py-2.5 space-y-2">
+        <div className="bg-frame border border-border rounded-md px-3 py-2.5 space-y-2">
           <div>
             <label className="block text-[10px] uppercase tracking-widest text-muted/60 mb-1">Тип ошибки</label>
             <select
               value={errorKind}
               onChange={e => setErrorKind(e.target.value as import('../types').AiFeedbackErrorKind)}
-              className="w-full bg-card border border-border rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-accent"
+              className="w-full bg-card border border-border rounded-md px-2 py-1.5 text-xs focus:outline-none focus:border-accent"
             >
               {AI_ERROR_KINDS.map(k => (
                 <option key={k.value} value={k.value} className="bg-card text-primary">{k.label}</option>
@@ -2067,7 +2067,7 @@ function AiFeedbackPanel({ issueId }: { issueId: number }) {
               onChange={e => setFbComment(e.target.value)}
               rows={2}
               placeholder="Что именно не так…"
-              className="w-full bg-card border border-border rounded-lg px-2 py-1.5 text-xs resize-none focus:outline-none focus:border-accent leading-relaxed"
+              className="w-full bg-card border border-border rounded-md px-2 py-1.5 text-xs resize-none focus:outline-none focus:border-accent leading-relaxed"
             />
           </div>
           <div>
@@ -2077,7 +2077,7 @@ function AiFeedbackPanel({ issueId }: { issueId: number }) {
               value={correctCategory}
               onChange={e => setCorrectCategory(e.target.value)}
               placeholder="напр. Глушение"
-              className="w-full bg-card border border-border rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-accent"
+              className="w-full bg-card border border-border rounded-md px-2 py-1.5 text-xs focus:outline-none focus:border-accent"
             />
           </div>
           <button
@@ -2235,7 +2235,7 @@ export function IssueDetail() {
                 {statusDropdownOpen && (
                   <>
                     <div className="fixed inset-0 z-40" onClick={() => setStatusDropdownOpen(false)} />
-                    <div className="absolute left-0 top-full mt-1 z-50 rounded-lg overflow-hidden shadow-lg border border-border min-w-[160px]">
+                    <div className="absolute left-0 top-full mt-1 z-50 rounded-md overflow-hidden shadow-lg border border-border min-w-[160px]">
                       {getAvailableStatuses(issue.status, od.type_code).map(s => (
                         <button
                           key={s.code}
@@ -2275,14 +2275,14 @@ export function IssueDetail() {
           <button
             onClick={() => setDetailExpanded(!detailExpanded)}
             title={detailExpanded ? 'Вернуть список заявок' : 'Развернуть карточку на всю ширину (две колонки)'}
-            className={`flex items-center justify-center p-1.5 rounded-lg border transition-colors ${detailExpanded ? 'border-accent text-accent bg-accent/10' : 'border-border text-muted hover:text-white hover:border-accent'}`}
+            className={`flex items-center justify-center p-1.5 rounded-md border transition-colors ${detailExpanded ? 'border-accent text-accent bg-accent/10' : 'border-border text-muted hover:text-white hover:border-accent'}`}
           >
             {detailExpanded ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
           </button>
           <button
             onClick={() => trackOpen ? setTrackOpen(false) : openTrack()}
             title={trackOpen ? 'Скрыть карту и графики' : 'Карта трека и графики телеметрии'}
-            className={`flex items-center justify-center p-1.5 rounded-lg border transition-colors ${trackOpen ? 'border-accent text-accent bg-accent/10' : 'border-border text-muted hover:text-white hover:border-accent'}`}
+            className={`flex items-center justify-center p-1.5 rounded-md border transition-colors ${trackOpen ? 'border-accent text-accent bg-accent/10' : 'border-border text-muted hover:text-white hover:border-accent'}`}
           >
             {trackOpen ? <PanelRightClose size={15} /> : <Map size={15} />}
           </button>
@@ -2295,7 +2295,7 @@ export function IssueDetail() {
           а не по ширине окна — рядом может быть открыта панель трека. */}
       <div className="flex-1 overflow-y-auto px-5 py-4 issue-body">
         {resolveNotice && (
-          <div className="flex items-start gap-2 bg-warning/10 border border-warning/30 rounded-lg px-3 py-2 text-xs text-warning mb-4">
+          <div className="flex items-start gap-2 bg-warning/10 border border-warning/30 rounded-md px-3 py-2 text-xs text-warning mb-4">
             <AlertTriangle size={14} className="shrink-0 mt-0.5" />
             <span className="flex-1">{resolveNotice}</span>
             <button onClick={() => setResolveNotice(null)} className="shrink-0 text-warning/60 hover:text-warning"><X size={14} /></button>
@@ -2408,7 +2408,7 @@ export function IssueDetail() {
               return (
                 <div
                   key={c.id}
-                  className={`rounded-lg px-3 py-2.5 text-xs space-y-1 ${baseStyle}`}
+                  className={`rounded-md px-3 py-2.5 text-xs space-y-1 ${baseStyle}`}
                 >
                   <div className="flex items-center justify-between gap-2 text-muted">
                     <span className="flex items-center gap-1.5 min-w-0">
