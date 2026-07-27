@@ -1,3 +1,5 @@
+import { useState } from 'react'
+import { Lightbulb } from 'lucide-react'
 import type { AutomationTelemetry } from '../types'
 
 interface TelemetryPanelProps {
@@ -7,6 +9,7 @@ interface TelemetryPanelProps {
   needsReview: boolean
   autoEligible?: boolean            // можно отправлять авто-ответ
   subtitle?: string | null          // подпись справа в шапке, например «Е456КХ163 · 21.07.2026»
+  reasoning?: string | null         // обоснование вердикта от ИИ — под метриками
 }
 
 const CATEGORY_PILL: Record<string, string> = {
@@ -88,7 +91,9 @@ export function TelemetryPanel({
   needsReview,
   autoEligible = false,
   subtitle = null,
+  reasoning = null,
 }: TelemetryPanelProps) {
+  const [reasoningOpen, setReasoningOpen] = useState(false)
   const pillClass = (category && CATEGORY_PILL[category]) || 'bg-frame text-secondary'
   const percent = confidence != null ? Math.round(confidence * 100) : null
 
@@ -148,6 +153,25 @@ export function TelemetryPanel({
             </div>
           )}
         </>
+      )}
+
+      {/* Обоснование вердикта — вне ветки телеметрии: ИИ может объяснить вердикт
+          и когда метрик нет (объект не найден, нет данных за день).
+          Иконка вынесена из абзаца: line-clamp переключает display на
+          -webkit-box и сломал бы flex на том же элементе. */}
+      {reasoning && (
+        <div className="flex items-start gap-1.5 text-[11px] text-muted leading-relaxed">
+          <Lightbulb size={13} className="shrink-0 mt-0.5" />
+          <div className="min-w-0">
+            <p className={reasoningOpen ? '' : 'line-clamp-2'}>{reasoning}</p>
+            <button
+              onClick={() => setReasoningOpen(v => !v)}
+              className="mt-0.5 text-accent hover:underline"
+            >
+              {reasoningOpen ? 'Свернуть' : 'Подробнее'}
+            </button>
+          </div>
+        </div>
       )}
     </div>
   )

@@ -58,11 +58,23 @@ function MetaRow({ label, children }: { label: string; children: React.ReactNode
   )
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ title, children, defaultOpen = true }: {
+  title: string
+  children: React.ReactNode
+  defaultOpen?: boolean
+}) {
+  const [open, setOpen] = useState(defaultOpen)
   return (
     <div className="space-y-2">
-      <h3 className="text-[10px] font-semibold uppercase tracking-widest text-muted/60">{title}</h3>
-      {children}
+      <button
+        onClick={() => setOpen(v => !v)}
+        title={open ? `Свернуть «${title}»` : `Раскрыть «${title}»`}
+        className="flex w-full items-center gap-1 text-[10px] font-semibold uppercase tracking-widest text-muted/60 hover:text-muted transition-colors"
+      >
+        {open ? <ChevronUp size={12} className="shrink-0" /> : <ChevronDown size={12} className="shrink-0" />}
+        {title}
+      </button>
+      {open && children}
     </div>
   )
 }
@@ -151,18 +163,18 @@ function InstallerExportSection({ issueId }: { issueId: number }) {
           <button
             onClick={() => handleCopy('calendar')}
             disabled={isFetching}
-            className="flex items-center gap-1.5 bg-frame border border-border hover:border-accent rounded-lg px-3 py-1.5 text-xs text-muted hover:text-accent transition-colors disabled:opacity-50"
+            title={copied === 'calendar' ? 'Скопировано' : 'Скопировать текст для календаря'}
+            className="flex items-center justify-center bg-frame border border-border hover:border-accent rounded-lg p-1.5 text-muted hover:text-accent transition-colors disabled:opacity-50"
           >
-            {copied === 'calendar' ? <Check size={14} className="text-success" /> : <Calendar size={14} />}
-            {copied === 'calendar' ? 'Скопировано' : 'Копировать (календарь)'}
+            {copied === 'calendar' ? <Check size={15} className="text-success" /> : <Calendar size={15} />}
           </button>
           <button
             onClick={() => handleCopy('messenger')}
             disabled={isFetching}
-            className="flex items-center gap-1.5 bg-frame border border-border hover:border-accent rounded-lg px-3 py-1.5 text-xs text-muted hover:text-accent transition-colors disabled:opacity-50"
+            title={copied === 'messenger' ? 'Скопировано' : 'Скопировать текст для мессенджера'}
+            className="flex items-center justify-center bg-frame border border-border hover:border-accent rounded-lg p-1.5 text-muted hover:text-accent transition-colors disabled:opacity-50"
           >
-            {copied === 'messenger' ? <Check size={14} className="text-success" /> : <Send size={14} />}
-            {copied === 'messenger' ? 'Скопировано' : 'Копировать (мессенджер)'}
+            {copied === 'messenger' ? <Check size={15} className="text-success" /> : <MessageSquare size={15} />}
           </button>
           {isFetching && <Working label="Собираю…" className="text-muted" />}
         </div>
@@ -349,7 +361,7 @@ function EditableParameters({ d, issueId }: { d: OkdeskDetail; issueId: number }
   const otherParams = d.parameters.filter(p => !EDITABLE_PARAMS.some(ep => ep.match.test(p.name)))
 
   return (
-    <Section title="Параметры заявки">
+    <Section title="Параметры заявки" defaultOpen={false}>
       <div className="space-y-2">
         {EDITABLE_PARAMS.map(ep => (
           <div key={ep.code} className="grid grid-cols-[140px_1fr] items-center gap-x-3 gap-y-1">
@@ -410,7 +422,7 @@ function OkdeskInfo({ d, issueId, assigneeName }: { d: OkdeskDetail; issueId: nu
       </Section>
 
       {/* Сроки */}
-      <Section title="Сроки">
+      <Section title="Сроки" defaultOpen={false}>
         <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
           {deadline && (
             <MetaRow label="Срок выполнения">
@@ -970,22 +982,28 @@ function AutoAnalysis({ issueId, issueTitle, companyName }: { issueId: number; i
   // одиночный автоанализ взял бы только первый ТС и вводил бы в заблуждение.
   if (isBatch) return null
 
+  // Анализ уже есть → кнопка сжимается в иконку «обновить» и уходит вправо;
+  // первичный запуск остаётся широкой текстовой кнопкой (главное действие блока).
+  const compact = !!shown
+
   return (
     <div className="space-y-3">
-      <button
-        onClick={() => run.mutate()}
-        disabled={run.isPending || demoAlreadyAnalyzed}
-        title={demoAlreadyAnalyzed ? 'Демо: анализ доступен один раз' : undefined}
-        className={`flex items-center justify-center gap-2 w-full bg-card border border-accent/40 text-accent hover:bg-accent/10 text-xs font-semibold py-2 rounded-lg transition-colors disabled:opacity-40 ${run.isPending ? 'animate-pulse cursor-wait' : ''} ${demoAlreadyAnalyzed ? 'cursor-not-allowed' : ''}`}
-      >
-        {run.isPending ? (
-          <Working label="Анализирую заявку и данные geo…" />
-        ) : shown ? (
-          <><RefreshCw size={14} /> Обновить анализ</>
-        ) : (
-          <><Bot size={14} /> Автоанализ заявки</>
-        )}
-      </button>
+      <div className={compact ? 'flex justify-end' : ''}>
+        <button
+          onClick={() => run.mutate()}
+          disabled={run.isPending || demoAlreadyAnalyzed}
+          title={demoAlreadyAnalyzed ? 'Демо: анализ доступен один раз' : compact ? 'Обновить анализ' : undefined}
+          className={`flex items-center justify-center gap-2 bg-card border border-accent/40 text-accent hover:bg-accent/10 text-xs font-semibold rounded-lg transition-colors disabled:opacity-40 ${compact ? (run.isPending ? 'px-2.5 py-1.5' : 'p-1.5') : 'w-full py-2'} ${run.isPending ? 'animate-pulse cursor-wait' : ''} ${demoAlreadyAnalyzed ? 'cursor-not-allowed' : ''}`}
+        >
+          {run.isPending ? (
+            <Working label={compact ? 'Анализирую…' : 'Анализирую заявку и данные geo…'} />
+          ) : compact ? (
+            <RefreshCw size={15} />
+          ) : (
+            <><Bot size={14} /> Автоанализ заявки</>
+          )}
+        </button>
+      </div>
 
       {isCached && (
         <p className="flex items-center gap-1 text-[10px] text-muted/70"><Database size={11} /> показан сохранённый анализ{cachedQ.data?.created_at ? ` от ${new Date(cachedQ.data.created_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}` : ''}</p>
@@ -1039,9 +1057,8 @@ function AutoAnalysis({ issueId, issueTitle, companyName }: { issueId: number; i
                   <AlertTriangle size={13} className="shrink-0 mt-0.5" /> Спецтехника — оценивать по факту работы
                 </div>
               )}
-              {shown.reasoning && !shown.error && (
-                <p className="flex items-start gap-1.5 text-muted leading-relaxed text-[11px]"><Lightbulb size={13} className="shrink-0 mt-0.5" /> {shown.reasoning}</p>
-              )}
+              {/* Обоснование вердикта переехало в блок «② Телеметрия и вердикт» —
+                  оно объясняет метрики, а не разбор. */}
             </div>
           )}
         </div>
@@ -1473,24 +1490,30 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
     }
   }
 
+  // Разбор уже есть → иконочная кнопка «обновить» справа. Первичный запуск и
+  // «продолжить распознавание» остаются текстовыми: без подписи их смысл теряется.
+  const compact = !!res && !ocrPending
+
   return (
     <div className="space-y-2">
-      <button
-        onClick={startRun}
-        disabled={ocrBusy || isDemo}
-        title={isDemo ? 'Недоступно в демо-режиме' : undefined}
-        className={`flex items-center justify-center gap-2 w-full bg-card border border-info/40 text-info hover:bg-info/10 text-xs font-semibold py-2 rounded-lg transition-colors disabled:opacity-40 ${ocrBusy ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
-      >
-        {ocrBusy ? (
-          <Working label="Распознаю вложения…" />
-        ) : ocrPending ? (
-          <><RefreshCw size={14} /> Продолжить распознавание</>
-        ) : res ? (
-          <><RefreshCw size={14} /> Обновить разбор</>
-        ) : (
-          <><Layers size={14} /> Разбор заявки</>
-        )}
-      </button>
+      <div className={compact ? 'flex justify-end' : ''}>
+        <button
+          onClick={startRun}
+          disabled={ocrBusy || isDemo}
+          title={isDemo ? 'Недоступно в демо-режиме' : compact ? 'Обновить разбор' : undefined}
+          className={`flex items-center justify-center gap-2 bg-card border border-info/40 text-info hover:bg-info/10 text-xs font-semibold rounded-lg transition-colors disabled:opacity-40 ${compact ? (ocrBusy ? 'px-2.5 py-1.5' : 'p-1.5') : 'w-full py-2'} ${ocrBusy ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
+        >
+          {ocrBusy ? (
+            <Working label={compact ? 'Распознаю…' : 'Распознаю вложения…'} />
+          ) : ocrPending ? (
+            <><RefreshCw size={14} /> Продолжить распознавание</>
+          ) : res ? (
+            <RefreshCw size={15} />
+          ) : (
+            <><Layers size={14} /> Разбор заявки</>
+          )}
+        </button>
+      </div>
       {ocrProg && ocrProg.complete === false && (
         <div className="flex items-center gap-2 bg-frame border border-info/30 rounded-lg px-3 py-2 text-[11px] text-secondary">
           <Loader2 size={13} className={`text-info shrink-0 ${ocrBusy ? 'animate-spin' : ''}`} />
@@ -1712,10 +1735,28 @@ function AttachmentsSection({ issueId }: { issueId: number }) {
     staleTime: 5 * 60_000,
   })
 
+  // Свёрнуто по умолчанию: вложения в рельсе нужны точечно, а список из
+  // нескольких файлов оттесняет вниз более важный контекст заявки.
+  const [open, setOpen] = useState(false)
+
   if (items.length === 0) return null
 
   return (
-    <Block icon={Paperclip} title="Вложения" count={items.length}>
+    <Block
+      icon={Paperclip}
+      title="Вложения"
+      count={items.length}
+      right={
+        <button
+          onClick={() => setOpen(v => !v)}
+          title={open ? 'Свернуть список вложений' : 'Показать вложения'}
+          className="flex items-center text-muted hover:text-white transition-colors"
+        >
+          {open ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+        </button>
+      }
+    >
+      {open && (
       <div className="space-y-1.5">
         {items.map(a => {
           const KI = KIND_ICON[a.kind] ?? Paperclip
@@ -1743,6 +1784,7 @@ function AttachmentsSection({ issueId }: { issueId: number }) {
           )
         })}
       </div>
+      )}
     </Block>
   )
 }
@@ -1975,31 +2017,31 @@ function AiFeedbackPanel({ issueId }: { issueId: number }) {
         </div>
       )}
 
-      {/* Кнопки оценки */}
-      <div className="flex gap-2">
+      {/* Кнопки оценки — компактные иконки в одну строку справа */}
+      <div className="flex justify-end gap-2">
         <button
           onClick={saveGood}
           disabled={submit.isPending || isDemo}
           title={isDemo ? 'Недоступно в демо-режиме' : 'Разобрано верно'}
-          className={`flex items-center justify-center gap-1.5 flex-1 text-xs font-semibold py-1.5 rounded-lg border transition-colors disabled:opacity-40 ${
+          className={`flex items-center justify-center p-1.5 rounded-lg border transition-colors disabled:opacity-40 ${
             feedback?.rating === 'good'
               ? 'border-green-500/60 bg-green-500/10 text-green-400'
               : 'border-border text-muted hover:text-green-400 hover:border-green-500/50'
           } ${isDemo ? 'cursor-not-allowed' : ''}`}
         >
-          <ThumbsUp size={14} /> Разобрано верно
+          <ThumbsUp size={15} />
         </button>
         <button
           onClick={() => setShowBadForm(v => !v)}
           disabled={submit.isPending || isDemo}
           title={isDemo ? 'Недоступно в демо-режиме' : 'Ошибка разбора'}
-          className={`flex items-center justify-center gap-1.5 flex-1 text-xs font-semibold py-1.5 rounded-lg border transition-colors disabled:opacity-40 ${
+          className={`flex items-center justify-center p-1.5 rounded-lg border transition-colors disabled:opacity-40 ${
             feedback?.rating === 'bad' || showBadForm
               ? 'border-orange-500/60 bg-orange-500/10 text-orange-400'
               : 'border-border text-muted hover:text-orange-400 hover:border-orange-500/50'
           } ${isDemo ? 'cursor-not-allowed' : ''}`}
         >
-          <ThumbsDown size={14} /> Ошибка разбора
+          <ThumbsDown size={15} />
         </button>
       </div>
 
@@ -2106,6 +2148,10 @@ export function IssueDetail() {
     enabled: selectedIssueId != null,
     staleTime: 30_000,
   })
+  // Лента комментариев по умолчанию показывает только последний — старая
+  // переписка нужна редко, а вся лента уводит блок «Ответ» далеко вверх.
+  const [allComments, setAllComments] = useState(false)
+  const visibleComments = allComments ? comments : comments.slice(-1)
 
   // Кол-во извлекаемых вложений для управления видимостью AutoAnalysis
   const { data: issueAttachments = [] } = useQuery({
@@ -2229,18 +2275,18 @@ export function IssueDetail() {
           <button
             onClick={() => setDetailExpanded(!detailExpanded)}
             title={detailExpanded ? 'Вернуть список заявок' : 'Развернуть карточку на всю ширину (две колонки)'}
-            className={`flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border transition-colors ${detailExpanded ? 'border-accent text-accent bg-accent/10' : 'border-border text-muted hover:text-white hover:border-accent'}`}
+            className={`flex items-center justify-center p-1.5 rounded-lg border transition-colors ${detailExpanded ? 'border-accent text-accent bg-accent/10' : 'border-border text-muted hover:text-white hover:border-accent'}`}
           >
-            {detailExpanded ? <><Minimize2 size={14} /> Свернуть</> : <><Maximize2 size={14} /> Развернуть</>}
+            {detailExpanded ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
           </button>
           <button
             onClick={() => trackOpen ? setTrackOpen(false) : openTrack()}
-            title="Карта трека и графики телеметрии"
-            className={`flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border transition-colors ${trackOpen ? 'border-accent text-accent bg-accent/10' : 'border-border text-muted hover:text-white hover:border-accent'}`}
+            title={trackOpen ? 'Скрыть карту и графики' : 'Карта трека и графики телеметрии'}
+            className={`flex items-center justify-center p-1.5 rounded-lg border transition-colors ${trackOpen ? 'border-accent text-accent bg-accent/10' : 'border-border text-muted hover:text-white hover:border-accent'}`}
           >
-            {trackOpen ? <><PanelRightClose size={14} /> Скрыть</> : <><Map size={14} /> Карта и графики</>}
+            {trackOpen ? <PanelRightClose size={15} /> : <Map size={15} />}
           </button>
-          <button onClick={() => selectIssue(null)} className="text-muted hover:text-white"><X size={18} /></button>
+          <button onClick={() => selectIssue(null)} title="Закрыть карточку" className="flex items-center justify-center p-1.5 text-muted hover:text-white"><X size={18} /></button>
         </div>
       </div>
 
@@ -2297,6 +2343,7 @@ export function IssueDetail() {
             needsReview={singleAnalysis?.needs_review ?? false}
             autoEligible={singleAnalysis?.auto_eligible}
             subtitle={selectedObj?.plate ?? null}
+            reasoning={singleAnalysis?.reasoning ?? null}
           />
           {!selectedObj && (
             <p className="text-[13px] text-muted">
@@ -2332,7 +2379,7 @@ export function IssueDetail() {
         {/* Комментарии — только лента: композер переехал в блок «Ответ» */}
         <Block icon={MessageSquare} title="Комментарии" count={comments.length > 0 ? comments.length : null}>
           <div className="space-y-2">
-            {comments.map(c => {
+            {visibleComments.map(c => {
               const isClient = c.author_kind === 'client'
               const isSystem = c.author_kind === 'system'
               // is_internal is the legacy flag; is_public (new) takes precedence when present.
@@ -2390,6 +2437,14 @@ export function IssueDetail() {
               )
             })}
             {comments.length === 0 && <p className="text-xs text-muted">Комментариев нет</p>}
+            {comments.length > 1 && (
+              <button
+                onClick={() => setAllComments(v => !v)}
+                className="text-xs text-accent hover:underline"
+              >
+                {allComments ? 'Свернуть до последнего' : `Показать все ${comments.length} комментариев`}
+              </button>
+            )}
           </div>
 
         </Block>
