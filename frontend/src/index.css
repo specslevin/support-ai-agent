@@ -71,27 +71,20 @@
 }
 
 @layer components {
-  /* Карточка заявки v3: две колонки — работа слева, рельс контекста справа.
-     Порог считаем по ШИРИНЕ ПАНЕЛИ (container query), а не по ширине окна:
-     справа может быть открыта панель трека, и тогда места на две колонки нет. */
-  .issue-body { container-type: inline-size; }
+  /* Карточка заявки v4 — рельса фиксированной ширины 680px, ВСЕГДА одна колонка
+     (двухколоночная схема v3 с container-query отменена). Тело просто скроллится
+     по вертикали; overscroll-behavior не даёт скроллу «протечь» на список слева. */
+  .issue-body {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
 
-  /* Направление задаём ТОЛЬКО здесь: утилита flex-col из слоя utilities
-     перебила бы правило @container (слой components слабее), и рельс получал
-     бы ширину, оставаясь под левой колонкой. */
-  .issue-cols { flex-direction: column; }
-
-  /* Порог по CONTENT-ширине контейнера (container-type: inline-size меряет
-     content-box, а у панели ещё 40px горизонтальных паддингов). 780 content ≈
-     820 по внешней границе ≈ экран 1500px при карточке в 55%. Ниже опускать
-     нельзя: рабочей колонке останется меньше 520px и таблица разбора уйдёт
-     в горизонтальный скролл. */
-  @container (min-width: 780px) {
-    .issue-cols { flex-direction: row; align-items: flex-start; }
-    /* Рельс растёт вместе с карточкой (в макете v3 это 464 из 1352 ≈ 34%),
-       иначе при развороте вся ширина уходит левой колонке и рельс выглядит
-       обрубком. Границы: не уже 17rem, не шире 30rem — дальше строки метаданных
-       становятся неоправданно длинными. */
-    .issue-rail { width: 33%; min-width: 17rem; max-width: 30rem; flex-shrink: 0; }
+  /* Трек-панель выезжает СЛЕВА от рельсы. Анимируем только transform+opacity:
+     анимация width пересчитывала бы лейаут каждый кадр (заметный лаг на карте
+     и графиках). Длительность синхронна с transition duration-300 в App.tsx. */
+  .track-slide { animation: track-slide-in 300ms ease-out both; }
+  @keyframes track-slide-in {
+    from { transform: translateX(-24px); opacity: 0; }
+    to   { transform: none;              opacity: 1; }
   }
 }

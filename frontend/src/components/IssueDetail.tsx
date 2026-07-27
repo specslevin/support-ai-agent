@@ -1,13 +1,13 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState, useMemo, useEffect, useRef } from 'react'
 import {
-  ChevronDown, ChevronUp, AlertTriangle, X, Check, Star, Bot, RefreshCw, Database,
+  ChevronDown, AlertTriangle, X, Check, Star, Bot, RefreshCw, Database,
   Lightbulb, Map, FilePlus, ExternalLink, Pause, Send,
   Layers, FileText, Sheet,
   Image as ImageIcon, Paperclip, PanelRightClose, Info, MessageSquare, Sparkles, Wand2,
   Maximize2, Minimize2,
   Loader2, Lock, User, Headset, Play, ThumbsUp, ThumbsDown,
-  Copy, Calendar, Truck, Pencil,
+  Copy, Calendar, Phone, Pencil,
   type LucideIcon,
 } from 'lucide-react'
 import { api } from '../api/client'
@@ -58,51 +58,120 @@ function MetaRow({ label, children }: { label: string; children: React.ReactNode
   )
 }
 
-function Section({ title, children, defaultOpen = true }: {
+/**
+ * Раскрытие секций карточки (v4) — одно место в localStorage на все секции.
+ * Нужно, чтобы при переключении заявок оператор не сворачивал/разворачивал
+ * одно и то же заново: высота секции меняется ТОЛЬКО кликом по её заголовку.
+ */
+const SECTIONS_KEY = 'issueCardSections'
+
+function readSectionState(): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem(SECTIONS_KEY)
+    const parsed = raw ? JSON.parse(raw) : null
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, boolean>) : {}
+  } catch {
+    return {}
+  }
+}
+
+function useSectionOpen(storageKey: string | undefined, defaultOpen: boolean) {
+  const [open, setOpen] = useState<boolean>(() => {
+    if (!storageKey) return defaultOpen
+    const saved = readSectionState()[storageKey]
+    return typeof saved === 'boolean' ? saved : defaultOpen
+  })
+  const toggle = () => {
+    setOpen(prev => {
+      const next = !prev
+      if (storageKey) {
+        const all = readSectionState()
+        all[storageKey] = next
+        try { localStorage.setItem(SECTIONS_KEY, JSON.stringify(all)) } catch { /* приватный режим */ }
+      }
+      return next
+    })
+  }
+  return [open, toggle] as const
+}
+
+/** Строка-заголовок секции: 9px uppercase, счётчик-пилюля, шеврон справа. */
+function SectionHead({ title, count, right, open, toggle, className = '' }: {
   title: string
-  children: React.ReactNode
-  defaultOpen?: boolean
+  count?: number | string | null
+  right?: React.ReactNode
+  open: boolean
+  toggle: () => void
+  className?: string
 }) {
-  const [open, setOpen] = useState(defaultOpen)
   return (
-    <div className="space-y-2">
+    <div className={`flex items-center gap-2 ${className}`}>
       <button
-        onClick={() => setOpen(v => !v)}
+        onClick={toggle}
         title={open ? `Свернуть «${title}»` : `Раскрыть «${title}»`}
-        className="flex w-full items-center gap-1 text-[10px] font-semibold uppercase tracking-widest text-muted/60 hover:text-muted transition-colors"
+        className="flex flex-1 min-w-0 items-center gap-2 text-left"
       >
-        {open ? <ChevronUp size={12} className="shrink-0" /> : <ChevronDown size={12} className="shrink-0" />}
-        {title}
+        <span className={`text-[9px] font-medium uppercase tracking-[0.4px] leading-3 transition-colors ${open ? 'text-accent' : 'text-muted hover:text-secondary'}`}>
+          {title}
+        </span>
+        {count != null && count !== '' && (
+          <span className="shrink-0 rounded-pill bg-white/[0.08] px-[7px] py-px text-[11px] font-medium leading-4 text-muted tabular-nums">
+            {count}
+          </span>
+        )}
       </button>
-      {open && children}
+      {right && <div className="shrink-0 min-w-0 text-[11px] text-muted">{right}</div>}
+      <button
+        onClick={toggle}
+        title={open ? `Свернуть «${title}»` : `Раскрыть «${title}»`}
+        className="shrink-0 text-muted hover:text-secondary transition-colors"
+      >
+        <ChevronDown size={13} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
     </div>
   )
 }
 
 /**
- * Верхнеуровневый блок карточки заявки (макет v3): самостоятельная карточка
- * с заголовком 15/Bold, счётчиком-пилюлей и слотом справа для мета-текста
- * или действия блока. Иконка опциональна — в v3 заголовки монохромные, иконку
- * оставляем только там, где она несёт смысл.
+ * Сворачиваемая под-секция внутри блока (v4): тот же вид, что у Block, но без
+ * внешних отступов-карточки — только 1px-разделитель и лаймовая полоса слева
+ * у раскрытой.
  */
-function Block({ icon: Icon, title, count, right, children }: {
-  icon?: LucideIcon
+function Section({ title, children, defaultOpen = true, storageKey }: {
   title: string
-  count?: number | null
+  children: React.ReactNode
+  defaultOpen?: boolean
+  storageKey?: string
+}) {
+  const [open, toggle] = useSectionOpen(storageKey, defaultOpen)
+  return (
+    <div className={`border-b border-line last:border-b-0 border-l-2 py-2 pl-2.5 ${open ? 'border-l-accent' : 'border-l-transparent'}`}>
+      <SectionHead title={title} open={open} toggle={toggle} />
+      {open && <div className="pt-2 space-y-2">{children}</div>}
+    </div>
+  )
+}
+
+/**
+ * Секция карточки заявки (макет v4 «плоские строки»): без подложки и радиусов,
+ * фон остаётся общим (bg-base). Отделяется 1px-линией снизу; раскрытая помечена
+ * лаймовой полосой 2px слева, свёрнутая — прозрачной полосой той же ширины,
+ * чтобы текст не дёргался по горизонтали.
+ */
+function Block({ title, count, right, children, defaultOpen = true, storageKey }: {
+  title: string
+  count?: number | string | null
   right?: React.ReactNode
   children: React.ReactNode
+  defaultOpen?: boolean
+  /** Ключ для запоминания раскрытия в localStorage (не сбрасывается между заявками). */
+  storageKey?: string
 }) {
+  const [open, toggle] = useSectionOpen(storageKey, defaultOpen)
   return (
-    <section className="bg-card rounded-lg p-4 space-y-3">
-      <div className="flex items-center gap-2">
-        {Icon && <Icon size={14} className="text-accent shrink-0" />}
-        <h3 className="text-[15px] font-bold leading-[18px] text-white">{title}</h3>
-        {count != null && (
-          <span className="bg-frame rounded-pill px-2 py-0.5 text-[11px] font-medium text-secondary tabular-nums">{count}</span>
-        )}
-        {right && <div className="ml-auto min-w-0">{right}</div>}
-      </div>
-      {children}
+    <section className={`border-b border-line border-l-2 py-2.5 pr-4 pl-[14px] ${open ? 'border-l-accent' : 'border-l-transparent'}`}>
+      <SectionHead title={title} count={count} right={right} open={open} toggle={toggle} />
+      {open && <div className="pt-2.5 space-y-2.5">{children}</div>}
     </section>
   )
 }
@@ -127,8 +196,12 @@ function fallbackCopyText(text: string) {
   document.body.removeChild(ta)
 }
 
-/** «Передать монтажнику»: два формата (КАЛЕНДАРЬ / МЕССЕНДЖЕР) в один клик. */
-function InstallerExportSection({ issueId }: { issueId: number }) {
+/**
+ * «Передать монтажнику»: два формата (КАЛЕНДАРЬ / МЕССЕНДЖЕР) в один клик.
+ * В v4 отдельной секции больше нет — эти действия живут двумя иконками в липком
+ * баре, поэтому логика вынесена в хук и переиспользуется как есть.
+ */
+function useInstallerExport(issueId: number) {
   const [copied, setCopied] = useState<'calendar' | 'messenger' | null>(null)
   const [showPreview, setShowPreview] = useState(false)
 
@@ -156,55 +229,31 @@ function InstallerExportSection({ issueId }: { issueId: number }) {
     setTimeout(() => setCopied(null), 1800)
   }
 
+  return { data, isFetching, isError, copied, showPreview, setShowPreview, handleCopy }
+}
+
+/** Предпросмотр обоих форматов монтажнику — всплывает над липким баром. */
+function InstallerPreview({ data, onCopy, onHide }: {
+  data: { calendar: string; messenger: string }
+  onCopy: (kind: 'calendar' | 'messenger') => void
+  onHide: () => void
+}) {
   return (
-    <Block icon={Truck} title="Передать монтажнику">
-      <div className="space-y-2">
-        <div className="flex flex-wrap gap-2">
-          <button
-            onClick={() => handleCopy('calendar')}
-            disabled={isFetching}
-            title={copied === 'calendar' ? 'Скопировано' : 'Скопировать текст для календаря'}
-            className="flex items-center justify-center bg-frame border border-border hover:border-accent rounded-md p-1.5 text-muted hover:text-accent transition-colors disabled:opacity-50"
-          >
-            {copied === 'calendar' ? <Check size={15} className="text-success" /> : <Calendar size={15} />}
-          </button>
-          <button
-            onClick={() => handleCopy('messenger')}
-            disabled={isFetching}
-            title={copied === 'messenger' ? 'Скопировано' : 'Скопировать текст для мессенджера'}
-            className="flex items-center justify-center bg-frame border border-border hover:border-accent rounded-md p-1.5 text-muted hover:text-accent transition-colors disabled:opacity-50"
-          >
-            {copied === 'messenger' ? <Check size={15} className="text-success" /> : <MessageSquare size={15} />}
-          </button>
-          {isFetching && <Working label="Собираю…" className="text-muted" />}
-        </div>
-
-        {isError && (
-          <p className="text-[11px] text-red-400">Не удалось собрать данные. Попробуйте ещё раз.</p>
-        )}
-
-        {data && (
-          <>
-            <button
-              onClick={() => setShowPreview(v => !v)}
-              className="flex items-center gap-1 text-[11px] text-muted hover:text-accent transition-colors"
-            >
-              <ChevronDown size={12} className={`transition-transform ${showPreview ? 'rotate-180' : ''}`} />
-              {showPreview ? 'Скрыть предпросмотр' : 'Показать предпросмотр'}
-            </button>
-            {showPreview && (
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                <PreviewCard icon={Calendar} title="Календарь" text={data.calendar} onCopy={() => handleCopy('calendar')} />
-                <PreviewCard icon={Send} title="Мессенджер" text={data.messenger} onCopy={() => handleCopy('messenger')} />
-              </div>
-            )}
-            <p className="text-[10px] text-muted/70">
-              Прочерки «____» — поля не найдены в заявке, дозаполните вручную перед отправкой.
-            </p>
-          </>
-        )}
+    <div className="space-y-2 border-b border-line pb-2.5">
+      <div className="flex items-center gap-2">
+        <span className="text-[9px] font-medium uppercase tracking-[0.4px] text-muted">Передать монтажнику</span>
+        <button onClick={onHide} title="Скрыть предпросмотр" className="ml-auto text-muted hover:text-accent transition-colors">
+          <X size={13} />
+        </button>
       </div>
-    </Block>
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <PreviewCard icon={Calendar} title="Календарь" text={data.calendar} onCopy={() => onCopy('calendar')} />
+        <PreviewCard icon={Send} title="Мессенджер" text={data.messenger} onCopy={() => onCopy('messenger')} />
+      </div>
+      <p className="text-[10px] text-muted/70">
+        Прочерки «____» — поля не найдены в заявке, дозаполните вручную перед отправкой.
+      </p>
+    </div>
   )
 }
 
@@ -361,7 +410,7 @@ function EditableParameters({ d, issueId }: { d: OkdeskDetail; issueId: number }
   const otherParams = d.parameters.filter(p => !EDITABLE_PARAMS.some(ep => ep.match.test(p.name)))
 
   return (
-    <Section title="Параметры заявки" defaultOpen={false}>
+    <Section title="Параметры заявки" defaultOpen={false} storageKey="params">
       <div className="space-y-2">
         {EDITABLE_PARAMS.map(ep => (
           <div key={ep.code} className="grid grid-cols-[140px_1fr] items-center gap-x-3 gap-y-1">
@@ -393,7 +442,7 @@ function EditableParameters({ d, issueId }: { d: OkdeskDetail; issueId: number }
         onClick={() => mutation.mutate()}
         disabled={isDemo || mutation.isPending || !dirty}
         title={isDemo ? 'Недоступно в демо-режиме' : 'Сохранить параметры в Okdesk'}
-        className={`flex items-center justify-center gap-1.5 w-full bg-card border border-border hover:border-accent text-xs font-semibold py-1.5 rounded-md transition-colors disabled:opacity-40 text-muted hover:text-accent ${mutation.isPending ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
+        className={`flex items-center justify-center gap-1.5 w-full bg-frame border border-border hover:border-accent text-xs font-semibold py-1.5 rounded-md transition-colors disabled:opacity-40 text-muted hover:text-accent ${mutation.isPending ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
       >
         {mutation.isPending ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
         {mutation.isPending ? 'Сохраняю…' : 'Сохранить параметры'}
@@ -409,9 +458,9 @@ function OkdeskInfo({ d, issueId, assigneeName }: { d: OkdeskDetail; issueId: nu
   const overdue = isOverdue(d.deadline_at)
 
   return (
-    <div className="space-y-4 text-xs">
+    <div className="text-xs">
       {/* Участники */}
-      <Section title="Участники">
+      <Section title="Участники" storageKey="people">
         <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
           {d.author_name && <MetaRow label="Автор">{d.author_name}</MetaRow>}
           {d.service_object_name && <MetaRow label="Объект">{d.service_object_name}</MetaRow>}
@@ -422,7 +471,7 @@ function OkdeskInfo({ d, issueId, assigneeName }: { d: OkdeskDetail; issueId: nu
       </Section>
 
       {/* Сроки */}
-      <Section title="Сроки" defaultOpen={false}>
+      <Section title="Сроки" defaultOpen={false} storageKey="dates">
         <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
           {deadline && (
             <MetaRow label="Срок выполнения">
@@ -451,42 +500,23 @@ function OkdeskInfo({ d, issueId, assigneeName }: { d: OkdeskDetail; issueId: nu
 }
 
 /**
- * Вопрос клиента — первый блок рабочей колонки. Раньше лежал внутри «Деталей
- * заявки», то есть в рельсе на ~360px: длинное письмо там читать неудобно.
- * Это исходный материал работы, а не свойство заявки, поэтому он слева и
- * первым — до разбора ИИ.
+ * Вопрос клиента — первая секция потока (v4). Исходный материал работы, а не
+ * свойство заявки, поэтому он до разбора ИИ. Сворачивание — общее, кликом по
+ * заголовку секции (см. Block).
  */
-function ClientQuestionBlock({ description }: { description: string | null | undefined }) {
+function ClientQuestionBlock({ description, source, createdAt }: {
+  description: string | null | undefined
+  source?: string | null
+  createdAt?: string | null
+}) {
   const text = stripHtml(description)
-  // Раскрыт по умолчанию: письмо клиента — первое, что читает оператор. Свернуть
-  // нужно, когда работа уже идёт по разбору и письмо только занимает место;
-  // в свёрнутом виде оставляем peek первой строки, чтобы блок не был пустым.
-  const [open, setOpen] = useState(true)
+  // Подпись-счётчик как в макете: «письмо · 23.07 09:40».
+  const label = [source || null, formatDate(createdAt)].filter(Boolean).join(' · ')
   return (
-    <Block
-      title="Вопрос клиента"
-      right={
-        <button
-          onClick={() => setOpen(v => !v)}
-          title={open ? 'Свернуть вопрос клиента' : 'Показать вопрос клиента полностью'}
-          className="flex items-center gap-1 text-xs text-muted hover:text-white transition-colors"
-        >
-          {open ? <><ChevronUp size={13} /> Свернуть</> : <><ChevronDown size={13} /> Раскрыть</>}
-        </button>
-      }
-    >
-      {open ? (
-        <p className="text-[13px] leading-5 text-white/80 whitespace-pre-wrap bg-frame rounded-md px-3 py-2.5">
-          {text || <span className="text-muted/60">Текст отсутствует — см. тему и параметры заявки</span>}
-        </p>
-      ) : (
-        <button
-          onClick={() => setOpen(true)}
-          className="w-full text-left text-[13px] leading-5 text-muted truncate hover:text-white/80 transition-colors"
-        >
-          {text || 'Текст отсутствует — см. тему и параметры заявки'}
-        </button>
-      )}
+    <Block title="Вопрос клиента" count={label || null} storageKey="question">
+      <p className="text-[13px] leading-[18px] text-secondary whitespace-pre-wrap">
+        {text || <span className="text-muted/60">Текст отсутствует — см. тему и параметры заявки</span>}
+      </p>
     </Block>
   )
 }
@@ -501,7 +531,7 @@ function RelatedIssuesSection({ d, onOpenExternal }: { d: OkdeskDetail; onOpenEx
   const total = (d.parent_id ? 1 : 0) + d.child_ids.length
   if (total === 0) return null
   return (
-    <Block title="Связанные заявки" count={total}>
+    <Block title="Связанные заявки" count={total} storageKey="related">
       <div className="space-y-2">
         {d.parent_id && (
           <div className="space-y-1">
@@ -543,7 +573,13 @@ const CATEGORY_COLORS: Record<string, string> = {
   dark: 'text-gray-500',
 }
 
-export function TemplatePicker({ onSelect, onSelectFull, issueId }: { onSelect: (content: string) => void; onSelectFull?: (t: { name: string; content: string }) => void; issueId?: number }) {
+export function TemplatePicker({ onSelect, onSelectFull, issueId, trigger = 'icon' }: {
+  onSelect: (content: string) => void
+  onSelectFull?: (t: { name: string; content: string }) => void
+  issueId?: number
+  /** 'icon' — компактная иконка (модалки, bulk); 'text' — кнопка «Шаблон ▾» в липком баре v4. */
+  trigger?: 'icon' | 'text'
+}) {
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
   const [catFilter, setCatFilter] = useState('')
@@ -637,6 +673,17 @@ export function TemplatePicker({ onSelect, onSelectFull, issueId }: { onSelect: 
   }, [templates, search, catFilter])
 
   if (!open) {
+    if (trigger === 'text') {
+      return (
+        <button
+          onClick={() => setOpen(true)}
+          title="Выбрать шаблон ответа"
+          className="flex shrink-0 items-center gap-1 rounded-pill bg-frame border border-border px-3 py-[5px] text-xs font-medium text-secondary hover:border-muted hover:text-white transition-colors"
+        >
+          Шаблон <ChevronDown size={12} />
+        </button>
+      )
+    }
     return (
       <button
         onClick={() => setOpen(true)}
@@ -893,7 +940,7 @@ function StatusActionModal({
             disabled={!canSubmit || mutation.isPending}
             onClick={() => mutation.mutate()}
             style={canSubmit && !mutation.isPending ? statusPillStyle(targetStatus.code) : undefined}
-            className={`flex items-center gap-1.5 px-4 py-2 rounded-md text-xs font-semibold transition-opacity disabled:opacity-50 disabled:cursor-not-allowed disabled:bg-frame disabled:border disabled:border-border disabled:text-white ${mutation.isPending ? 'animate-pulse cursor-wait' : ''}`}
+            className={`flex items-center gap-1.5 px-4 py-2 rounded-md text-xs font-semibold border transition-opacity disabled:opacity-50 disabled:cursor-not-allowed disabled:bg-frame disabled:border-border disabled:text-white ${mutation.isPending ? 'animate-pulse cursor-wait' : ''}`}
           >
             {mutation.isPending ? <Working label="Отправляю…" /> : <><Check size={14} /> {targetStatus.label}</>}
           </button>
@@ -993,7 +1040,7 @@ function AutoAnalysis({ issueId, issueTitle, companyName }: { issueId: number; i
           onClick={() => run.mutate()}
           disabled={run.isPending || demoAlreadyAnalyzed}
           title={demoAlreadyAnalyzed ? 'Демо: анализ доступен один раз' : compact ? 'Обновить анализ' : undefined}
-          className={`flex items-center justify-center gap-2 bg-card border border-accent/40 text-accent hover:bg-accent/10 text-xs font-semibold rounded-md transition-colors disabled:opacity-40 ${compact ? (run.isPending ? 'px-2.5 py-1.5' : 'p-1.5') : 'w-full py-2'} ${run.isPending ? 'animate-pulse cursor-wait' : ''} ${demoAlreadyAnalyzed ? 'cursor-not-allowed' : ''}`}
+          className={`flex items-center justify-center gap-2 bg-frame border border-accent/40 text-accent hover:bg-accent/10 text-xs font-semibold rounded-md transition-colors disabled:opacity-40 ${compact ? (run.isPending ? 'px-2.5 py-1.5' : 'p-1.5') : 'w-full py-2'} ${run.isPending ? 'animate-pulse cursor-wait' : ''} ${demoAlreadyAnalyzed ? 'cursor-not-allowed' : ''}`}
         >
           {run.isPending ? (
             <Working label={compact ? 'Анализирую…' : 'Анализирую заявку и данные geo…'} />
@@ -1259,7 +1306,17 @@ const VERDICT_STYLE: Record<string, string> = {
 }
 
 
-function ComposeAnswerButton({ issueId, hasExtractable, onUseDraft }: { issueId: number; hasExtractable: boolean; onUseDraft: (text: string) => void }) {
+/**
+ * Чип «✦ черновик ИИ для {госномер}» в липком баре (v4). Та же логика, что была
+ * у кнопки «Составить ответ» блока «③ Ответ»: с вложениями — ответ по таблице
+ * разбора, без вложений — по одиночному автоанализу.
+ */
+function DraftChip({ issueId, hasExtractable, plate, onUseDraft }: {
+  issueId: number
+  hasExtractable: boolean
+  plate?: string | null
+  onUseDraft: (text: string) => void
+}) {
   const isDemo = useAuthStore(s => s.user?.role === 'demo')
   const composeMut = useMutation({
     mutationFn: async () => {
@@ -1279,14 +1336,14 @@ function ComposeAnswerButton({ issueId, hasExtractable, onUseDraft }: { issueId:
       <button
         onClick={() => composeMut.mutate()}
         disabled={composeMut.isPending || isDemo}
-        title={isDemo ? 'Недоступно в демо-режиме' : undefined}
-        className={`flex items-center justify-center gap-1.5 w-full bg-accent/90 hover:bg-accent text-black text-xs font-semibold py-1.5 rounded-lg transition-colors disabled:opacity-40 ${composeMut.isPending ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
+        title={isDemo ? 'Недоступно в демо-режиме' : 'Вставить черновик, подготовленный ИИ для выбранного объекта'}
+        className={`flex shrink-0 items-center gap-1 rounded-pill border border-accent bg-accent/15 px-2.5 py-[3px] text-[11px] font-medium text-accent hover:bg-accent hover:text-black transition-colors disabled:opacity-40 ${composeMut.isPending ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
       >
         {composeMut.isPending
-          ? <Working label="Составляю ответ…" />
-          : <><Sparkles size={14} /> Составить ответ</>}
+          ? <Working label="Составляю…" />
+          : <><Sparkles size={11} /> черновик ИИ{plate ? ` для ${plate}` : ''}</>}
       </button>
-      {composeMut.isError && <p className="text-xs text-orange-400">Ошибка составления ответа. Попробуйте снова.</p>}
+      {composeMut.isError && <p className="text-[11px] text-orange-400">Ошибка составления ответа. Попробуйте снова.</p>}
     </>
   )
 }
@@ -1501,7 +1558,7 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
           onClick={startRun}
           disabled={ocrBusy || isDemo}
           title={isDemo ? 'Недоступно в демо-режиме' : compact ? 'Обновить разбор' : undefined}
-          className={`flex items-center justify-center gap-2 bg-card border border-info/40 text-info hover:bg-info/10 text-xs font-semibold rounded-md transition-colors disabled:opacity-40 ${compact ? (ocrBusy ? 'px-2.5 py-1.5' : 'p-1.5') : 'w-full py-2'} ${ocrBusy ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
+          className={`flex items-center justify-center gap-2 bg-frame border border-info/40 text-info hover:bg-info/10 text-xs font-semibold rounded-md transition-colors disabled:opacity-40 ${compact ? (ocrBusy ? 'px-2.5 py-1.5' : 'p-1.5') : 'w-full py-2'} ${ocrBusy ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
         >
           {ocrBusy ? (
             <Working label={compact ? 'Распознаю…' : 'Распознаю вложения…'} />
@@ -1573,7 +1630,7 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
                         trackOpen && trackPlate === o.plate && trackDate === o.date
                           ? 'bg-accent/10 border-l-2 border-l-accent/60'
                           : selectedIdx === idx
-                          ? 'bg-card-hover border-l-2 border-l-accent'
+                          ? 'bg-accent/10 border-l-2 border-l-accent'
                           : 'hover:bg-card-hover/60'
                       }`}
                     >
@@ -1735,28 +1792,12 @@ function AttachmentsSection({ issueId }: { issueId: number }) {
     staleTime: 5 * 60_000,
   })
 
-  // Свёрнуто по умолчанию: вложения в рельсе нужны точечно, а список из
-  // нескольких файлов оттесняет вниз более важный контекст заявки.
-  const [open, setOpen] = useState(false)
-
   if (items.length === 0) return null
 
+  // Свёрнуто по умолчанию: список файлов оттесняет вниз более важный контекст
+  // заявки. Раскрытие — кликом по заголовку секции, состояние помнит localStorage.
   return (
-    <Block
-      icon={Paperclip}
-      title="Вложения"
-      count={items.length}
-      right={
-        <button
-          onClick={() => setOpen(v => !v)}
-          title={open ? 'Свернуть список вложений' : 'Показать вложения'}
-          className="flex items-center text-muted hover:text-white transition-colors"
-        >
-          {open ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-        </button>
-      }
-    >
-      {open && (
+    <Block title="Вложения" count={items.length} defaultOpen={false} storageKey="attachments">
       <div className="space-y-1.5">
         {items.map(a => {
           const KI = KIND_ICON[a.kind] ?? Paperclip
@@ -1784,7 +1825,6 @@ function AttachmentsSection({ issueId }: { issueId: number }) {
           )
         })}
       </div>
-      )}
     </Block>
   )
 }
@@ -1838,93 +1878,6 @@ function isBatchIssue(
 ): boolean {
   if (extractableCount > 0) return true
   return countPlates(`${issue.subject ?? ''}\n${stripHtml(description)}`) >= 2
-}
-
-/**
- * Блок «Ответ» (③ в макете v3): генерация черновика ИИ, шаблоны, выбор
- * публичный/приватный и сам композер. Раньше композер лежал внутри
- * «Комментариев», а кнопка генерации — третьим шагом мастера; в v3 это один
- * блок, а смена статуса ушла в липкий бар.
- */
-function AnswerBlock({
-  issueId,
-  useBatch,
-  comment,
-  setComment,
-  commentPublic,
-  setCommentPublic,
-  onSend,
-  sending,
-  isDemo,
-}: {
-  issueId: number
-  useBatch: boolean
-  comment: string
-  setComment: (v: string) => void
-  commentPublic: boolean
-  setCommentPublic: (v: boolean) => void
-  onSend: () => void
-  sending: boolean
-  isDemo: boolean
-}) {
-  return (
-    <Block title="③ Ответ" right={<span className="text-xs text-muted">черновик ИИ — можно править</span>}>
-      <div className="flex items-center justify-between gap-2 flex-wrap">
-        <div className="flex items-center gap-2">
-          <ComposeAnswerButton
-            issueId={issueId}
-            hasExtractable={useBatch}
-            onUseDraft={text => { setComment(text); setCommentPublic(true) }}
-          />
-          <TemplatePicker onSelect={text => setComment(text)} issueId={issueId} />
-        </div>
-        {/* Сегмент видимости: публичный ответ уходит клиенту — помечаем янтарём */}
-        <div className="flex items-center gap-0.5 bg-frame rounded-md p-0.5 shrink-0">
-          {([true, false] as const).map(pub => (
-            <button
-              key={String(pub)}
-              onClick={() => setCommentPublic(pub)}
-              className={`px-2.5 py-1 rounded text-[11px] font-medium transition-colors ${
-                commentPublic === pub
-                  ? pub
-                    ? 'bg-warning/15 text-warning'
-                    : 'bg-border text-white'
-                  : 'text-muted hover:text-white'
-              }`}
-            >
-              {pub ? 'Публичный' : 'Приватный'}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <textarea
-        placeholder="Написать ответ или комментарий..."
-        value={comment}
-        onChange={e => setComment(e.target.value)}
-        onKeyDown={e => {
-          if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && comment) onSend()
-        }}
-        rows={5}
-        className="w-full bg-frame border border-border rounded-md px-3 py-2.5 text-[13px] leading-5 resize-y focus:outline-none focus:border-accent"
-      />
-
-      <div className="flex items-center justify-between gap-2">
-        <p className="text-[11px] text-muted">
-          {commentPublic ? 'Ответ уйдёт клиенту публичным комментарием' : 'Приватный — виден только сотрудникам'}
-          {' · Ctrl+Enter — отправить'}
-        </p>
-        <button
-          disabled={!comment || sending || isDemo}
-          onClick={onSend}
-          title={isDemo ? 'Недоступно в демо-режиме' : 'Отправить комментарий (Ctrl+Enter)'}
-          className={`flex items-center gap-1.5 bg-frame border border-border hover:border-accent rounded-md px-3 py-1.5 text-[13px] font-medium transition-colors disabled:opacity-40 text-secondary hover:text-accent shrink-0 ${isDemo ? 'cursor-not-allowed' : ''}`}
-        >
-          {sending ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />} Отправить
-        </button>
-      </div>
-    </Block>
-  )
 }
 
 const AI_ERROR_KINDS: { value: import('../types').AiFeedbackErrorKind; label: string }[] = [
@@ -2047,13 +2000,13 @@ function AiFeedbackPanel({ issueId }: { issueId: number }) {
 
       {/* Форма «ошибка разбора» */}
       {showBadForm && !isDemo && (
-        <div className="bg-frame border border-border rounded-md px-3 py-2.5 space-y-2">
+        <div className="border border-line rounded-md px-3 py-2.5 space-y-2">
           <div>
             <label className="block text-[10px] uppercase tracking-widest text-muted/60 mb-1">Тип ошибки</label>
             <select
               value={errorKind}
               onChange={e => setErrorKind(e.target.value as import('../types').AiFeedbackErrorKind)}
-              className="w-full bg-card border border-border rounded-md px-2 py-1.5 text-xs focus:outline-none focus:border-accent"
+              className="w-full bg-frame border border-border rounded-md px-2 py-1.5 text-xs focus:outline-none focus:border-accent"
             >
               {AI_ERROR_KINDS.map(k => (
                 <option key={k.value} value={k.value} className="bg-card text-primary">{k.label}</option>
@@ -2067,7 +2020,7 @@ function AiFeedbackPanel({ issueId }: { issueId: number }) {
               onChange={e => setFbComment(e.target.value)}
               rows={2}
               placeholder="Что именно не так…"
-              className="w-full bg-card border border-border rounded-md px-2 py-1.5 text-xs resize-none focus:outline-none focus:border-accent leading-relaxed"
+              className="w-full bg-frame border border-border rounded-md px-2 py-1.5 text-xs resize-none focus:outline-none focus:border-accent leading-relaxed"
             />
           </div>
           <div>
@@ -2077,7 +2030,7 @@ function AiFeedbackPanel({ issueId }: { issueId: number }) {
               value={correctCategory}
               onChange={e => setCorrectCategory(e.target.value)}
               placeholder="напр. Глушение"
-              className="w-full bg-card border border-border rounded-md px-2 py-1.5 text-xs focus:outline-none focus:border-accent"
+              className="w-full bg-frame border border-border rounded-md px-2 py-1.5 text-xs focus:outline-none focus:border-accent"
             />
           </div>
           <button
@@ -2110,6 +2063,14 @@ export function IssueDetail() {
   const [pendingStatus, setPendingStatus] = useState<typeof ALL_STATUSES[number] | null>(null)
   const [resolveNotice, setResolveNotice] = useState<string | null>(null)
   const [toast, setToast] = useState<string | null>(null)
+  // Липкий бар v4: единственная точка составления ответа. Раскрывается по фокусу
+  // на поле — тогда появляется второй ряд (черновик ИИ, публичный/приватный, «Ещё»).
+  const [barExpanded, setBarExpanded] = useState(false)
+  // Галочки «скопировано» в шапке (номер заявки и телефон контакта).
+  const [numCopied, setNumCopied] = useState(false)
+  const [phoneCopied, setPhoneCopied] = useState(false)
+  // Копирование для монтажника — те же два формата, теперь иконками в баре.
+  const installer = useInstallerExport(selectedIssueId ?? 0)
 
   useEffect(() => {
     if (!toast) return
@@ -2133,6 +2094,7 @@ export function IssueDetail() {
 
   useEffect(() => {
     setComment(lastTemplate)
+    setBarExpanded(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedIssueId])
 
@@ -2210,6 +2172,14 @@ export function IssueDetail() {
   const { issue, okdesk_detail: od } = data
 
   const overdue = isOverdue(od?.deadline_at)
+  const overdueLabel = (() => {
+    if (!overdue || !od?.deadline_at) return null
+    const days = Math.floor((Date.now() - new Date(od.deadline_at).getTime()) / 86_400_000)
+    return days >= 1 ? `${days} д` : 'просрочено'
+  })()
+  // Телефон контакта живёт в кастом-параметрах Okdesk (та же тройка, что правится
+  // в «Параметрах заявки») — отдельного поля в okdesk_detail нет.
+  const contactPhone = od?.parameters.find(p => /телефон|тел\b|моб/i.test(p.name))?.value?.trim() || null
   const useBatch = isBatchIssue(issue, od?.description, extractableCount)
   // Уверенность и признак «можно авто» есть только у одиночного анализа: в пакетном
   // разборе бэкенд отдаёт по объекту вердикт и метрики, но не оценку уверенности.
@@ -2218,11 +2188,24 @@ export function IssueDetail() {
   return (
     <>
     <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-border shrink-0 bg-base z-20">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1">
-            <span className="text-muted text-xs font-mono">#{issue.external_id}</span>
+      {/* ── Шапка v4: номер + статус + просрочка / тема / клиент · контакт ── */}
+      <div className="shrink-0 bg-base border-b border-line px-4 pt-3.5 pb-3 flex flex-col gap-[7px] z-20">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
+            <b className="text-[15px] font-bold leading-5 tabular-nums">#{issue.external_id}</b>
+            <button
+              onClick={() => {
+                copyToClipboard(String(issue.external_id))
+                setNumCopied(true)
+                setTimeout(() => setNumCopied(false), 900)
+              }}
+              title={numCopied ? 'Скопировано' : 'Скопировать номер заявки'}
+              className={`flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-pill border transition-colors ${
+                numCopied ? 'bg-accent border-accent text-black' : 'bg-frame border-border text-secondary hover:border-accent hover:text-accent'
+              }`}
+            >
+              {numCopied ? <Check size={11} /> : <Copy size={11} />}
+            </button>
             {od ? (
               <div className="relative">
                 <button
@@ -2240,7 +2223,7 @@ export function IssueDetail() {
                         <button
                           key={s.code}
                           onClick={() => { setStatusDropdownOpen(false); setPendingStatus(s) }}
-                          className="w-full text-left px-4 py-2.5 text-xs font-medium hover:brightness-110 transition-all"
+                          className="w-full text-left px-4 py-2.5 text-xs font-medium border-l-4 hover:brightness-125 transition-all"
                           style={statusPillStyle(s.code)}
                         >
                           {s.label}
@@ -2253,65 +2236,88 @@ export function IssueDetail() {
             ) : (
               <StatusBadge status={issue.status} />
             )}
-            {issue.priority && <span className="text-xs text-muted">{issue.priority}</span>}
             {overdue && (
               <span
-                title={`Срок: ${formatDate(od?.deadline_at) ?? '—'}`}
-                className="inline-flex items-center gap-1 bg-warning/15 text-warning rounded-pill px-2 py-0.5 text-[9px] font-medium uppercase tracking-wide"
+                title={`Дедлайн ${formatDate(od?.deadline_at) ?? '—'} — просрочено`}
+                className="inline-flex items-center gap-1 shrink-0 rounded-pill bg-warning/15 px-2 py-0.5 text-[11px] font-medium leading-4 text-warning"
               >
-                <AlertTriangle size={10} /> Просрочено
+                <AlertTriangle size={10} /> {overdueLabel}
               </span>
             )}
-            {issue.company_name && (
-              <>
-                <span className="text-muted text-xs">·</span>
-                <span className="text-xs text-secondary truncate">{issue.company_name}</span>
-              </>
-            )}
+            {issue.priority && <span className="text-[11px] text-muted">{issue.priority}</span>}
           </div>
-          <h2 className="text-[15px] font-bold leading-snug">{issue.subject ?? '—'}</h2>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              onClick={() => setDetailExpanded(!detailExpanded)}
+              title={detailExpanded ? 'Вернуть список заявок' : 'Развернуть карточку на всю ширину'}
+              className={`flex h-[27px] w-[27px] items-center justify-center rounded-pill border transition-colors ${detailExpanded ? 'border-accent bg-accent/10 text-accent' : 'border-border bg-frame text-secondary hover:border-accent hover:text-accent'}`}
+            >
+              {detailExpanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+            </button>
+            <button
+              onClick={() => trackOpen ? setTrackOpen(false) : openTrack()}
+              title={trackOpen ? 'Скрыть карту и графики' : 'Карта трека и графики телеметрии'}
+              className={`flex h-[27px] w-[27px] items-center justify-center rounded-pill border transition-colors ${trackOpen ? 'border-accent bg-accent/10 text-accent' : 'border-border bg-frame text-secondary hover:border-accent hover:text-accent'}`}
+            >
+              {trackOpen ? <PanelRightClose size={14} /> : <Map size={14} />}
+            </button>
+            <button
+              onClick={() => selectIssue(null)}
+              title="Закрыть карточку"
+              className="flex h-[27px] w-[27px] items-center justify-center rounded-pill border border-border bg-frame text-secondary hover:border-accent hover:text-accent transition-colors"
+            >
+              <X size={14} />
+            </button>
+          </div>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
-          <button
-            onClick={() => setDetailExpanded(!detailExpanded)}
-            title={detailExpanded ? 'Вернуть список заявок' : 'Развернуть карточку на всю ширину (две колонки)'}
-            className={`flex items-center justify-center p-1.5 rounded-md border transition-colors ${detailExpanded ? 'border-accent text-accent bg-accent/10' : 'border-border text-muted hover:text-white hover:border-accent'}`}
-          >
-            {detailExpanded ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
-          </button>
-          <button
-            onClick={() => trackOpen ? setTrackOpen(false) : openTrack()}
-            title={trackOpen ? 'Скрыть карту и графики' : 'Карта трека и графики телеметрии'}
-            className={`flex items-center justify-center p-1.5 rounded-md border transition-colors ${trackOpen ? 'border-accent text-accent bg-accent/10' : 'border-border text-muted hover:text-white hover:border-accent'}`}
-          >
-            {trackOpen ? <PanelRightClose size={15} /> : <Map size={15} />}
-          </button>
-          <button onClick={() => selectIssue(null)} title="Закрыть карточку" className="flex items-center justify-center p-1.5 text-muted hover:text-white"><X size={18} /></button>
+
+        <div className="text-[13px] font-medium leading-5">{issue.subject ?? '—'}</div>
+
+        <div className="flex items-center gap-1.5 flex-wrap text-xs leading-[18px]">
+          {issue.company_name && <span className="text-secondary">{issue.company_name}</span>}
+          {issue.company_name && issue.contact_name && <span className="text-muted">·</span>}
+          {issue.contact_name && <span className="font-medium text-white">{issue.contact_name}</span>}
+          {!issue.company_name && !issue.contact_name && <span className="text-muted">Клиент не указан</span>}
+          {contactPhone && (
+            <button
+              onClick={() => {
+                copyToClipboard(contactPhone)
+                setPhoneCopied(true)
+                setTimeout(() => setPhoneCopied(false), 900)
+              }}
+              title={phoneCopied ? 'Скопировано' : `Скопировать телефон контакта: ${contactPhone}`}
+              className={`flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-pill border transition-colors ${
+                phoneCopied ? 'bg-accent border-accent text-black' : 'bg-frame border-border text-secondary hover:border-accent hover:text-accent'
+              }`}
+            >
+              {phoneCopied ? <Check size={10} /> : <Phone size={10} />}
+            </button>
+          )}
         </div>
       </div>
 
-      {/* Тело карточки. Раскладка v3: работа слева, контекст в рельсе справа.
-          Две колонки включаются по ШИРИНЕ ПАНЕЛИ (container query в index.css),
-          а не по ширине окна — рядом может быть открыта панель трека. */}
-      <div className="flex-1 overflow-y-auto px-5 py-4 issue-body">
+      {/* Тело карточки v4: ОДНА колонка, плоские секции на 1px-разделителях.
+          Ширину панели задаёт App.tsx — процентных ширин внутри карточки нет. */}
+      <div className="flex-1 issue-body">
         {resolveNotice && (
-          <div className="flex items-start gap-2 bg-warning/10 border border-warning/30 rounded-md px-3 py-2 text-xs text-warning mb-4">
+          <div className="flex items-start gap-2 bg-warning/10 border-b border-warning/30 px-4 py-2 text-xs text-warning">
             <AlertTriangle size={14} className="shrink-0 mt-0.5" />
             <span className="flex-1">{resolveNotice}</span>
             <button onClick={() => setResolveNotice(null)} className="shrink-0 text-warning/60 hover:text-warning"><X size={14} /></button>
           </div>
         )}
 
-        <div className="flex gap-4 issue-cols">
-        {/* ── Левая колонка: работа оператора ──────────────────── */}
-        <div className="flex-1 min-w-0 space-y-4">
         {/* Вопрос клиента — исходный материал, до разбора ИИ */}
-        <ClientQuestionBlock description={od?.description} />
+        <ClientQuestionBlock description={od?.description} source={od?.source} createdAt={issue.created_at} />
 
-        {/* ① Разбор — таблица объектов: одинаково для одного ТС и для двадцати */}
+        {/* Вложения — сразу после письма: это его файлы */}
+        <AttachmentsSection issueId={issue.id} />
+
+        {/* Разбор — таблица объектов: одинаково для одного ТС и для двадцати */}
         <Block
-          title="① Разбор"
-          right={selectedObj?.plate ? <span className="text-xs text-muted">выбран {selectedObj.plate}</span> : undefined}
+          title="Разбор"
+          storageKey="parse"
+          count={selectedObj?.plate ? `выбран ${selectedObj.plate}` : null}
         >
           <BatchAnalysis
             key={issue.id}
@@ -2331,10 +2337,12 @@ export function IssueDetail() {
           />
         </Block>
 
-        {/* ② Телеметрия и вердикт — по объекту, выбранному в таблице выше */}
+        {/* Телеметрия — по объекту, выбранному в таблице выше */}
         <Block
-          title="② Телеметрия и вердикт"
-          right={selectedObj?.date ? <span className="text-xs text-muted">за {selectedObj.date}</span> : undefined}
+          title="Телеметрия"
+          storageKey="telemetry"
+          count={selectedObj?.plate ?? null}
+          right={selectedObj?.date ? <span>за {selectedObj.date}</span> : undefined}
         >
           <TelemetryPanel
             telemetry={selectedObj?.telemetry ?? null}
@@ -2360,24 +2368,13 @@ export function IssueDetail() {
           )}
         </Block>
 
-        {/* ③ Ответ: генерация черновика, шаблоны, композер */}
-        <AnswerBlock
-          issueId={issue.id}
-          useBatch={useBatch}
-          comment={comment}
-          setComment={setComment}
-          commentPublic={commentPublic}
-          setCommentPublic={setCommentPublic}
-          onSend={() => addComment.mutate(comment)}
-          sending={addComment.isPending}
-          isDemo={isDemo}
-        />
-
-        {/* Передать монтажнику — альтернативный исход заявки */}
-        <InstallerExportSection issueId={issue.id} />
-
-        {/* Комментарии — только лента: композер переехал в блок «Ответ» */}
-        <Block icon={MessageSquare} title="Комментарии" count={comments.length > 0 ? comments.length : null}>
+        {/* Комментарии — только лента: составление ответа живёт в липком баре.
+            «Передать монтажнику» тоже переехало в бар (две иконки слева). */}
+        <Block
+          title="Комментарии"
+          storageKey="comments"
+          count={comments.length > 0 ? (allComments || comments.length === 1 ? comments.length : `${visibleComments.length} из ${comments.length}`) : null}
+        >
           <div className="space-y-2">
             {visibleComments.map(c => {
               const isClient = c.author_kind === 'client'
@@ -2404,7 +2401,7 @@ export function IssueDetail() {
                 ? `bg-white/[0.04] border-l-2 border-muted/40${isAutoNotif ? ' opacity-80' : ''}`
                 : isClient
                 ? 'bg-frame border-l-2 border-info/60'
-                : 'bg-card border-l-2 border-accent/40'
+                : 'bg-frame border-l-2 border-accent/40'
               return (
                 <div
                   key={c.id}
@@ -2450,83 +2447,109 @@ export function IssueDetail() {
           </div>
 
         </Block>
-        </div>
 
-        {/* ── Правый рельс: контекст заявки ────────────────────── */}
-        <div className="space-y-4 issue-rail">
-          <Block title="Детали заявки">
-            <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
-              <span className="text-muted">Компания</span>
-              <span>{issue.company_name ?? '—'}</span>
-              <span className="text-muted">Контакт</span>
-              <span>{issue.contact_name ?? '—'}</span>
-              <span className="text-muted">Создана</span>
-              <span>{formatDate(issue.created_at) ?? '—'}</span>
-            </div>
+        {/* Связанные заявки — навигация по родителю/дочерним */}
+        {od && <RelatedIssuesSection d={od} onOpenExternal={openExternal} />}
 
-            {/* Live Okdesk info */}
-            {od && <div className="mt-4"><OkdeskInfo d={od} issueId={issue.id} assigneeName={issue.assignee_name ?? null} /></div>}
+        {/* Детали заявки — свойства, участники, сроки, параметры */}
+        <Block title="Детали заявки" storageKey="details" defaultOpen={false}>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
+            <span className="text-muted">Компания</span>
+            <span>{issue.company_name ?? '—'}</span>
+            <span className="text-muted">Контакт</span>
+            <span>{issue.contact_name ?? '—'}</span>
+            <span className="text-muted">Создана</span>
+            <span>{formatDate(issue.created_at) ?? '—'}</span>
+          </div>
 
-            {/* Если okdesk_detail пустой — показываем только assignee picker */}
-            {!od && (
-              <div className="mt-4"><AssigneeSection issueId={issue.id} assigneeName={issue.assignee_name ?? null} /></div>
-            )}
-          </Block>
+          {/* Live Okdesk info */}
+          {od && <div className="mt-3"><OkdeskInfo d={od} issueId={issue.id} assigneeName={issue.assignee_name ?? null} /></div>}
 
-          <AttachmentsSection issueId={issue.id} />
+          {/* Если okdesk_detail пустой — показываем только assignee picker */}
+          {!od && (
+            <div className="mt-3"><AssigneeSection issueId={issue.id} assigneeName={issue.assignee_name ?? null} /></div>
+          )}
+        </Block>
 
-          {od && <RelatedIssuesSection d={od} onOpenExternal={openExternal} />}
+        {/* Оценка разбора — петля обратной связи для обучения ИИ */}
+        <Block
+          title="Оценка разбора"
+          storageKey="feedback"
+          defaultOpen={false}
+          right={<span>влияет на обучение ИИ</span>}
+        >
+          <AiFeedbackPanel issueId={issue.id} />
+        </Block>
 
-          <Block icon={Sparkles} title="Оценка разбора" right={<span className="text-xs text-muted">влияет на обучение ИИ</span>}>
-            <AiFeedbackPanel issueId={issue.id} />
-          </Block>
-        </div>
+        {/* Подвал с мета-данными: то, что нужно редко и не требует действий */}
+        <div className="px-4 py-2.5 pb-4 text-[11px] leading-4 text-muted">
+          {[
+            issue.created_at ? `создана ${formatDate(issue.created_at)}` : null,
+            od?.author_name || issue.contact_name || null,
+            od?.deadline_at ? `дедлайн ${formatDate(od.deadline_at)}` : null,
+            od?.type_name ? `тип «${od.type_name}»` : null,
+            issue.assignee_name ? `ответственный ${issue.assignee_name}` : null,
+            od?.source ? `источник ${od.source}` : null,
+          ].filter(Boolean).join(' · ')}
         </div>
       </div>
 
-      {/* ── Липкий бар действий: главное действие всегда на виду ── */}
-      <div className="shrink-0 border-t border-border bg-card px-5 py-3 flex items-center justify-between gap-3">
-        <p className="text-[11px] text-muted min-w-0 truncate">
-          {comment
-            ? commentPublic
-              ? 'Ответ уйдёт клиенту публичным комментарием, заявка перейдёт в «Решена»'
-              : 'Комментарий приватный — клиент его не увидит, заявка перейдёт в «Решена»'
-            : 'Напишите ответ в блоке «Ответ», чтобы решить заявку'}
-        </p>
-        <div className="flex items-center gap-2 shrink-0">
-          <div className="relative">
-            <button
-              onClick={() => setMoreActionsOpen(v => !v)}
-              disabled={isDemo}
-              title={isDemo ? 'Недоступно в демо-режиме' : 'Другие переходы статуса'}
-              className={`flex items-center gap-1 bg-frame border border-border hover:border-accent rounded-md px-3 py-2 text-[13px] font-medium text-secondary transition-colors disabled:opacity-40 ${isDemo ? 'cursor-not-allowed' : ''}`}
-            >
-              Ещё <ChevronDown size={13} />
-            </button>
-            {moreActionsOpen && (
-              <>
-                <div className="fixed inset-0 z-40" onClick={() => setMoreActionsOpen(false)} />
-                <div className="absolute right-0 bottom-full mb-1 z-50 w-[200px] rounded-md overflow-hidden border border-border bg-frame shadow-lg">
-                  <button
-                    disabled={quickResolve.isPending}
-                    onClick={() => { setMoreActionsOpen(false); quickResolve.mutate('wait') }}
-                    title="Перевести в «В работе» (комментарий необязателен)"
-                    className="w-full flex items-center gap-2 px-3 py-2.5 text-[13px] text-left hover:bg-card-hover disabled:opacity-40"
-                  >
-                    <Play size={13} style={{ color: STATUS_COLOR.wait }} /> В работе
-                  </button>
-                  <button
-                    disabled={!comment || quickResolve.isPending}
-                    onClick={() => { setMoreActionsOpen(false); quickResolve.mutate('delayed') }}
-                    title="Отправить ответ и перевести в «Ожидание ответа» (+3 дня)"
-                    className="w-full flex items-center gap-2 px-3 py-2.5 text-[13px] text-left hover:bg-card-hover disabled:opacity-40"
-                  >
-                    <Pause size={13} style={{ color: STATUS_COLOR.delayed }} /> Ожидание ответа
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
+      {/* ── Липкий бар = БЫСТРЫЙ ОТВЕТ: единственная точка отправки ──
+          Свёрнутый: две иконки монтажнику → поле «Ответить клиенту…» → «Шаблон ▾»
+          → «Ответить и решить». По фокусу на поле раскрывается второй ряд. */}
+      <div className="shrink-0 border-t border-border bg-darker px-4 py-2.5 flex flex-col gap-2">
+        {installer.showPreview && installer.data && (
+          <InstallerPreview
+            data={installer.data}
+            onCopy={installer.handleCopy}
+            onHide={() => installer.setShowPreview(false)}
+          />
+        )}
+        {installer.isError && (
+          <p className="text-[11px] text-orange-400">Не удалось собрать данные для монтажника. Попробуйте ещё раз.</p>
+        )}
+
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => installer.handleCopy('calendar')}
+            disabled={installer.isFetching}
+            title={installer.copied === 'calendar' ? 'Скопировано' : 'Скопировать для монтажника — формат для календаря'}
+            className="flex h-[27px] w-[27px] shrink-0 items-center justify-center rounded-pill border border-border bg-frame text-secondary hover:border-accent hover:text-accent transition-colors disabled:opacity-50"
+          >
+            {installer.copied === 'calendar'
+              ? <Check size={13} className="text-success" />
+              : installer.isFetching
+              ? <Loader2 size={13} className="animate-spin" />
+              : <Calendar size={13} />}
+          </button>
+          <button
+            onClick={() => installer.handleCopy('messenger')}
+            disabled={installer.isFetching}
+            title={installer.copied === 'messenger' ? 'Скопировано' : 'Скопировать для монтажника — формат для мессенджера'}
+            className="flex h-[27px] w-[27px] shrink-0 items-center justify-center rounded-pill border border-border bg-frame text-secondary hover:border-accent hover:text-accent transition-colors disabled:opacity-50"
+          >
+            {installer.copied === 'messenger'
+              ? <Check size={13} className="text-success" />
+              : installer.isFetching
+              ? <Loader2 size={13} className="animate-spin" />
+              : <MessageSquare size={13} />}
+          </button>
+
+          <textarea
+            value={comment}
+            onChange={e => setComment(e.target.value)}
+            onFocus={() => setBarExpanded(true)}
+            onKeyDown={e => {
+              if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && comment) addComment.mutate(comment)
+            }}
+            rows={1}
+            placeholder="Ответить клиенту…"
+            title="Ctrl+Enter — отправить комментарий без смены статуса"
+            className={`flex-1 min-w-0 bg-frame border border-border text-[13px] leading-5 text-white placeholder:text-muted px-3.5 py-[7px] resize-none outline-none transition-all focus:border-accent ${barExpanded ? 'h-[84px] rounded-xl' : 'h-9 rounded-pill'}`}
+          />
+
+          <TemplatePicker trigger="text" onSelect={text => setComment(text)} issueId={issue.id} />
+
           <button
             disabled={!comment || quickResolve.isPending || isDemo}
             onClick={() => {
@@ -2536,14 +2559,104 @@ export function IssueDetail() {
               }
               quickResolve.mutate('completed')
             }}
-            title={isDemo ? 'Недоступно в демо-режиме' : 'Отправить ответ клиенту и перевести в «Решена»'}
-            className={`flex items-center gap-1.5 bg-accent hover:bg-accent/90 text-black rounded-md px-4 py-2 text-[13px] font-medium transition-colors disabled:opacity-40 ${quickResolve.isPending && quickResolve.variables === 'completed' ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
+            title={isDemo ? 'Недоступно в демо-режиме' : 'Отправить ответ клиенту и перевести заявку в «Решена»'}
+            className={`flex shrink-0 items-center gap-1.5 rounded-pill bg-accent hover:bg-accent/90 text-black px-4 py-[7px] text-[13px] font-medium transition-colors disabled:opacity-40 ${quickResolve.isPending && quickResolve.variables === 'completed' ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
           >
             {quickResolve.isPending && quickResolve.variables === 'completed'
               ? <Working label="Отправляю…" />
               : <><Check size={14} /> Ответить и решить</>}
           </button>
         </div>
+
+        {barExpanded && (
+          <>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <DraftChip
+                  issueId={issue.id}
+                  hasExtractable={useBatch}
+                  plate={selectedObj?.plate ?? null}
+                  onUseDraft={text => { setComment(text); setCommentPublic(true) }}
+                />
+                {/* Сегмент видимости: публичный ответ уходит клиенту */}
+                <div className="flex shrink-0 items-center rounded-pill border border-border bg-frame p-0.5">
+                  {([true, false] as const).map(pub => (
+                    <button
+                      key={String(pub)}
+                      onClick={() => setCommentPublic(pub)}
+                      title={pub ? 'Публичный — виден клиенту' : 'Внутренний комментарий — не виден клиенту'}
+                      className={`rounded-pill px-2.5 py-[3px] text-[11px] font-medium transition-colors ${
+                        commentPublic === pub
+                          ? pub
+                            ? 'bg-accent/15 text-accent'
+                            : 'bg-warning/15 text-warning'
+                          : 'text-muted hover:text-white'
+                      }`}
+                    >
+                      {pub ? 'Публичный' : 'Приватный'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <div className="relative">
+                  <button
+                    onClick={() => setMoreActionsOpen(v => !v)}
+                    disabled={isDemo}
+                    title={isDemo ? 'Недоступно в демо-режиме' : 'Другие действия: отправить комментарий, В работе, Ожидание ответа'}
+                    className={`flex items-center gap-1 rounded-pill bg-frame border border-border px-3 py-[5px] text-xs font-medium text-secondary hover:border-muted hover:text-white transition-colors disabled:opacity-40 ${isDemo ? 'cursor-not-allowed' : ''}`}
+                  >
+                    Ещё <ChevronDown size={12} />
+                  </button>
+                  {moreActionsOpen && (
+                    <>
+                      <div className="fixed inset-0 z-40" onClick={() => setMoreActionsOpen(false)} />
+                      <div className="absolute right-0 bottom-full mb-1 z-50 w-[230px] rounded-md overflow-hidden border border-border bg-frame shadow-lg">
+                        <button
+                          disabled={!comment || addComment.isPending}
+                          onClick={() => { setMoreActionsOpen(false); addComment.mutate(comment) }}
+                          title="Отправить комментарий, не меняя статус (Ctrl+Enter)"
+                          className="w-full flex items-center gap-2 px-3 py-2.5 text-[13px] text-left hover:bg-card-hover disabled:opacity-40"
+                        >
+                          <Send size={13} className="text-secondary" /> Отправить комментарий
+                        </button>
+                        <button
+                          disabled={quickResolve.isPending}
+                          onClick={() => { setMoreActionsOpen(false); quickResolve.mutate('wait') }}
+                          title="Перевести в «В работе» (комментарий необязателен)"
+                          className="w-full flex items-center gap-2 px-3 py-2.5 text-[13px] text-left hover:bg-card-hover disabled:opacity-40"
+                        >
+                          <Play size={13} style={{ color: STATUS_COLOR.wait }} /> В работе
+                        </button>
+                        <button
+                          disabled={!comment || quickResolve.isPending}
+                          onClick={() => { setMoreActionsOpen(false); quickResolve.mutate('delayed') }}
+                          title="Отправить ответ и перевести в «Ожидание ответа» (+3 дня)"
+                          className="w-full flex items-center gap-2 px-3 py-2.5 text-[13px] text-left hover:bg-card-hover disabled:opacity-40"
+                        >
+                          <Pause size={13} style={{ color: STATUS_COLOR.delayed }} /> Ожидание ответа
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+                <button
+                  onClick={() => setBarExpanded(false)}
+                  title="Свернуть поле ответа"
+                  className="flex items-center rounded-pill bg-frame border border-border px-3 py-[5px] text-xs font-medium text-secondary hover:border-muted hover:text-white transition-colors"
+                >
+                  Свернуть
+                </button>
+              </div>
+            </div>
+            <p className="text-[10px] leading-4 text-muted">
+              {commentPublic
+                ? 'Ответ уйдёт клиенту публичным комментарием'
+                : 'Приватный — виден только сотрудникам'}
+              {' · Ctrl+Enter — отправить комментарий без смены статуса'}
+            </p>
+          </>
+        )}
       </div>
     </div>
 

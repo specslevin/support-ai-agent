@@ -19,6 +19,27 @@ import { api, authApi } from './api/client'
 
 const queryClient = new QueryClient()
 
+/** Ширина рельсы карточки заявки (макет v4). Единственное место с этим числом —
+ *  и в ветке «Заявки», и в ветке «ИИ-чат» карточка всегда ровно такая. */
+const RAIL_W = 'w-[680px]'
+
+/** Порог, ниже которого при открытом треке левая панель (список/чат) скрывается:
+ *  треку нужно ≥520px, рельсе — 680px, вместе это уже 1200px. */
+const WIDE = 'min-[1600px]:flex'
+
+/** Трек + графики. Не оверлей, а обычный flex-сосед СЛЕВА от рельсы карточки.
+ *  Одна и та же разметка для обеих веток («Заявки» и «ИИ-чат»). Закрытая панель
+ *  не рендерится вообще; появление анимирует .track-slide (transform+opacity). */
+function TrackSlot({ issueId, open }: { issueId: number | null; open: boolean }) {
+  if (!open || issueId == null) return null
+  return (
+    <div className="flex-1 min-w-[520px] min-h-0 overflow-hidden bg-base">
+      <div className="track-slide h-full flex flex-col min-h-0">
+        <TrackPanel issueId={issueId} />
+      </div>
+    </div>
+  )
+}
 
 function UserIndicator() {
   const user = useAuthStore(s => s.user)
@@ -136,26 +157,21 @@ function Dashboard() {
         </header>
 
         {section === 'chat' ? (
-          <div className="flex flex-1 min-h-0 relative">
-            <div className={`flex flex-col transition-all min-h-0 ${
-              detailExpanded && selectedIssueId ? 'hidden' : selectedIssueId ? 'w-[45%]' : 'w-full'
+          /* Порядок слева-направо: [чат] [трек] [карточка 680] */
+          <div className="flex flex-1 min-h-0">
+            <div className={`flex-col min-h-0 flex-1 min-w-0 ${
+              trackOpen && selectedIssueId
+                ? `hidden ${WIDE}`
+                : detailExpanded && selectedIssueId ? 'hidden' : 'flex'
             }`}>
               <ChatPanel />
             </div>
-            {selectedIssueId && (
-              <div className={`${detailExpanded ? 'w-full' : 'w-[55%] border-l border-border'} flex flex-col min-h-0 overflow-hidden`}>
-                <IssueDetail />
-              </div>
-            )}
 
-            {/* Track + charts panel — same overlay as the issues branch */}
+            <TrackSlot issueId={selectedIssueId} open={trackOpen} />
+
             {selectedIssueId && (
-              <div
-                className={`absolute top-0 bottom-0 right-[55%] bg-base border-r border-border z-30 flex flex-col min-h-0 shadow-2xl transition-all duration-300 ${
-                  trackOpen ? 'left-0 opacity-100' : 'left-[45%] opacity-0 pointer-events-none'
-                }`}
-              >
-                {trackOpen && <TrackPanel issueId={selectedIssueId} />}
+              <div className={`${RAIL_W} shrink-0 border-l border-border flex flex-col min-h-0 overflow-hidden`}>
+                <IssueDetail />
               </div>
             )}
           </div>
@@ -166,32 +182,24 @@ function Dashboard() {
               <IssueFilters viewMode={viewMode} onViewModeChange={setViewMode} />
             </div>
 
-            {/* Content */}
-            <div className="flex flex-1 min-h-0 relative">
-              {/* В развёрнутом режиме список скрыт: карточке нужна вся ширина,
-                  чтобы включились две колонки раскладки v3. */}
-              {/* Карточке отдано 55%: при FullHD это ~1050px, чего хватает на две
-                  колонки раскладки v3 без разворота. Список ужимается до 45% —
-                  номер, тема и статус в нём читаются. */}
-              <div className={`flex flex-col transition-all min-h-0 ${
-                detailExpanded && selectedIssueId ? 'hidden' : selectedIssueId ? 'w-[45%] border-r border-border' : 'w-full border-r border-border'
+            {/* Content — порядок слева-направо: [список] [трек] [карточка 680] */}
+            <div className="flex flex-1 min-h-0">
+              {/* Список: тянется по остатку ширины; при открытом треке ужимается
+                  до узкой полосы (номер + тема + статус читаются), а на окне
+                  меньше 1600px уходит совсем — треку и рельсе нужно ≥1200px. */}
+              <div className={`flex-col min-h-0 border-r border-border ${
+                trackOpen && selectedIssueId
+                  ? `w-[280px] shrink-0 hidden ${WIDE}`
+                  : detailExpanded && selectedIssueId ? 'hidden' : 'flex flex-1 min-w-0'
               }`}>
                 <IssuesList viewMode={viewMode} onViewModeChange={setViewMode} />
               </div>
-              {selectedIssueId && (
-                <div className={`${detailExpanded ? 'w-full' : 'w-[55%]'} flex flex-col min-h-0 overflow-hidden`}>
-                  <IssueDetail />
-                </div>
-              )}
 
-              {/* Track + charts panel — slides out to the left of the detail drawer */}
+              <TrackSlot issueId={selectedIssueId} open={trackOpen} />
+
               {selectedIssueId && (
-                <div
-                  className={`absolute top-0 bottom-0 right-[55%] bg-base border-r border-border z-30 flex flex-col min-h-0 shadow-2xl transition-all duration-300 ${
-                    trackOpen ? 'left-0 opacity-100' : 'left-[45%] opacity-0 pointer-events-none'
-                  }`}
-                >
-                  {trackOpen && <TrackPanel issueId={selectedIssueId} />}
+                <div className={`${RAIL_W} shrink-0 border-l border-border flex flex-col min-h-0 overflow-hidden`}>
+                  <IssueDetail />
                 </div>
               )}
             </div>

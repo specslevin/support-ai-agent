@@ -13,7 +13,7 @@ export function StatusBadge({ status }: { status: string | null }) {
   return (
     <span
       style={statusPillStyle(s)}
-      className="inline-block text-xs px-2.5 py-0.5 rounded-pill font-medium whitespace-nowrap"
+      className="inline-block text-xs px-2.5 py-0.5 rounded-pill font-medium whitespace-nowrap border"
     >
       {label}
     </span>

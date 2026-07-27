@@ -24,6 +24,7 @@ export default {
 
         // Borders / strokes
         border: '#404040',          // Stroke/Default
+        line: '#262626',            // Stroke/Subtle — 1px-разделители секций в карточке v4
 
         // Accent states
         orange: '#FB923C',          // Accent/Orange — ошибки
