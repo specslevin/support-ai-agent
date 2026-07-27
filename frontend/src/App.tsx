@@ -138,12 +138,12 @@ function Dashboard() {
         {section === 'chat' ? (
           <div className="flex flex-1 min-h-0 relative">
             <div className={`flex flex-col transition-all min-h-0 ${
-              detailExpanded && selectedIssueId ? 'hidden' : selectedIssueId ? 'w-3/5' : 'w-full'
+              detailExpanded && selectedIssueId ? 'hidden' : selectedIssueId ? 'w-[45%]' : 'w-full'
             }`}>
               <ChatPanel />
             </div>
             {selectedIssueId && (
-              <div className={`${detailExpanded ? 'w-full' : 'w-2/5 border-l border-border'} flex flex-col min-h-0 overflow-hidden`}>
+              <div className={`${detailExpanded ? 'w-full' : 'w-[55%] border-l border-border'} flex flex-col min-h-0 overflow-hidden`}>
                 <IssueDetail />
               </div>
             )}
@@ -151,8 +151,8 @@ function Dashboard() {
             {/* Track + charts panel — same overlay as the issues branch */}
             {selectedIssueId && (
               <div
-                className={`absolute top-0 bottom-0 right-[40%] bg-base border-r border-border z-30 flex flex-col min-h-0 shadow-2xl transition-all duration-300 ${
-                  trackOpen ? 'left-0 opacity-100' : 'left-[40%] opacity-0 pointer-events-none'
+                className={`absolute top-0 bottom-0 right-[55%] bg-base border-r border-border z-30 flex flex-col min-h-0 shadow-2xl transition-all duration-300 ${
+                  trackOpen ? 'left-0 opacity-100' : 'left-[45%] opacity-0 pointer-events-none'
                 }`}
               >
                 {trackOpen && <TrackPanel issueId={selectedIssueId} />}
@@ -170,13 +170,16 @@ function Dashboard() {
             <div className="flex flex-1 min-h-0 relative">
               {/* В развёрнутом режиме список скрыт: карточке нужна вся ширина,
                   чтобы включились две колонки раскладки v3. */}
+              {/* Карточке отдано 55%: при FullHD это ~1050px, чего хватает на две
+                  колонки раскладки v3 без разворота. Список ужимается до 45% —
+                  номер, тема и статус в нём читаются. */}
               <div className={`flex flex-col transition-all min-h-0 ${
-                detailExpanded && selectedIssueId ? 'hidden' : selectedIssueId ? 'w-3/5 border-r border-border' : 'w-full border-r border-border'
+                detailExpanded && selectedIssueId ? 'hidden' : selectedIssueId ? 'w-[45%] border-r border-border' : 'w-full border-r border-border'
               }`}>
                 <IssuesList viewMode={viewMode} onViewModeChange={setViewMode} />
               </div>
               {selectedIssueId && (
-                <div className={`${detailExpanded ? 'w-full' : 'w-2/5'} flex flex-col min-h-0 overflow-hidden`}>
+                <div className={`${detailExpanded ? 'w-full' : 'w-[55%]'} flex flex-col min-h-0 overflow-hidden`}>
                   <IssueDetail />
                 </div>
               )}
@@ -184,8 +187,8 @@ function Dashboard() {
               {/* Track + charts panel — slides out to the left of the detail drawer */}
               {selectedIssueId && (
                 <div
-                  className={`absolute top-0 bottom-0 right-[40%] bg-base border-r border-border z-30 flex flex-col min-h-0 shadow-2xl transition-all duration-300 ${
-                    trackOpen ? 'left-0 opacity-100' : 'left-[40%] opacity-0 pointer-events-none'
+                  className={`absolute top-0 bottom-0 right-[55%] bg-base border-r border-border z-30 flex flex-col min-h-0 shadow-2xl transition-all duration-300 ${
+                    trackOpen ? 'left-0 opacity-100' : 'left-[45%] opacity-0 pointer-events-none'
                   }`}
                 >
                   {trackOpen && <TrackPanel issueId={selectedIssueId} />}

@@ -3,7 +3,7 @@ import { useState, useMemo, useEffect, useRef } from 'react'
 import {
   ChevronDown, ChevronUp, AlertTriangle, X, Check, Star, Bot, RefreshCw, Database,
   Lightbulb, Map, FilePlus, ExternalLink, Pause, Send,
-  Layers, Power, RadioTower, Scissors, HelpCircle, FileText, Sheet,
+  Layers, FileText, Sheet,
   Image as ImageIcon, Paperclip, PanelRightClose, Info, MessageSquare, Sparkles, Wand2,
   Maximize2, Minimize2,
   Loader2, Lock, User, Headset, Play, ThumbsUp, ThumbsDown,
@@ -11,15 +11,15 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { api } from '../api/client'
-import type { ExtractedData } from '../api/client'
 import { useIssuesStore } from '../store/issuesStore'
 import { useUserStore } from '../store/userStore'
 import { useAuthStore } from '../store/authStore'
 import { StatusBadge } from './StatusBadge'
 import { EmployeeMenu, TypeMenu } from './pickers'
-import type { OkdeskDetail, Template, AutomationResult, Analysis, BatchResult } from '../types'
+import type { OkdeskDetail, Template, AutomationResult, BatchResult } from '../types'
 import { extractPlaceholders, hasPlaceholders, renderTemplate, computedPlaceholderValue } from '../lib/templates'
 import { STATUS_COLOR, statusPillStyle } from '../lib/status'
+import { TelemetryPanel } from './TelemetryPanel'
 
 function formatDate(iso: string | null | undefined) {
   if (!iso) return null
@@ -895,29 +895,15 @@ function StatusActionModal({
   )
 }
 
-const FLAG_META: Record<string, { icon: LucideIcon; label: string }> = {
-  power_off: { icon: Power, label: 'Нет питания' },
-  jamming: { icon: RadioTower, label: 'Глушение GPS' },
-  track_gap: { icon: Scissors, label: 'Обрыв трека' },
-  no_data: { icon: AlertTriangle, label: 'Нет данных' },
-  object_not_found: { icon: HelpCircle, label: 'Объект не найден' },
-}
+// Расшифровка флагов телеметрии и вывод метрик переехали в TelemetryPanel.
 
-function Fact({ label, value, warn }: { label: string; value: React.ReactNode; warn?: boolean }) {
-  if (value == null || value === '') return null
-  return (
-    <>
-      <span className="text-muted">{label}</span>
-      <span className={warn ? 'text-warning' : ''}>{value}</span>
-    </>
-  )
-}
-
-function AutoAnalysis({ issueId, latestAnalysis, issueTitle, companyName }: { issueId: number; latestAnalysis: Analysis | null; issueTitle?: string | null; companyName?: string | null }) {
+// Управление одиночным анализом: запуск, уточнение номера/даты, предупреждения.
+// Данные (таблица разбора, метрики, вердикт) рисуют блоки «① Разбор» и
+// «② Телеметрия и вердикт» — они читают тот же кэш `automate-cached`.
+function AutoAnalysis({ issueId, issueTitle, companyName }: { issueId: number; issueTitle?: string | null; companyName?: string | null }) {
   const queryClient = useQueryClient()
   const isDemo = useAuthStore(s => s.user?.role === 'demo')
   const [result, setResult] = useState<AutomationResult | null>(null)
-  const [confirmResolve, setConfirmResolve] = useState(false)
   // Ручное уточнение гос.номера/даты (опечатка клиента) → переанализ.
   const [refineOpen, setRefineOpen] = useState(false)
   const [refinePlate, setRefinePlate] = useState('')
@@ -969,7 +955,6 @@ function AutoAnalysis({ issueId, latestAnalysis, issueTitle, companyName }: { is
     mutationFn: (override?: { plate?: string; date?: string } | void) => api.automateIssue(issueId, override || undefined),
     onSuccess: (data) => {
       setResult(data)
-      setConfirmResolve(false)
       if (isDemo) localStorage.setItem(demoAnalyzedKey, '1')
       queryClient.invalidateQueries({ queryKey: ['issue', issueId] })
       queryClient.invalidateQueries({ queryKey: ['automate-cached', issueId] })
@@ -978,20 +963,8 @@ function AutoAnalysis({ issueId, latestAnalysis, issueTitle, companyName }: { is
     },
   })
 
-  const resolve = useMutation({
-    mutationFn: (text: string) => api.resolveIssue(issueId, 'completed', text, undefined, true),
-    onSuccess: () => {
-      setConfirmResolve(false)
-      queryClient.invalidateQueries({ queryKey: ['issue', issueId] })
-      queryClient.invalidateQueries({ queryKey: ['issues'] })
-      queryClient.invalidateQueries({ queryKey: ['comments', issueId] })
-    },
-  })
-
   const shown = result ?? (cached as AutomationResult | null)
-  const t = shown?.telemetry
   const p = shown?.parsed
-  const conf = shown ? Math.round(shown.confidence * 100) : 0
   const isCached = !result && !!cached
 
   // Подозрение на ошибку клиента в гос.номере: не тот формат ИЛИ объект не найден в мониторинге.
@@ -1007,15 +980,9 @@ function AutoAnalysis({ issueId, latestAnalysis, issueTitle, companyName }: { is
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [plateSuspect, p?.plate, p?.date])
 
-  if (isBatch) {
-    return (
-      <p className="flex items-start gap-1.5 text-[11px] text-muted leading-relaxed">
-        <Layers size={13} className="shrink-0 mt-0.5" />
-        Заявка содержит несколько объектов — используйте «Разбор по объектам» ниже
-        (одиночный автоанализ показал бы только один ТС).
-      </p>
-    )
-  }
+  // У мультиобъектной заявки разбор ведёт BatchAnalysis в том же блоке —
+  // одиночный автоанализ взял бы только первый ТС и вводил бы в заблуждение.
+  if (isBatch) return null
 
   return (
     <div className="space-y-3">
@@ -1056,27 +1023,8 @@ function AutoAnalysis({ issueId, latestAnalysis, issueTitle, companyName }: { is
             <p className="flex items-start gap-1.5 text-warning"><AlertTriangle size={13} className="shrink-0 mt-0.5" /> {shown.reasoning}</p>
           )}
 
-          {p && (p.plate || p.date || p.sheet_mileage_km != null || p.declared_system_km != null) && (
-            <div className="bg-card border border-frame rounded-lg px-3 py-2 space-y-1.5">
-              <div className="flex items-center gap-1.5 text-[11px] font-semibold text-muted">
-                <Bot size={12} /> Что прочитал ИИ
-                {p.llm_extracted && (
-                  <span
-                    title="Поля восстановлены ИИ — regex не справился, проверьте"
-                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-info/15 text-info text-[10px] font-medium"
-                  >
-                    <Sparkles size={10} /> ИИ-извлечено
-                  </span>
-                )}
-              </div>
-              <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-[11px]">
-                <Fact label="Гос.номер" value={p.plate} />
-                <Fact label="Дата" value={p.date} />
-                <Fact label="Путевой лист" value={p.sheet_mileage_km != null ? `${p.sheet_mileage_km} км` : null} />
-                <Fact label="В системе" value={p.declared_system_km != null ? `${p.declared_system_km} км` : null} />
-              </div>
-            </div>
-          )}
+          {/* «Что прочитал ИИ» переехало в блок «① Разбор» — гос.номер, дата и
+              пробеги живут в таблице разбора, там же и правятся. */}
 
           {/* Заметное предупреждение о вероятной ошибке клиента в гос.номере. */}
           {plateSuspect && (
@@ -1150,56 +1098,11 @@ function AutoAnalysis({ issueId, latestAnalysis, issueTitle, companyName }: { is
             )}
           </div>
 
-          {t && (t.object_name || t.system_mileage_km != null) && (
-            <div className="bg-frame rounded-lg px-3 py-2.5 space-y-2">
-              {t.flags.length > 0 && (
-                <div className="flex flex-wrap gap-1.5">
-                  {t.flags.map(f => {
-                    const m = FLAG_META[f]
-                    const FI = m?.icon
-                    return (
-                      <span key={f} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-warning/15 text-warning text-[10px]">
-                        {FI && <FI size={11} />}{m?.label ?? f}
-                      </span>
-                    )
-                  })}
-                </div>
-              )}
-              <div className="grid grid-cols-2 gap-x-4 gap-y-1">
-                <Fact label="Объект" value={t.object_name} />
-                <Fact label="Гос.номер" value={p?.plate} />
-                <Fact label="Дата неисправности" value={p?.date} />
-                <Fact label="Путевой лист" value={p?.sheet_mileage_km != null ? `${p.sheet_mileage_km} км` : null} />
-                <Fact label="По системе" value={t.system_mileage_km != null ? `${t.system_mileage_km} км` : null} />
-                <Fact label="Макс. скорость" value={t.max_speed != null ? `${t.max_speed} км/ч` : null} />
-                <Fact label="В движении" value={t.move_time_min != null ? `${t.move_time_min} мин` : null} />
-                <Fact label="Спутники (ср.)" value={t.avg_sat} warn={(t.avg_sat ?? 99) < 6} />
-                <Fact label="Питание (мин.)" value={t.min_power_v != null ? `${t.min_power_v} В` : null} warn={(t.min_power_v ?? 99) < 7} />
-                <Fact label="Обрыв трека" value={t.max_gap_min != null ? `${t.max_gap_min} мин` : null} warn={(t.max_gap_min ?? 0) > 30} />
-                <Fact label="Макс. скорость (пакеты)" value={t.max_speed_packet != null ? `${t.max_speed_packet} км/ч` : null} warn={(t.max_speed_packet ?? 0) > 110} />
-                <Fact label="Выбросы скорости" value={t.speed_spike_count > 0 ? `${t.speed_spike_count}` : null} warn={t.speed_spike_count > 0} />
-                <Fact label="Телепорты трека" value={t.teleport_jumps > 0 ? `${t.teleport_jumps}` : null} warn={t.teleport_jumps > 0} />
-                <Fact label="Пакетов" value={t.packets} />
-              </div>
-            </div>
-          )}
+          {/* Сетка метрик и строка вердикта переехали в TelemetryPanel — блок
+              «② Телеметрия и вердикт» рисует их по выбранному в таблице объекту. */}
 
           {shown.draft_answer && (
             <div className="space-y-1.5">
-              <div className="flex items-center gap-2">
-                <span className="px-2 py-0.5 rounded bg-accent/15 text-accent text-[10px] font-semibold">{shown.category}</span>
-                <span className={`text-[10px] ${shown.needs_review ? 'text-warning' : 'text-green-400'}`}>
-                  уверенность {conf}%{shown.needs_review ? ' · нужна проверка' : ''}
-                </span>
-                {shown.auto_eligible && (
-                  <span
-                    title="ИИ уверен: вердикт надёжен (можно отвечать без детальной проверки)"
-                    className="px-2 py-0.5 rounded bg-success/15 text-success text-[10px] font-semibold"
-                  >
-                    ✓ можно авто
-                  </span>
-                )}
-              </div>
               {shown.needs_remote_diagnostics && (
                 <div className="flex items-start gap-1.5 bg-warning/10 border border-warning/30 rounded-lg px-3 py-2 text-[11px] text-warning leading-relaxed">
                   <AlertTriangle size={13} className="shrink-0 mt-0.5" /> Требуется удалённая диагностика (клиент подтвердил питание)
@@ -1210,9 +1113,6 @@ function AutoAnalysis({ issueId, latestAnalysis, issueTitle, companyName }: { is
                   <AlertTriangle size={13} className="shrink-0 mt-0.5" /> Спецтехника — оценивать по факту работы
                 </div>
               )}
-              <p className="text-white/90 leading-relaxed bg-frame rounded-lg px-3 py-2.5 whitespace-pre-wrap">
-                {shown.draft_answer}
-              </p>
               {shown.reasoning && !shown.error && (
                 <p className="flex items-start gap-1.5 text-muted leading-relaxed text-[11px]"><Lightbulb size={13} className="shrink-0 mt-0.5" /> {shown.reasoning}</p>
               )}
@@ -1220,60 +1120,94 @@ function AutoAnalysis({ issueId, latestAnalysis, issueTitle, companyName }: { is
           )}
         </div>
       )}
-
-      {/* Прошлый анализ */}
-      {latestAnalysis && latestAnalysis.mileage_from_system != null && (
-        <div className="text-xs space-y-1.5 pt-2 border-t border-border">
-          <span className="text-[10px] text-muted/60">Прошлый анализ</span>
-          <div className="grid grid-cols-2 gap-x-4 gap-y-1">
-            <span className="text-muted">Путевой лист</span>
-            <span>{latestAnalysis.mileage_from_sheet?.toLocaleString('ru-RU') ?? '—'} км</span>
-            <span className="text-muted">По системе</span>
-            <span>{latestAnalysis.mileage_from_system?.toLocaleString('ru-RU')} км</span>
-            {latestAnalysis.discrepancy_percent != null && (
-              <>
-                <span className="text-muted">Расхождение</span>
-                <span className={Math.abs(latestAnalysis.discrepancy_percent) > 5 ? 'text-warning' : 'text-green-400'}>
-                  {latestAnalysis.discrepancy_percent.toFixed(1)}%
-                </span>
-              </>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Действия — в самом низу блока, после всех данных */}
-      {shown?.draft_answer && (
-        resolve.isSuccess ? (
-          <p className="flex items-center justify-center gap-1.5 text-xs text-green-400 py-1.5 border-t border-border"><Check size={14} /> Заявка решена, ответ отправлен клиенту</p>
-        ) : (
-          <div className="space-y-1.5 pt-2 border-t border-border">
-            <div className="flex gap-2">
-              {confirmResolve ? (
-                <button
-                  onClick={() => resolve.mutate(shown.draft_answer)}
-                  disabled={resolve.isPending}
-                  className={`flex items-center justify-center gap-1.5 flex-1 bg-green-600 hover:bg-green-500 text-white text-xs font-semibold py-1.5 rounded-lg transition-colors disabled:opacity-60 ${resolve.isPending ? 'animate-pulse cursor-wait' : ''}`}
-                >
-                  {resolve.isPending ? <Working label="Отправляю ответ…" /> : <>Точно решить? <Check size={14} /></>}
-                </button>
-              ) : (
-                <button
-                  onClick={() => setConfirmResolve(true)}
-                  title="Отправить ответ клиенту и перевести заявку в «Решена»"
-                  className="flex items-center justify-center gap-1.5 flex-1 bg-green-600/90 hover:bg-green-500 text-white text-xs font-semibold py-1.5 rounded-lg transition-colors"
-                >
-                  <Check size={14} /> Ответить и решить
-                </button>
-              )}
-            </div>
-            {resolve.isError && (
-              <p className="text-xs text-orange-400">Ошибка при отправке. Попробуйте снова.</p>
-            )}
-          </div>
-        )
-      )}
+      {/* Черновик ответа показывает блок «Ответ» (кнопка «Составить ответ»),
+          решение заявки — липкий бар. Здесь ни того, ни другого нет: одно
+          действие на экране и один источник черновика. */}
     </div>
+  )
+}
+
+/**
+ * Разбор одиночной заявки — та же таблица, что и у пакетной, но из одной строки.
+ * Оператор видит разбор одинаково независимо от того, один в заявке объект или
+ * двадцать. Данные берём из кэша автоанализа: он уже содержит и распознанные
+ * поля, и телеметрию.
+ */
+function SingleParseTable({ issueId, onSelect }: { issueId: number; onSelect?: (obj: import('../types').BatchObject) => void }) {
+  const { data } = useQuery({
+    queryKey: ['automate-cached', issueId],
+    queryFn: () => api.getCachedAutomate(issueId),
+    staleTime: 5 * 60_000,
+  })
+  const res = data?.cached ? (data as unknown as AutomationResult) : null
+  const p = res?.parsed
+  const t = res?.telemetry
+
+  // Строку отдаём наверх, чтобы блок телеметрии показывал этот же объект.
+  useEffect(() => {
+    if (!res || !onSelect) return
+    onSelect({
+      file: '', plate: p?.plate ?? null, date: p?.date ?? null,
+      sheet_mileage_km: p?.sheet_mileage_km ?? null,
+      declared_system_km: p?.declared_system_km ?? null,
+      system_mileage_km: t?.system_mileage_km ?? null,
+      flags: t?.flags ?? [], teleport_jumps: t?.teleport_jumps ?? 0,
+      verdict: res.category, telemetry: t ?? null,
+      spec_vehicle: res.spec_vehicle,
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [res])
+
+  if (!res) return null
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-[11px]">
+        <thead className="text-muted">
+          <tr className="text-left">
+            <th className="font-medium pb-1.5 pr-2">Гос.номер</th>
+            <th className="font-medium pb-1.5 pr-2">Дата</th>
+            <th className="font-medium pb-1.5 pr-2">ПЛ</th>
+            <th className="font-medium pb-1.5 pr-2">ГЛОНАСС заявл.</th>
+            <th className="font-medium pb-1.5 pr-2">По факту</th>
+            <th className="font-medium pb-1.5 pr-2">Вердикт</th>
+            <th className="font-medium pb-1.5 text-center">Трек</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr className="border-t border-border/50">
+            <td className="py-1.5 pr-2 font-mono">{p?.plate ?? '—'}</td>
+            <td className="pr-2">{p?.date ?? '—'}</td>
+            <td className="pr-2">{p?.sheet_mileage_km ?? '—'}</td>
+            <td className="pr-2">{p?.declared_system_km ?? '—'}</td>
+            <td className="pr-2 text-white font-medium">{t?.system_mileage_km ?? '—'}</td>
+            <td className="pr-2">
+              <span className={VERDICT_STYLE[res.category] ?? 'text-white'}>{res.category}</span>
+              {res.spec_vehicle && (
+                <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-full bg-warning/15 text-warning text-[9px] font-medium align-middle">
+                  спецтехника
+                </span>
+              )}
+            </td>
+            <td className="text-center">
+              <TrackLink plate={p?.plate ?? null} date={p?.date ?? null} />
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function TrackLink({ plate, date }: { plate: string | null; date: string | null }) {
+  const openTrack = useIssuesStore(s => s.openTrack)
+  if (!plate || !date) return null
+  return (
+    <button
+      onClick={() => openTrack(plate, date)}
+      title="Карта и графики этого ТС"
+      className="inline-flex text-muted hover:text-accent transition-colors"
+    ><Map size={14} /></button>
   )
 }
 
@@ -1321,7 +1255,16 @@ function ComposeAnswerButton({ issueId, hasExtractable, onUseDraft }: { issueId:
   )
 }
 
-function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal }: { issueId: number; issueTitle?: string | null; issueDescription?: string | null; companyName?: string | null; onOpenExternal: (extId: number) => void }) {
+function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, selectedIdx, onSelectObject }: {
+  issueId: number
+  issueTitle?: string | null
+  issueDescription?: string | null
+  companyName?: string | null
+  onOpenExternal: (extId: number) => void
+  /** Индекс строки, чью телеметрию показывает блок «② Телеметрия и вердикт». */
+  selectedIdx?: number | null
+  onSelectObject?: (idx: number, objects: import('../types').BatchObject[]) => void
+}) {
   const queryClient = useQueryClient()
   const isDemo = useAuthStore(s => s.user?.role === 'demo')
   const openTrack = useIssuesStore(s => s.openTrack)
@@ -1580,7 +1523,18 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal }
                   const isVerdictLoading = !!o.plate && verdictLoading.has(key)
                   const isPlateLoading = plateLoading.has(key)
                   return (
-                    <tr key={idx} className={`border-t border-border/50 ${trackOpen && trackPlate === o.plate && trackDate === o.date ? 'bg-accent/10 border-l-2 border-l-accent/60' : ''}`}>
+                    <tr
+                      key={idx}
+                      onClick={() => onSelectObject?.(idx, res.objects)}
+                      title="Показать телеметрию этого ТС"
+                      className={`border-t border-border/50 cursor-pointer ${
+                        trackOpen && trackPlate === o.plate && trackDate === o.date
+                          ? 'bg-accent/10 border-l-2 border-l-accent/60'
+                          : selectedIdx === idx
+                          ? 'bg-card-hover border-l-2 border-l-accent'
+                          : 'hover:bg-card-hover/60'
+                      }`}
+                    >
                       <td className="py-1 pr-2 font-mono">
                         {isDemo ? (o.plate ?? '—') : editingPlateKey === key ? (
                           <span className="inline-flex items-center gap-1">
@@ -1774,115 +1728,10 @@ function AttachmentsSection({ issueId }: { issueId: number }) {
   )
 }
 
-function ExtractedDataBlock({ issueId }: { issueId: number }) {
-  const [data, setData] = useState<ExtractedData | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+// ExtractedDataBlock удалён: разбор одиночной заявки показывает та же таблица,
+// что и пакетный (SingleParseTable), сырые тексты заявки и вложений не нужны —
+// письмо клиента есть в блоке «Вопрос клиента».
 
-  useEffect(() => {
-    setData(null)
-    setLoading(false)
-    setError(null)
-  }, [issueId])
-
-  const load = async () => {
-    setLoading(true)
-    setError(null)
-    try {
-      const result = await api.getExtracted(issueId)
-      setData(result)
-    } catch {
-      setError('Ошибка загрузки извлечённых данных')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  return (
-    <Block icon={FileText} title="Извлечённые данные из заявки">
-      {!data && !loading && (
-        <button
-          onClick={load}
-          className="flex items-center justify-center gap-2 w-full bg-card border border-border hover:border-accent text-muted hover:text-white text-xs font-semibold py-2 rounded-lg transition-colors"
-        >
-          <FileText size={14} /> Показать извлечённые данные
-        </button>
-      )}
-
-      {loading && (
-        <div className="flex items-center gap-2 text-xs text-muted py-2">
-          <Loader2 size={14} className="animate-spin text-accent shrink-0" />
-          Извлекаю данные из заявки…
-        </div>
-      )}
-
-      {error && (
-        <p className="text-xs text-orange-400 flex items-center gap-1.5">
-          <AlertTriangle size={13} className="shrink-0" /> {error}
-        </p>
-      )}
-
-      {data && (
-        <div className="space-y-3 text-xs">
-          <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
-            <span className="text-muted">Гос. номер</span>
-            <span className="font-mono">{data.plate ?? '—'}</span>
-
-            <span className="text-muted">Дата неисправности</span>
-            <span>{data.date ?? '—'}</span>
-
-            <span className="text-muted">Пробег по путевому листу (из заявки)</span>
-            <span>{data.sheet_mileage_km != null ? `${data.sheet_mileage_km} км` : 'не найдено'}</span>
-
-            <span className="text-muted">Пробег в системе (заявлено клиентом)</span>
-            <span>{data.declared_system_km != null ? `${data.declared_system_km} км` : 'не найдено'}</span>
-
-            <span className="text-muted">Вложений</span>
-            <span>{data.attachments_count}</span>
-          </div>
-
-          <details className="group">
-            <summary className="flex items-center gap-1.5 cursor-pointer text-muted hover:text-white transition-colors list-none select-none">
-              <ChevronDown size={13} className="transition-transform group-open:rotate-180" />
-              Текст заявки
-            </summary>
-            <div className="mt-2 max-h-48 overflow-y-auto bg-frame border border-border rounded-lg px-3 py-2">
-              <pre className="font-mono text-[11px] text-white/80 whitespace-pre-wrap leading-relaxed">
-                {data.body_text || <span className="text-muted/60">Текст отсутствует</span>}
-              </pre>
-            </div>
-          </details>
-
-          <details className="group">
-            <summary className="flex items-center gap-1.5 cursor-pointer text-muted hover:text-white transition-colors list-none select-none">
-              <ChevronDown size={13} className="transition-transform group-open:rotate-180" />
-              Текст вложений
-            </summary>
-            <div className="mt-2 max-h-48 overflow-y-auto bg-frame border border-border rounded-lg px-3 py-2">
-              <pre className="font-mono text-[11px] text-white/80 whitespace-pre-wrap leading-relaxed">
-                {data.attachments_text || <span className="text-muted/60">Текст вложений отсутствует</span>}
-              </pre>
-            </div>
-          </details>
-
-          <button
-            onClick={load}
-            className="flex items-center gap-1 text-[10px] text-muted hover:text-white transition-colors"
-          >
-            <RefreshCw size={11} /> Обновить
-          </button>
-        </div>
-      )}
-    </Block>
-  )
-}
-
-// Гос.номер РФ: буква + 3 цифры + 2 буквы [+ 2-3 цифры региона], кириллица и
-// латиница-двойники. Считаем уникальные номера. Без lookbehind — он даёт
-// SyntaxError при парсинге в старых WebKit/Safari (<16.4) и валит весь бандл;
-// для подсчёта он не нужен. Нормализация совпадает с бэкендом _normalize_plate:
-// убрать пробелы/дефисы, upper-case, латиница→кириллица (иначе один и тот же ТС
-// в кириллице и латинице посчитается как два — рассинхрон с бэком, см. 64481).
 // Lookbehind как в бэковском `_PLATE_STD_RE`: номер не должен начинаться в середине
 // слова/числа (иначе «2.В524ОА» или «Акт122» ложно считаются номером) — чтобы
 // countPlates на фронте совпадал с распознаванием номеров на бэке.
@@ -1891,6 +1740,7 @@ const LAT_TO_CYR: Record<string, string> = {
   A: 'А', B: 'В', E: 'Е', K: 'К', M: 'М', H: 'Н', O: 'О',
   P: 'Р', C: 'С', T: 'Т', Y: 'У', X: 'Х',
 }
+
 function normPlate(raw: string): string {
   return raw.replace(/[\s-]/g, '').toUpperCase()
     .replace(/[ABEKMHOPCTYX]/g, c => LAT_TO_CYR[c] || c)
@@ -1927,90 +1777,6 @@ function isBatchIssue(
 ): boolean {
   if (extractableCount > 0) return true
   return countPlates(`${issue.subject ?? ''}\n${stripHtml(description)}`) >= 2
-}
-
-function AnalysisWizard({
-  issue,
-  description,
-  extractableCount,
-  latestAnalysis,
-  onOpenExternal,
-}: {
-  issue: { id: number; subject?: string | null; company_name?: string | null }
-  description?: string | null
-  extractableCount: number
-  latestAnalysis: Analysis | null
-  onOpenExternal: (extId: number) => void
-}) {
-  const useBatch = isBatchIssue(issue, description, extractableCount)
-
-  // Шаг «Составить ответ» переехал в отдельный блок «Ответ» под этим мастером:
-  // там же композер, шаблоны и выбор публичный/приватный.
-  const steps: { n: number; title: string }[] = [
-    { n: 1, title: 'Разбор заявки' },
-    { n: 2, title: 'Анализ заявки' },
-  ]
-
-  return (
-    <div className="space-y-5">
-      {/* Компактный степпер: номера шагов с подписями */}
-      <div className="flex items-center gap-2">
-        {steps.map((s, i) => (
-          <div key={s.n} className="flex items-center gap-2">
-            <div className="flex items-center gap-1.5">
-              <span className="flex items-center justify-center w-5 h-5 rounded-full bg-accent/90 text-black text-[11px] font-bold shrink-0">
-                {s.n}
-              </span>
-              <span className="text-xs font-semibold text-white/90">{s.title}</span>
-            </div>
-            {i < steps.length - 1 && <span className="text-muted">→</span>}
-          </div>
-        ))}
-      </div>
-
-      {/* Шаг 1. Разбор данных */}
-      <div className="space-y-2">
-        <div className="flex items-center gap-2 text-xs font-semibold text-muted uppercase tracking-wide">
-          <span className="flex items-center justify-center w-4 h-4 rounded-full border border-border text-[10px] text-white/80">1</span>
-          Разбор заявки
-        </div>
-        {useBatch ? (
-          <BatchAnalysis
-            key={issue.id}
-            issueId={issue.id}
-            issueTitle={issue.subject}
-            issueDescription={description}
-            companyName={issue.company_name}
-            onOpenExternal={onOpenExternal}
-          />
-        ) : (
-          <ExtractedDataBlock issueId={issue.id} />
-        )}
-      </div>
-
-      {/* Шаг 2. Анализ */}
-      <div className="space-y-2">
-        <div className="flex items-center gap-2 text-xs font-semibold text-muted uppercase tracking-wide">
-          <span className="flex items-center justify-center w-4 h-4 rounded-full border border-border text-[10px] text-white/80">2</span>
-          Анализ заявки
-        </div>
-        {useBatch ? (
-          <p className="text-xs text-muted leading-relaxed">
-            Анализ телеметрии выполнен по каждому объекту в таблице разбора выше —
-            вердикты и расчёты показаны в строках таблицы.
-          </p>
-        ) : (
-          <AutoAnalysis
-            issueId={issue.id}
-            latestAnalysis={latestAnalysis}
-            issueTitle={issue.subject}
-            companyName={issue.company_name}
-          />
-        )}
-      </div>
-
-    </div>
-  )
 }
 
 /**
@@ -2276,6 +2042,10 @@ export function IssueDetail() {
   const [commentPublic, setCommentPublic] = useState(true)
   const [statusDropdownOpen, setStatusDropdownOpen] = useState(false)
   const [moreActionsOpen, setMoreActionsOpen] = useState(false)
+  // Объект, чью телеметрию показывает блок ②. Выбирается кликом по строке разбора;
+  // у одиночной заявки подставляется единственная строка.
+  const [selectedIdx, setSelectedIdx] = useState<number | null>(null)
+  const [selectedObj, setSelectedObj] = useState<import('../types').BatchObject | null>(null)
   const [pendingStatus, setPendingStatus] = useState<typeof ALL_STATUSES[number] | null>(null)
   const [resolveNotice, setResolveNotice] = useState<string | null>(null)
   const [toast, setToast] = useState<string | null>(null)
@@ -2327,6 +2097,15 @@ export function IssueDetail() {
   })
   const extractableCount = issueAttachments.filter((a: import('../types').IssueAttachment) => a.extractable).length
 
+  // Тот же ключ, что у AutoAnalysis: подписываемся на кэш анализа, чтобы блок
+  // телеметрии знал уверенность и «можно авто» без подъёма состояния наверх.
+  const { data: automateCached } = useQuery({
+    queryKey: ['automate-cached', selectedIssueId],
+    queryFn: () => api.getCachedAutomate(selectedIssueId!),
+    enabled: selectedIssueId != null,
+    staleTime: 5 * 60_000,
+  })
+
   const addComment = useMutation({
     mutationFn: (text: string) => api.addComment(selectedIssueId!, text, commentPublic),
     onSuccess: () => {
@@ -2363,10 +2142,13 @@ export function IssueDetail() {
     )
   }
 
-  const { issue, okdesk_detail: od, latest_analysis } = data
+  const { issue, okdesk_detail: od } = data
 
   const overdue = isOverdue(od?.deadline_at)
   const useBatch = isBatchIssue(issue, od?.description, extractableCount)
+  // Уверенность и признак «можно авто» есть только у одиночного анализа: в пакетном
+  // разборе бэкенд отдаёт по объекту вердикт и метрики, но не оценку уверенности.
+  const singleAnalysis = automateCached?.cached ? (automateCached as unknown as AutomationResult) : null
 
   return (
     <>
@@ -2461,15 +2243,47 @@ export function IssueDetail() {
         {/* Вопрос клиента — исходный материал, до разбора ИИ */}
         <ClientQuestionBlock description={od?.description} />
 
-        {/* Анализ заявки (мастер: ① Разбор → ② Анализ) */}
-        <Block icon={Sparkles} title="Анализ заявки">
-          <AnalysisWizard
-            issue={issue}
-            description={od?.description}
-            extractableCount={extractableCount}
-            latestAnalysis={latest_analysis}
+        {/* ① Разбор — таблица объектов: одинаково для одного ТС и для двадцати */}
+        <Block
+          title="① Разбор"
+          right={selectedObj?.plate ? <span className="text-xs text-muted">выбран {selectedObj.plate}</span> : undefined}
+        >
+          <BatchAnalysis
+            key={issue.id}
+            issueId={issue.id}
+            issueTitle={issue.subject}
+            issueDescription={od?.description}
+            companyName={issue.company_name}
             onOpenExternal={openExternal}
+            selectedIdx={selectedIdx}
+            onSelectObject={(idx, objects) => { setSelectedIdx(idx); setSelectedObj(objects[idx] ?? null) }}
           />
+          <AutoAnalysis
+            issueId={issue.id}
+            issueTitle={issue.subject}
+            companyName={issue.company_name}
+          />
+          <SingleParseTable issueId={issue.id} onSelect={obj => { setSelectedIdx(0); setSelectedObj(obj) }} />
+        </Block>
+
+        {/* ② Телеметрия и вердикт — по объекту, выбранному в таблице выше */}
+        <Block
+          title="② Телеметрия и вердикт"
+          right={selectedObj?.date ? <span className="text-xs text-muted">за {selectedObj.date}</span> : undefined}
+        >
+          <TelemetryPanel
+            telemetry={selectedObj?.telemetry ?? null}
+            category={selectedObj?.verdict ?? null}
+            confidence={singleAnalysis?.confidence ?? null}
+            needsReview={singleAnalysis?.needs_review ?? false}
+            autoEligible={singleAnalysis?.auto_eligible}
+            subtitle={selectedObj?.plate ?? null}
+          />
+          {!selectedObj && (
+            <p className="text-[13px] text-muted">
+              Запустите разбор в блоке выше — телеметрия появится по выбранному объекту.
+            </p>
+          )}
         </Block>
 
         {/* ③ Ответ: генерация черновика, шаблоны, композер */}

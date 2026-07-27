@@ -2711,6 +2711,7 @@ class IssueAutomationService:
                     "sheet_mileage_km": None, "system_mileage_km": None,
                     "declared_system_km": None,
                     "address": address, "flags": [], "teleport_jumps": 0,
+                    "telemetry": None,
                     "verdict": "Нет номера/даты",
                 })
                 continue
@@ -2830,6 +2831,10 @@ class IssueAutomationService:
             "sheet_mileage_km": sheet, "declared_system_km": declared,
             "system_mileage_km": None,
             "address": address, "flags": [], "teleport_jumps": 0,
+            # Полная телеметрия объекта (как в одиночном анализе, asdict(TelemetryFacts))
+            # — фронт показывает её для выбранной строки таблицы. None, пока объект не
+            # разобран (нет номера/даты) или телеметрия не собралась.
+            "telemetry": None,
             "spec_vehicle": _is_special_vehicle(plate, file),
             "verdict": "Нет номера/даты",
         }
@@ -2843,6 +2848,9 @@ class IssueAutomationService:
                 item["system_mileage_km"] = t.system_mileage_km
                 item["flags"] = t.flags
                 item["teleport_jumps"] = t.teleport_jumps
+                # Плоские поля выше оставлены как есть (на них завязаны фронт и кэш),
+                # telemetry — полный набор метрик для панели телеметрии по строке.
+                item["telemetry"] = asdict(t)
                 system = t.system_mileage_km
                 # Order matters: jamming/power-off take precedence over a mileage
                 # match (spoofing makes the track unreliable even if mileage coincides).

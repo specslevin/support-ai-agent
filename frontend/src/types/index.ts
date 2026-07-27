@@ -171,6 +171,9 @@ export interface BatchObject {
   address?: string | null
   flags: string[]
   teleport_jumps: number
+  // Полная телеметрия объекта. Опционально: старые записи кэша разбора её не
+  // содержат, а у нераспознанных строк (нет номера/даты) она null.
+  telemetry?: AutomationTelemetry | null
   verdict: string
   verdict_edited?: boolean
   plate_edited?: boolean
