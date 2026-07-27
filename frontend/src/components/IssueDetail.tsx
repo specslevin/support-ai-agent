@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useState, useMemo, useEffect, useRef } from 'react'
+import { useState, useMemo, useEffect, useRef, useId, createContext, useContext } from 'react'
 import {
   ChevronDown, AlertTriangle, X, Check, Star, Bot, RefreshCw, Database,
   Lightbulb, Map, FilePlus, ExternalLink, Pause, Send,
@@ -75,32 +75,90 @@ function readSectionState(): Record<string, boolean> {
   }
 }
 
+/**
+ * Секции тела карточки в визуальном порядке — нужен, чтобы при открытии заявки
+ * выбрать активную по умолчанию. Раскрытость читаем из того же localStorage, что
+ * и сами секции; «Вложения» и «Связанные» рендерятся не всегда (optional).
+ */
+const BODY_SECTIONS: { key: string; defaultOpen: boolean; optional?: boolean }[] = [
+  { key: 'question', defaultOpen: true },
+  { key: 'attachments', defaultOpen: false, optional: true },
+  { key: 'parse', defaultOpen: true },
+  { key: 'telemetry', defaultOpen: true },
+  { key: 'comments', defaultOpen: true },
+  { key: 'related', defaultOpen: true, optional: true },
+  { key: 'details', defaultOpen: false },
+  { key: 'feedback', defaultOpen: false },
+]
+
+/**
+ * Активная секция при открытии заявки — «Разбор»: с него начинается работа
+ * (вердикт + таблица объектов), глаз должен сразу ловить главное. Дальше полоса
+ * едет за кликами. Если «Разбор» свёрнут (оператор мог закрыть его в прошлой
+ * сессии), висеть на свёрнутой секции полосе нельзя — падаем на первую
+ * раскрытую сверху вниз; раскрытых нет — не подсвечиваем ничего.
+ */
+function initialActiveSection(present: { attachments: boolean; related: boolean }): string | null {
+  const saved = readSectionState()
+  const isOpen = (s: typeof BODY_SECTIONS[number]) => {
+    if (s.optional && !present[s.key as keyof typeof present]) return false
+    const stored = saved[s.key]
+    return typeof stored === 'boolean' ? stored : s.defaultOpen
+  }
+  const parse = BODY_SECTIONS.find(s => s.key === 'parse')
+  if (parse && isOpen(parse)) return parse.key
+  return BODY_SECTIONS.find(isOpen)?.key ?? null
+}
+
+/**
+ * Активная секция (v4) — «ты сейчас здесь». Лаймовая полоса слева и акцентный
+ * заголовок горят ровно у ОДНОЙ секции: у той, которую оператор трогал
+ * последней. Раскрытых секций легко бывает 5-6 сразу, и подсветка каждой
+ * убивала приём. Раскрытость к активности отношения не имеет — она по-прежнему
+ * своя у каждой секции и живёт в localStorage.
+ */
+const ActiveSectionContext = createContext<{
+  active: string | null
+  /** Пометить секцию активной (раскрыли её или кликнули внутрь). */
+  activate: (id: string) => void
+  /** Свернули секцию: снять подсветку, если горела именно она. */
+  clear: (id: string) => void
+}>({ active: null, activate: () => {}, clear: () => {} })
+
 function useSectionOpen(storageKey: string | undefined, defaultOpen: boolean) {
+  // Секции без storageKey всё равно должны различаться в контексте активной.
+  const fallbackId = useId()
+  const id = storageKey ?? fallbackId
+  const { active, activate, clear } = useContext(ActiveSectionContext)
   const [open, setOpen] = useState<boolean>(() => {
     if (!storageKey) return defaultOpen
     const saved = readSectionState()[storageKey]
     return typeof saved === 'boolean' ? saved : defaultOpen
   })
   const toggle = () => {
-    setOpen(prev => {
-      const next = !prev
-      if (storageKey) {
-        const all = readSectionState()
-        all[storageKey] = next
-        try { localStorage.setItem(SECTIONS_KEY, JSON.stringify(all)) } catch { /* приватный режим */ }
-      }
-      return next
-    })
+    const next = !open
+    setOpen(next)
+    if (storageKey) {
+      const all = readSectionState()
+      all[storageKey] = next
+      try { localStorage.setItem(SECTIONS_KEY, JSON.stringify(all)) } catch { /* приватный режим */ }
+    }
+    if (next) activate(id)
+    else clear(id)
   }
-  return [open, toggle] as const
+  /** Клик внутрь раскрытой секции — тоже «я сейчас здесь». */
+  const focus = () => { if (open) activate(id) }
+  return { open, toggle, focus, isActive: open && active === id }
 }
 
 /** Строка-заголовок секции: 9px uppercase, счётчик-пилюля, шеврон справа. */
-function SectionHead({ title, count, right, open, toggle, className = '' }: {
+function SectionHead({ title, count, right, open, active, toggle, className = '' }: {
   title: string
   count?: number | string | null
   right?: React.ReactNode
   open: boolean
+  /** Секция, с которой оператор работает прямо сейчас (одна на карточку). */
+  active: boolean
   toggle: () => void
   className?: string
 }) {
@@ -111,7 +169,7 @@ function SectionHead({ title, count, right, open, toggle, className = '' }: {
         title={open ? `Свернуть «${title}»` : `Раскрыть «${title}»`}
         className="flex flex-1 min-w-0 items-center gap-2 text-left"
       >
-        <span className={`text-[9px] font-medium uppercase tracking-[0.4px] leading-3 transition-colors ${open ? 'text-accent' : 'text-muted hover:text-secondary'}`}>
+        <span className={`text-[9px] font-medium uppercase tracking-[0.4px] leading-3 transition-colors ${active ? 'text-accent' : 'text-muted hover:text-secondary'}`}>
           {title}
         </span>
         {count != null && count !== '' && (
@@ -135,7 +193,7 @@ function SectionHead({ title, count, right, open, toggle, className = '' }: {
 /**
  * Сворачиваемая под-секция внутри блока (v4): тот же вид, что у Block, но без
  * внешних отступов-карточки — только 1px-разделитель и лаймовая полоса слева
- * у раскрытой.
+ * у активной (см. ActiveSectionContext).
  */
 function Section({ title, children, defaultOpen = true, storageKey }: {
   title: string
@@ -143,10 +201,13 @@ function Section({ title, children, defaultOpen = true, storageKey }: {
   defaultOpen?: boolean
   storageKey?: string
 }) {
-  const [open, toggle] = useSectionOpen(storageKey, defaultOpen)
+  const { open, toggle, focus, isActive } = useSectionOpen(storageKey, defaultOpen)
   return (
-    <div className={`border-b border-line last:border-b-0 border-l-2 py-2 pl-2.5 ${open ? 'border-l-accent' : 'border-l-transparent'}`}>
-      <SectionHead title={title} open={open} toggle={toggle} />
+    <div
+      onMouseDownCapture={focus}
+      className={`border-b border-line last:border-b-0 border-l-2 py-2 pl-2.5 ${isActive ? 'border-l-accent' : 'border-l-transparent'}`}
+    >
+      <SectionHead title={title} open={open} active={isActive} toggle={toggle} />
       {open && <div className="pt-2 space-y-2">{children}</div>}
     </div>
   )
@@ -154,9 +215,9 @@ function Section({ title, children, defaultOpen = true, storageKey }: {
 
 /**
  * Секция карточки заявки (макет v4 «плоские строки»): без подложки и радиусов,
- * фон остаётся общим (bg-base). Отделяется 1px-линией снизу; раскрытая помечена
- * лаймовой полосой 2px слева, свёрнутая — прозрачной полосой той же ширины,
- * чтобы текст не дёргался по горизонтали.
+ * фон остаётся общим (bg-base). Отделяется 1px-линией снизу; АКТИВНАЯ (последняя,
+ * с которой работал оператор) помечена лаймовой полосой 2px слева, остальные —
+ * прозрачной полосой той же ширины, чтобы текст не дёргался по горизонтали.
  */
 function Block({ title, count, right, children, defaultOpen = true, storageKey }: {
   title: string
@@ -167,10 +228,13 @@ function Block({ title, count, right, children, defaultOpen = true, storageKey }
   /** Ключ для запоминания раскрытия в localStorage (не сбрасывается между заявками). */
   storageKey?: string
 }) {
-  const [open, toggle] = useSectionOpen(storageKey, defaultOpen)
+  const { open, toggle, focus, isActive } = useSectionOpen(storageKey, defaultOpen)
   return (
-    <section className={`border-b border-line border-l-2 py-2.5 pr-4 pl-[14px] ${open ? 'border-l-accent' : 'border-l-transparent'}`}>
-      <SectionHead title={title} count={count} right={right} open={open} toggle={toggle} />
+    <section
+      onMouseDownCapture={focus}
+      className={`border-b border-line border-l-2 py-2.5 pr-4 pl-[14px] ${isActive ? 'border-l-accent' : 'border-l-transparent'}`}
+    >
+      <SectionHead title={title} count={count} right={right} open={open} active={isActive} toggle={toggle} />
       {open && <div className="pt-2.5 space-y-2.5">{children}</div>}
     </section>
   )
@@ -970,11 +1034,12 @@ function AutoAnalysis({ issueId, issueTitle, companyName }: { issueId: number; i
 
   // Multi-attachment («общая») issue → single-object analysis is misleading
   // (it picks just the first plate). Defer to «Разбор по объектам» below.
-  const { data: attachments = [] } = useQuery({
+  const attachQ = useQuery({
     queryKey: ['attachments', issueId],
     queryFn: () => api.listAttachments(issueId),
     staleTime: 5 * 60_000,
   })
+  const attachments = attachQ.data ?? []
   const extractCount = attachments.filter(a => a.extractable).length
   // Сохранённый разбор по объектам: если заявка уже помечена агрегатной (ОДКР),
   // одиночный автоанализ ввёл бы в заблуждение — отдаём её «Разбору по объектам».
@@ -1021,6 +1086,16 @@ function AutoAnalysis({ issueId, issueTitle, companyName }: { issueId: number; i
   const shown = result ?? (cached as AutomationResult | null)
   const p = shown?.parsed
   const isCached = !result && !!cached
+
+  // Смена заявки: результат прошлой заявки не должен «залипать» в новой карточке
+  // (компонент не пересоздаётся по key, живёт на смене issueId).
+  useEffect(() => { setResult(null) }, [issueId])
+
+  // Авто-прогона здесь НЕТ намеренно. `automate` — единственный путь, который тратит
+  // DeepSeek (fallback-извлечение номера/даты + черновик ответа), и стрелять им на
+  // каждое открытие карточки нельзя. Факты (номер, дата, пробеги, телеметрия) и
+  // предварительный вердикт по правилам считаются детерминированным разбором без
+  // токенов — он и наполняет таблицу при открытии; ИИ зовётся отдельной кнопкой.
 
   // Подозрение на ошибку клиента в гос.номере: не тот формат ИЛИ объект не найден в мониторинге.
   const plateSuspect = !!shown && (!!p?.plate_format_suspect || shown.error === 'object_not_found')
@@ -1118,6 +1193,45 @@ function AutoAnalysis({ issueId, issueTitle, companyName }: { issueId: number; i
 }
 
 /**
+ * Заголовки таблицы разбора (v4). Короткие подписи — иначе 8 колонок не влезают
+ * в рельсу 680px; полная расшифровка уезжает в нативный тултип. Один источник для
+ * одиночной и пакетной таблиц, чтобы шапки не расходились.
+ */
+const PARSE_COLUMNS: { label: string; title: string }[] = [
+  { label: 'Номер', title: 'Гос.номер' },
+  { label: 'Дата', title: 'Дата неисправности' },
+  { label: 'ПЛ', title: 'Пробег по путевому листу, км' },
+  { label: 'ГЛОНАСС', title: 'ГЛОНАСС заявл. — заявленный пробег по системе, км' },
+  { label: 'Факт', title: 'По факту — пробег по треку, км' },
+  { label: 'Вердикт', title: 'Вердикт ИИ — можно изменить' },
+]
+
+/** actions — сколько служебных колонок без подписи идёт справа (трек, дочерняя). */
+function ParseTableHead({ actions }: { actions: number }) {
+  return (
+    <thead className="text-muted">
+      <tr className="text-left">
+        {PARSE_COLUMNS.map(c => (
+          <th key={c.label} title={c.title} className="font-medium py-1 pr-2 whitespace-nowrap">
+            {c.label}
+          </th>
+        ))}
+        {Array.from({ length: actions }, (_, i) => <th key={`act-${i}`} className="pr-1" />)}
+      </tr>
+    </thead>
+  )
+}
+
+/** Пояснение к таблице разбора — что такое строка и что даёт клик по ней. */
+function ParseTableNote() {
+  return (
+    <p className="mt-1.5 text-[10px] leading-4 text-muted">
+      Строка — объект. Клик по строке выбирает объект, ниже показывается его телеметрия.
+    </p>
+  )
+}
+
+/**
  * Разбор одиночной заявки — та же таблица, что и у пакетной, но из одной строки.
  * Оператор видит разбор одинаково независимо от того, один в заявке объект или
  * двадцать. Данные берём из кэша автоанализа: он уже содержит и распознанные
@@ -1179,19 +1293,10 @@ function SingleParseTable({ issueId, onSelect }: { issueId: number; onSelect?: (
   if (!res) return null
 
   return (
+    <>
     <div className="overflow-x-auto">
       <table className="w-full text-[11px]">
-        <thead className="text-muted">
-          <tr className="text-left">
-            <th className="font-medium pb-1.5 pr-2">Гос.номер</th>
-            <th className="font-medium pb-1.5 pr-2">Дата</th>
-            <th className="font-medium pb-1.5 pr-2">ПЛ</th>
-            <th className="font-medium pb-1.5 pr-2">ГЛОНАСС заявл.</th>
-            <th className="font-medium pb-1.5 pr-2">По факту</th>
-            <th className="font-medium pb-1.5 pr-2">Вердикт</th>
-            <th className="font-medium pb-1.5 text-center">Трек</th>
-          </tr>
-        </thead>
+        <ParseTableHead actions={1} />
         <tbody>
           <tr className="border-t border-border/50">
             <td className="py-1.5 pr-2 font-mono">
@@ -1279,6 +1384,8 @@ function SingleParseTable({ issueId, onSelect }: { issueId: number; onSelect?: (
         </tbody>
       </table>
     </div>
+    <ParseTableNote />
+    </>
   )
 }
 
@@ -1550,14 +1657,30 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
   // Разбор уже есть → иконочная кнопка «обновить» справа. Первичный запуск и
   // «продолжить распознавание» остаются текстовыми: без подписи их смысл теряется.
   const compact = !!res && !ocrPending
+  // Первичный запуск: подписываем, сколько файлов предстоит распознать, и зачем
+  // это нужно — пакетный разбор сам не стартует (OCR + токены DeepSeek дорогие).
+  const attachCount = extractable.length
+  const startLabel = attachCount > 0
+    ? `Разобрать ${attachCount} ${pluralAttachments(attachCount)}`
+    : 'Разобрать заявку по объектам'
 
   return (
     <div className="space-y-2">
+      {!res && !ocrBusy && (
+        <p className="text-[11px] leading-4 text-secondary">
+          {attachCount > 0
+            ? `В заявке ${attachCount} ${pluralAttachments(attachCount)} и несколько единиц техники — ИИ распознает файлы и сопоставит объекты с гео.`
+            : 'В заявке несколько единиц техники — ИИ разберёт текст письма и сопоставит объекты с гео.'}
+        </p>
+      )}
       <div className={compact ? 'flex justify-end' : ''}>
         <button
           onClick={startRun}
           disabled={ocrBusy || isDemo}
-          title={isDemo ? 'Недоступно в демо-режиме' : compact ? 'Обновить разбор' : undefined}
+          title={isDemo ? 'Недоступно в демо-режиме'
+            : compact ? 'Обновить разбор'
+            : attachCount > 0 ? `Распознать ${attachCount} ${pluralAttachments(attachCount)} (OCR) и сопоставить с объектами в гео`
+            : undefined}
           className={`flex items-center justify-center gap-2 bg-frame border border-info/40 text-info hover:bg-info/10 text-xs font-semibold rounded-md transition-colors disabled:opacity-40 ${compact ? (ocrBusy ? 'px-2.5 py-1.5' : 'p-1.5') : 'w-full py-2'} ${ocrBusy ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
         >
           {ocrBusy ? (
@@ -1567,7 +1690,7 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
           ) : res ? (
             <RefreshCw size={15} />
           ) : (
-            <><Layers size={14} /> Разбор заявки</>
+            <><Layers size={14} /> {startLabel}</>
           )}
         </button>
       </div>
@@ -1608,12 +1731,7 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-[11px]">
-              <thead className="text-muted/60">
-                <tr className="text-left">
-                  <th className="py-1 pr-2">Гос.номер</th><th className="pr-2">Дата</th>
-                  <th className="pr-2">ПЛ</th><th className="pr-2">ГЛОНАСС заявл.</th><th className="pr-2">По факту</th><th className="pr-2">Вердикт</th><th className="pr-1"></th><th></th>
-                </tr>
-              </thead>
+              <ParseTableHead actions={2} />
               <tbody>
                 {res.objects.map((o, idx) => {
                   const key = rowKey(o, idx)
@@ -1745,6 +1863,7 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
               </tbody>
             </table>
           </div>
+          <ParseTableNote />
           {isAggregate && (
             <p className="flex items-start gap-1.5 text-[11px] text-muted leading-relaxed">
               <Info size={13} className="shrink-0 mt-0.5 text-info" />
@@ -1850,6 +1969,16 @@ function normPlate(raw: string): string {
     // показывал пакетный разбор там, где бэк видит 1 ТС и возвращает пусто.
     .replace(/(?<=[АВЕКМНОРСТУХ]{2})\d{2,3}$/, '')
 }
+/** «1 вложение / 2 вложения / 5 вложений» — для подписи кнопки разбора. */
+function pluralAttachments(n: number): string {
+  const mod100 = n % 100
+  const mod10 = n % 10
+  if (mod100 >= 11 && mod100 <= 14) return 'вложений'
+  if (mod10 === 1) return 'вложение'
+  if (mod10 >= 2 && mod10 <= 4) return 'вложения'
+  return 'вложений'
+}
+
 function countPlates(s?: string | null): number {
   if (!s) return 0
   const found = new Set<string>()
@@ -2071,6 +2200,20 @@ export function IssueDetail() {
   const [phoneCopied, setPhoneCopied] = useState(false)
   // Копирование для монтажника — те же два формата, теперь иконками в баре.
   const installer = useInstallerExport(selectedIssueId ?? 0)
+  // Секция, с которой оператор работает прямо сейчас: только она носит лаймовую
+  // полосу и акцентный заголовок. Раскрыто при этом может быть сколько угодно.
+  const [activeSection, setActiveSection] = useState<string | null>(null)
+  // Как только оператор сам выбрал секцию — дефолт («Разбор») больше не
+  // навязываем: иначе догрузка вложений/связанных дёрнула бы полосу из-под рук.
+  const sectionPickedRef = useRef(false)
+  const activeSectionValue = useMemo(() => ({
+    active: activeSection,
+    activate: (id: string) => { sectionPickedRef.current = true; setActiveSection(id) },
+    clear: (id: string) => {
+      sectionPickedRef.current = true
+      setActiveSection(prev => (prev === id ? null : prev))
+    },
+  }), [activeSection])
 
   useEffect(() => {
     if (!toast) return
@@ -2095,6 +2238,9 @@ export function IssueDetail() {
   useEffect(() => {
     setComment(lastTemplate)
     setBarExpanded(false)
+    // Новая заявка — активную секцию считаем заново (см. эффект ниже); сама
+    // раскрытость секций при этом сохраняется, она живёт в localStorage.
+    sectionPickedRef.current = false
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedIssueId])
 
@@ -2132,6 +2278,17 @@ export function IssueDetail() {
     enabled: selectedIssueId != null,
     staleTime: 5 * 60_000,
   })
+
+  // Дефолтная подсветка: «Разбор», иначе первая раскрытая секция. Пересчитываем
+  // и при догрузке условных секций («Вложения», «Связанные») — до тех пор, пока
+  // оператор не выбрал секцию сам.
+  const hasAttachments = issueAttachments.length > 0
+  const relatedDetail = data?.okdesk_detail
+  const hasRelated = !!relatedDetail && (relatedDetail.parent_id != null || relatedDetail.child_ids.length > 0)
+  useEffect(() => {
+    if (sectionPickedRef.current) return
+    setActiveSection(initialActiveSection({ attachments: hasAttachments, related: hasRelated }))
+  }, [selectedIssueId, hasAttachments, hasRelated])
 
   const addComment = useMutation({
     mutationFn: (text: string) => api.addComment(selectedIssueId!, text, commentPublic),
@@ -2186,7 +2343,7 @@ export function IssueDetail() {
   const singleAnalysis = automateCached?.cached ? (automateCached as unknown as AutomationResult) : null
 
   return (
-    <>
+    <ActiveSectionContext.Provider value={activeSectionValue}>
     <div className="flex flex-col h-full">
       {/* ── Шапка v4: номер + статус + просрочка / тема / клиент · контакт ── */}
       <div className="shrink-0 bg-base border-b border-line px-4 pt-3.5 pb-3 flex flex-col gap-[7px] z-20">
@@ -2675,6 +2832,6 @@ export function IssueDetail() {
         <AlertTriangle size={14} /> {toast}
       </div>
     )}
-    </>
+    </ActiveSectionContext.Provider>
   )
 }

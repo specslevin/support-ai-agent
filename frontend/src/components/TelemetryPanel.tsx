@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Lightbulb } from 'lucide-react'
+import { Sparkles } from 'lucide-react'
 import type { AutomationTelemetry } from '../types'
 
 interface TelemetryPanelProps {
@@ -157,20 +157,21 @@ export function TelemetryPanel({
 
       {/* Обоснование вердикта — вне ветки телеметрии: ИИ может объяснить вердикт
           и когда метрик нет (объект не найден, нет данных за день).
-          Иконка вынесена из абзаца: line-clamp переключает display на
+          Заголовок вынесен из абзаца: line-clamp переключает display на
           -webkit-box и сломал бы flex на том же элементе. */}
       {reasoning && (
-        <div className="flex items-start gap-1.5 text-[11px] text-muted leading-relaxed">
-          <Lightbulb size={13} className="shrink-0 mt-0.5" />
-          <div className="min-w-0">
-            <p className={reasoningOpen ? '' : 'line-clamp-2'}>{reasoning}</p>
-            <button
-              onClick={() => setReasoningOpen(v => !v)}
-              className="mt-0.5 text-accent hover:underline"
-            >
-              {reasoningOpen ? 'Свернуть' : 'Подробнее'}
-            </button>
+        <div className="min-w-0 text-[11px] text-muted leading-relaxed">
+          <div className="flex items-center gap-1.5 font-medium text-accent">
+            <Sparkles size={12} className="shrink-0" />
+            <span>Почему такой вердикт</span>
           </div>
+          <p className={`mt-0.5 ${reasoningOpen ? '' : 'line-clamp-2'}`}>{reasoning}</p>
+          <button
+            onClick={() => setReasoningOpen(v => !v)}
+            className="mt-0.5 text-accent hover:underline"
+          >
+            {reasoningOpen ? 'Свернуть' : 'Подробнее'}
+          </button>
         </div>
       )}
     </div>
