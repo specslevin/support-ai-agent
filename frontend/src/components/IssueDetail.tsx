@@ -1807,7 +1807,7 @@ function AnswerBlock({
   isDemo: boolean
 }) {
   return (
-    <Block title="Ответ" right={<span className="text-xs text-muted">черновик ИИ — можно править</span>}>
+    <Block title="③ Ответ" right={<span className="text-xs text-muted">черновик ИИ — можно править</span>}>
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <div className="flex items-center gap-2">
           <ComposeAnswerButton
