@@ -65,7 +65,22 @@ export interface OkdeskDetail {
   service_object_name: string | null
   parent_id: number | null
   child_ids: number[]
+  /**
+   * Связанные заявки со статусом и темой (Okdesk в связях отдаёт только id —
+   * подписи бэкенд достаёт из локального кэша заявок).
+   */
+  related?: RelatedIssue[]
   parameters: { name: string; value: string }[]
+  /** Ссылка на эту заявку в портале Okdesk (домен знает только бэкенд). */
+  okdesk_url?: string | null
+}
+
+export interface RelatedIssue {
+  external_id: number
+  role: 'parent' | 'child'
+  subject: string | null
+  status: string | null
+  url: string | null
 }
 
 export interface IssueDetail {
@@ -191,7 +206,18 @@ export interface BatchObject {
   verdict: string
   verdict_edited?: boolean
   plate_edited?: boolean
+  date_edited?: boolean
   spec_vehicle?: boolean
+  /**
+   * Появляются после платного прогона ИИ по всей заявке (`POST /batch/ai`):
+   * до него у строки есть только вердикт правил, обосновывать нечего.
+   */
+  confidence?: number | null
+  reasoning?: string | null
+  draft_answer?: string | null
+  /** Кто и когда переписал вердикт вручную (`verdict_source === 'operator'`). */
+  verdict_edited_by?: string | null
+  verdict_edited_at?: string | null
   // Чем получен вердикт строки (см. VerdictSource) и что сказала вторая,
   // более простая эвристика. Опциональны: старые кэши разбора их не содержат.
   verdict_source?: VerdictSource
@@ -214,6 +240,10 @@ export interface BatchResult {
   is_aggregate?: boolean
   objects: BatchObject[]
   ocr_progress?: OcrProgress
+  /** Когда по заявке звали ИИ (`POST /batch/ai`) — платная кнопка после этого гаснет. */
+  ai_called_at?: string | null
+  /** Пояснение прогона ИИ (например, «разобраны первые 25 объектов из 40»). */
+  ai_note?: string | null
 }
 
 /**
@@ -240,6 +270,12 @@ export interface ParseResult {
   note?: string
   /** Есть только у разбора с вложениями (`attachments=true`). */
   ocr_progress?: OcrProgress
+  /** Появляются после прогона ИИ по строкам (`POST /batch/ai`). */
+  confidence?: number | null
+  reasoning?: string | null
+  draft_answer?: string | null
+  ai_called_at?: string | null
+  ai_note?: string | null
 }
 
 // «Передать монтажнику»: два готовых текста (КАЛЕНДАРЬ + МЕССЕНДЖЕР) + поля.
@@ -264,6 +300,17 @@ export interface TemplateValues {
   values: Record<string, string>
 }
 
+/**
+ * Что ИИ уже прочитал в конкретном файле (кэш `ocr:<att_id>` на бэкенде).
+ * `unavailable` — растровый скан без текстового слоя, `partial` — большой PDF
+ * дочитан до N-й страницы, `queued` — ещё не читался.
+ */
+export interface AttachmentOcr {
+  status: 'done' | 'partial' | 'queued' | 'unavailable'
+  pages_done: number
+  complete: boolean
+}
+
 export interface IssueAttachment {
   id: number
   name: string | null
@@ -271,6 +318,7 @@ export interface IssueAttachment {
   is_public: boolean | null
   kind: string
   extractable: boolean
+  ocr?: AttachmentOcr
 }
 
 export interface Template {

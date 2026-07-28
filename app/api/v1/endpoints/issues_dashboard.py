@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import re
 import urllib.parse
@@ -305,6 +306,55 @@ def _build_parameters(params: list) -> list[dict[str, str]]:
     return result
 
 
+def _okdesk_portal_url(external_id: int | None = None) -> str | None:
+    """Ссылка на заявку в портале Okdesk (кнопка «открыть в Okdesk»).
+
+    Адрес портала известен только бэкенду — в ``OKDESK_BASE_URL`` лежит адрес API
+    (``https://<домен>/api/v1``). Отрезаем API-хвост и собираем путь агента.
+    Пустой/дефолтный домен → ``None``: лучше не показать кнопку, чем вести в никуда.
+    """
+    try:
+        from app.core.okdesk.config import OkdeskSettings
+        base = (OkdeskSettings().BASE_URL or "").strip()
+    except Exception:
+        return None
+    base = re.sub(r"/api/v\d+/?$", "", base).rstrip("/")
+    if not base or "your-domain" in base:
+        return None
+    return f"{base}/issues/{external_id}" if external_id is not None else base
+
+
+async def _related_issues(cache: CacheService, parent_id: int | None,
+                          child_ids: list[int]) -> list[dict[str, object]]:
+    """Связанные заявки со статусом и темой (а не только id).
+
+    Тянем из ЛОКАЛЬНОГО кэша заявок: Okdesk отдаёт в связях только id, а
+    отдельный сетевой запрос на каждую дочернюю заявку — это N обращений при
+    открытии карточки. Нет в кэше — отдаём одну строку с id (кликабельна, но без
+    подписи), чтобы связь всё равно была видна.
+    """
+    out: list[dict[str, object]] = []
+    wanted: list[tuple[int, str]] = []
+    if parent_id is not None:
+        wanted.append((parent_id, "parent"))
+    wanted.extend((cid, "child") for cid in child_ids or [])
+    for ext_id, role in wanted:
+        row = None
+        try:
+            found = await cache.get_issues_from_cache(issue_id=ext_id)
+            row = found[0] if found else None
+        except Exception:
+            log.warning("related_issue_lookup_failed", external_id=ext_id)
+        out.append({
+            "external_id": ext_id,
+            "role": role,
+            "subject": getattr(row, "subject", None),
+            "status": getattr(row, "status", None),
+            "url": _okdesk_portal_url(ext_id),
+        })
+    return out
+
+
 _SOURCE_LABELS: dict[str, str] = {
     "from_email": "Email",
     "from_operator": "Оператор",
@@ -348,7 +398,10 @@ async def get_issue_details(
                 "service_object_name": live.service_object.name if live.service_object else None,
                 "parent_id": live.parent_id,
                 "child_ids": live.child_ids,
+                "related": await _related_issues(cache, live.parent_id, live.child_ids),
                 "parameters": _build_parameters(live.parameters),
+                # Адрес заявки в портале Okdesk: домен знает только бэкенд.
+                "okdesk_url": _okdesk_portal_url(row.external_id),
             }
         except Exception:
             log.warning("okdesk_detail_fetch_failed", issue_id=issue_id)
@@ -891,6 +944,33 @@ async def get_template_values(
     return {"values": values}
 
 
+async def _ocr_state(cache: CacheService, external_id: int, attachment_id: int,
+                     extractable: bool) -> dict[str, object]:
+    """Статус распознавания ОДНОГО вложения из кэша ``ocr:<att_id>``.
+
+    ``status``: ``unavailable`` — текстового слоя нет (растровый скан, OCR его не
+    берёт); ``done`` — прочитан полностью; ``partial`` — большой PDF дочитан до
+    N-й страницы (``analyze_batch`` идёт порциями, чтобы не блокировать сервис);
+    ``queued`` — ещё не читался.
+    """
+    if not extractable:
+        return {"status": "unavailable", "pages_done": 0, "complete": False}
+    try:
+        cached = await cache.get_result_cache(external_id, f"ocr:{attachment_id}")
+    except Exception:
+        cached = None
+    if not cached:
+        return {"status": "queued", "pages_done": 0, "complete": False}
+    d = cached.get("data") or {}
+    pages = int(d.get("next") or 0)
+    complete = bool(d.get("complete"))
+    return {
+        "status": "done" if complete else "partial",
+        "pages_done": pages,
+        "complete": complete,
+    }
+
+
 @router.get("/{issue_id}/attachments")
 async def list_issue_attachments(
     issue_id: int,
@@ -904,17 +984,23 @@ async def list_issue_attachments(
             raise HTTPException(status_code=404, detail="Issue not found")
         external_id = issue_data["issue"].external_id
         live = await okdesk.get_issue(external_id)
-        return [
-            {
+        out: list[dict[str, object]] = []
+        for a in live.attachments:
+            name = a.attachment_file_name or ""
+            extractable = attachment_reader.is_extractable(name)
+            out.append({
                 "id": a.id,
                 "name": a.attachment_file_name,
                 "size": a.attachment_file_size,
                 "is_public": a.is_public,
-                "kind": attachment_reader.kind(a.attachment_file_name or ""),
-                "extractable": attachment_reader.is_extractable(a.attachment_file_name or ""),
-            }
-            for a in live.attachments
-        ]
+                "kind": attachment_reader.kind(name),
+                "extractable": extractable,
+                # Что ИИ уже прочитал в ЭТОМ файле. Данные лежали в кэше
+                # `ocr:<att_id>` и наружу не выходили: оператор видел «ИИ читает»
+                # у файла, который распознан на 4 страницы из 6.
+                "ocr": await _ocr_state(cache, external_id, a.id, extractable),
+            })
+        return out
     except HTTPException:
         raise
     except Exception:
@@ -1092,6 +1178,7 @@ async def _objects_doc(cache: CacheService, external_id: int) -> tuple[str, dict
 async def update_batch_verdict(
     issue_id: int,
     body: VerdictUpdate,
+    request: Request,
     cache: CacheService = Depends(get_cache_service),
 ) -> dict[str, object]:
     """Оператор корректирует вердикт по ТС в сохранённом разборе.
@@ -1107,6 +1194,9 @@ async def update_batch_verdict(
     kind, data = await _objects_doc(cache, external_id)
     objects = data.get("objects") or []
     target = _norm_plate(body.plate)
+    user = getattr(request.state, "user", None)
+    edited_by = (user.get("u") if user else None)
+    edited_at = _dt.datetime.now(_dt.UTC).isoformat(timespec="seconds")
     updated = 0
     for o in objects:
         if (_norm_plate(o.get("plate")) == target
@@ -1118,6 +1208,16 @@ async def update_batch_verdict(
             o["verdict_edited"] = True
             # Вердикт больше не «правила» и не ИИ — это решение оператора.
             o["verdict_source"] = "operator"
+            # Кто и когда переписал вердикт: пилюля «✎ оператор» без имени и
+            # времени не даёт понять, стоит ли ей верить (правка могла быть
+            # неделю назад и по старым данным).
+            o["verdict_edited_by"] = edited_by
+            o["verdict_edited_at"] = edited_at
+            # Обоснование и черновик остались от ИИ и объясняли ДРУГОЙ вердикт —
+            # снимаем, иначе текст спорит с пилюлей.
+            o.pop("reasoning", None)
+            o.pop("draft_answer", None)
+            o.pop("confidence", None)
             updated += 1
     if not updated:
         raise HTTPException(status_code=404, detail="ТС не найдено в разборе")
@@ -1132,6 +1232,168 @@ async def update_batch_verdict(
     except Exception:
         log.warning("batch_verdict_save_failed", issue_id=issue_id)
         raise HTTPException(status_code=500, detail="Не удалось сохранить вердикт")
+    return {"ok": True, "updated": updated, **data}
+
+
+@router.post("/{issue_id}/batch/ai")
+async def batch_ai_verdicts(
+    issue_id: int,
+    cache: CacheService = Depends(get_cache_service),
+    okdesk: OkdeskService = Depends(get_okdesk_service),
+    automation: IssueAutomationService = Depends(get_issue_automation_service),
+) -> dict[str, object]:
+    """ОДИН платный вызов ИИ на ВСЮ заявку: уверенность, обоснование и черновик
+    ответа по КАЖДОМУ объекту разбора.
+
+    До этого шага строки несли только вердикт правил: ``analyze_batch`` токенов не
+    тратит, а ``automate`` умеет оценивать лишь один ТС и на пакетной заявке
+    возвращал ``null``. Здесь модель получает факты всех строк разом.
+
+    Ручные правки оператора не перезаписываются (``verdict_source == "operator"``),
+    строки без телеметрии в модель не уходят — обосновывать нечего.
+    """
+    issue_data = await cache.get_issue_with_analysis(issue_id)
+    if not issue_data:
+        raise HTTPException(status_code=404, detail="Issue not found")
+    external_id = issue_data["issue"].external_id
+    kind, data = await _objects_doc(cache, external_id)
+    objects: list[dict] = data.get("objects") or []
+    try:
+        live = await okdesk.get_issue(external_id)
+        title, description = live.title, live.description
+    except Exception:
+        log.warning("batch_ai_live_fetch_failed", issue_id=issue_id)
+        title, description = getattr(issue_data["issue"], "subject", None), None
+    comments_digest = None
+    try:
+        comments_digest = await _build_comments_digest(external_id, okdesk)
+    except Exception:
+        log.warning("batch_ai_comments_failed", issue_id=issue_id)
+    try:
+        res = await automation.ai_batch_verdicts(
+            objects, issue_title=title, issue_description=description,
+            comments=comments_digest or None)
+    except Exception:
+        log.exception("batch_ai_failed", issue_id=issue_id)
+        raise HTTPException(status_code=502, detail="ИИ не ответил. Попробуйте снова.")
+    rows: dict[int, dict] = res.get("rows") or {}
+    for idx, upd in rows.items():
+        if not (0 <= idx < len(objects)):
+            continue
+        o = objects[idx]
+        if upd.get("verdict"):
+            o["verdict"] = upd["verdict"]
+        # Источник меняем даже когда вердикт совпал с правилами: у строки теперь
+        # ЕСТЬ обоснование и уверенность, а фронт по источнику решает, показывать
+        # ли полосу доверия и блок «Почему такой вердикт».
+        o["verdict_source"] = "ai"
+        o["confidence"] = upd.get("confidence")
+        o["reasoning"] = upd.get("reasoning")
+        o["draft_answer"] = upd.get("draft_answer")
+    data["jamming_count"] = sum(1 for o in objects if o.get("verdict") == "Глушение")
+    data["ok_count"] = sum(1 for o in objects if o.get("verdict") == "Данные верны")
+    # Метка «ИИ по этой заявке уже звали»: фронт по ней гасит платную кнопку и
+    # показывает, когда именно был прогон.
+    data["ai_called_at"] = _dt.datetime.now(_dt.UTC).isoformat(timespec="seconds")
+    if res.get("note"):
+        data["ai_note"] = res["note"]
+    if kind == "parse" and len(objects) == 1:
+        # Сводные поля одиночного разбора идут за единственной строкой.
+        row = objects[0]
+        data["verdict"] = row.get("verdict")
+        data["verdict_source"] = row.get("verdict_source")
+        data["confidence"] = row.get("confidence")
+        data["reasoning"] = row.get("reasoning")
+        data["draft_answer"] = row.get("draft_answer")
+    try:
+        await cache.save_result_cache(external_id, kind, json.dumps(data, ensure_ascii=False))
+    except Exception:
+        log.warning("batch_ai_save_failed", issue_id=issue_id)
+    return {"ok": True, "updated": len(rows), "sent": res.get("sent", 0),
+            "skipped": res.get("skipped", 0), **data}
+
+
+class DateUpdate(BaseModel):
+    date: str                 # ISO YYYY-MM-DD: новая дата неисправности строки
+    plate: str | None = None
+    file: str | None = None
+    old_date: str | None = None
+    index: int | None = None  # точный селектор строки, как в PlateUpdate
+
+
+@router.post("/{issue_id}/batch/date")
+async def update_batch_date(
+    issue_id: int,
+    body: DateUpdate,
+    cache: CacheService = Depends(get_cache_service),
+    automation: IssueAutomationService = Depends(get_issue_automation_service),
+) -> dict[str, object]:
+    """Оператор исправляет ДАТУ неисправности в строке разбора — телеметрия и
+    вердикт этой строки считаются заново за новую дату.
+
+    Симметрично ``/batch/plate``: клиент так же часто путает дату, как и номер
+    (в т.ч. опечатка года), а раньше дату можно было поправить только у одиночной
+    заявки через полный платный ``automate``.
+    """
+    new_date = (body.date or "").strip()
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", new_date):
+        raise HTTPException(status_code=400, detail="Дата должна быть в формате YYYY-MM-DD")
+    issue_data = await cache.get_issue_with_analysis(issue_id)
+    if not issue_data:
+        raise HTTPException(status_code=404, detail="Issue not found")
+    external_id = issue_data["issue"].external_id
+    kind, data = await _objects_doc(cache, external_id)
+    objects: list[dict] = data.get("objects") or []
+    if body.index is not None and 0 <= body.index < len(objects):
+        match_idx = [body.index]
+    else:
+        target = _norm_plate(body.plate) if body.plate else None
+        match_idx = [
+            i for i, o in enumerate(objects)
+            if (target is None or _norm_plate(o.get("plate")) == target)
+            and (not body.file or o.get("file") == body.file)
+            and (not body.old_date or o.get("date") == body.old_date)
+        ]
+    updated = 0
+    for i in match_idx:
+        o = objects[i]
+        plate = o.get("plate")
+        if not plate:
+            # Без номера искать в гео нечего — сначала впишите гос.номер.
+            raise HTTPException(status_code=400,
+                                detail="Сначала укажите гос.номер в этой строке")
+        try:
+            fresh = await automation._analyze_object(
+                str(plate), new_date, o.get("sheet_mileage_km"),
+                o.get("address"), o.get("file") or "",
+                declared=o.get("declared_system_km"),
+            )
+        except Exception:
+            log.warning("batch_date_reanalyze_failed", issue_id=issue_id, date=new_date)
+            raise HTTPException(status_code=502, detail="Не удалось перепроверить ТС в гео")
+        fresh["plate_edited"] = bool(o.get("plate_edited"))
+        fresh["date_edited"] = True
+        objects[i] = fresh
+        updated += 1
+    if not updated:
+        raise HTTPException(status_code=404, detail="Строка не найдена в разборе")
+    data["total"] = len(objects)
+    data["jamming_count"] = sum(1 for o in objects if o.get("verdict") == "Глушение")
+    data["ok_count"] = sum(1 for o in objects if o.get("verdict") == "Данные верны")
+    if kind == "parse" and len(objects) == 1:
+        row = objects[0]
+        data["verdict"] = row.get("verdict")
+        data["verdict_source"] = row.get("verdict_source")
+        data["telemetry"] = row.get("telemetry")
+        data["heuristic_category"] = row.get("heuristic_category")
+        parsed0 = data.get("parsed")
+        if isinstance(parsed0, dict):
+            parsed0["date"] = row.get("date")
+    try:
+        await cache.save_result_cache(external_id, kind, json.dumps(data, ensure_ascii=False))
+    except Exception:
+        log.warning("batch_date_save_failed", issue_id=issue_id)
+        raise HTTPException(status_code=500, detail="Не удалось сохранить дату")
     return {"ok": True, "updated": updated, **data}
 
 

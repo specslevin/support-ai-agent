@@ -947,6 +947,13 @@ _CATEGORY_CATALOG: list[dict[str, str]] = [
      "template": "Здравствуйте! Для первичной удалённой диагностики терминала просим: 1. Включить питание терминала (массу или клеммы АКБ) и не выключать до конца рабочего дня. 2. Проверить целостность проводов питания. 3. Проверить светодиодную индикацию на корпусе. Сообщите о результате."},
 ]
 
+# Вердикты, которые ИИ имеет право поставить строке разбора: каталог категорий
+# плюс «оставить как решили правила». Всё, что модель придумает вне этого набора,
+# отбрасываем — вердикт правил надёжнее выдумки (см. ai_batch_verdicts).
+_AI_ROW_VERDICTS: frozenset[str] = frozenset(
+    [c["key"] for c in _CATEGORY_CATALOG] + ["Проверить", "Нет данных", "Объект не найден"]
+)
+
 
 # General-assistant system prompt: used when the mileage path can't proceed
 # (no plate parsed, non-mileage issue type, object/telemetry lookup failed).
@@ -2842,6 +2849,155 @@ class IssueAutomationService:
             if plates:
                 lines.append(f"По ТС {', '.join(plates)} {phrasing[verdict]}.")
         return "\n".join(lines)
+
+    # Сколько строк разбора уходит в ОДИН запрос к модели. Больше — промпт
+    # раздувается и модель начинает путать объекты местами (та же беда, что в
+    # compose_aggregate_answer, где группировку пришлось вернуть в код).
+    _AI_BATCH_MAX_OBJECTS = 25
+
+    @staticmethod
+    def _ai_row_facts(o: dict[str, Any]) -> dict[str, Any]:
+        """Компактные факты одной строки разбора для промпта (по asdict(TelemetryFacts)).
+
+        Полный набор метрик на 25 объектов не влезает в разумный промпт, поэтому
+        берём то, на чём стоит лестница правил: пробеги, питание, спутники, разрывы.
+        """
+        t = o.get("telemetry") or {}
+        return {
+            "гос_номер": o.get("plate"),
+            "дата": o.get("date"),
+            "пробег_по_путевому_листу_км": o.get("sheet_mileage_km"),
+            "пробег_заявленный_клиентом_км": o.get("declared_system_km"),
+            "реальный_пробег_системы_км": o.get("system_mileage_km"),
+            "мин_напряжение_В": t.get("min_power_v"),
+            "доля_без_питания": t.get("power_off_ratio"),
+            "среднее_спутников": t.get("avg_sat"),
+            "доля_слабого_сигнала": t.get("low_sat_ratio"),
+            "макс_разрыв_трека_мин": t.get("max_gap_min"),
+            "телепортов_трека": t.get("teleport_jumps"),
+            "пакетов_телеметрии": t.get("packets"),
+            "макс_скорость": t.get("max_speed"),
+            "дата_последнего_сообщения": t.get("last_message_date"),
+            "признаки": o.get("flags") or [],
+            "спецтехника": bool(o.get("spec_vehicle")),
+            "вердикт_правил": o.get("verdict"),
+            "подсказка_эвристики": o.get("heuristic_category"),
+        }
+
+    async def ai_batch_verdicts(self, objects: list[dict[str, Any]],
+                                issue_title: str | None = None,
+                                issue_description: str | None = None,
+                                comments: str | None = None,
+                                examples: list[dict[str, Any]] | None = None,
+                                ) -> dict[str, Any]:
+        """ОДИН платный вызов DeepSeek на ВСЮ мультиобъектную заявку.
+
+        До этого шага строки разбора несли только вердикт правил: ``analyze_batch``
+        считает ``_verdict_from_facts`` и не тратит токенов, а ``automate`` умеет
+        оценивать лишь ОДИН ТС. Здесь модель получает факты всех строк разом и
+        возвращает по каждой уверенность, обоснование и черновик ответа.
+
+        Правки оператора (``verdict_source == "operator"``) в модель не уходят и не
+        перезаписываются: ручное решение сильнее машины. Строки без телеметрии
+        (объект не найден, номер не распознан) тоже пропускаем — модели нечего
+        обосновывать, а выдумывать факты она не должна.
+
+        Возвращает ``{"rows": {индекс: {...}}, "sent": n, "skipped": n, "note": str|None}``
+        — вызывающий эндпоинт сам вливает это в кэш разбора.
+        """
+        eligible: list[tuple[int, dict[str, Any]]] = [
+            (i, o) for i, o in enumerate(objects)
+            if o.get("telemetry") and o.get("verdict_source") != "operator"
+        ]
+        skipped = len(objects) - len(eligible)
+        if not eligible:
+            return {"rows": {}, "sent": 0, "skipped": skipped,
+                    "note": "Нечего отправлять в ИИ: у строк нет телеметрии либо "
+                            "вердикты выставлены оператором вручную."}
+        truncated = len(eligible) > self._AI_BATCH_MAX_OBJECTS
+        batch = eligible[: self._AI_BATCH_MAX_OBJECTS]
+        catalog = "\n".join(
+            f"- {c['key']}: {c['when']}" for c in _CATEGORY_CATALOG
+        )
+        payload = [{"i": i, **self._ai_row_facts(o)} for i, o in batch]
+        system = (
+            "Ты — ассистент техподдержки GPSPOS. В заявке НЕСКОЛЬКО единиц техники: "
+            "по каждой строке дан набор фактов телеметрии и предварительный вердикт, "
+            "посчитанный правилами. Для КАЖДОЙ строки выбери категорию из каталога, "
+            "оцени уверенность, объясни вывод и составь короткий ответ клиенту по этому ТС. "
+            "Правила вывода: (1) если за дату ЕСТЬ пакеты — питание на терминале БЫЛО, "
+            "«Не было питания» ставь только при реальной просадке напряжения или полном "
+            "отсутствии данных; (2) напряжение в норме, но спутников нет — это ГЛУШЕНИЕ, "
+            "а не потеря питания; (3) большой разрыв трека — сначала ищи признаки глушения "
+            "(телепорты, потеря спутников), и только при чистом треке считай это "
+            "буферизацией «Терминал подключился»; (4) спецтехнику по километрам не судят — "
+            "для неё «Проверить», оценка по факту работы/моточасам. "
+            "Вердикт правил — сильная подсказка: меняй его, только если факты прямо "
+            "противоречат ему, и тогда объясни, ЧТО именно противоречит. "
+            "Числа бери из фактов, ничего не выдумывай. Ответ клиенту — 1–3 предложения, "
+            "с приветствием, с реальными датой и пробегом. "
+            "Строку с полем \"i\" не пропускай и не переставляй местами: \"i\" — это "
+            "идентификатор строки, ответ по каждому объекту обязан нести его же \"i\". "
+            "Верни СТРОГО JSON без пояснений: "
+            '{"objects": [{"i": 0, "category": "...", "confidence": 0.0-1.0, '
+            '"reasoning": "...", "answer": "..."}]}'
+        )
+        head = f"Тема заявки: {issue_title or '—'}\n"
+        body = _strip_html(issue_description)
+        if body.strip():
+            head += f"Текст заявки: {body[:1200]}\n"
+        comments_block = ""
+        if comments and comments.strip():
+            ctext = comments.strip()
+            if len(ctext) > 3000:
+                ctext = ctext[:1200] + "\n…[середина переписки опущена]…\n" + ctext[-1800:]
+            comments_block = f"\nКомментарии по заявке:\n{ctext}\n"
+        user = (
+            f"Каталог категорий:\n{catalog}\n\n"
+            f"{head}{comments_block}"
+            f"{self._format_examples(examples)}"
+            f"\nСтроки разбора (JSON, по одной на объект):\n"
+            f"{json.dumps(payload, ensure_ascii=False)}\n\n"
+            f"Верни ответ по каждой из {len(batch)} строк, строго в JSON."
+        )
+        raw = await self._llm.chat(system, user)
+        parsed = self._parse_llm_json(raw)
+        items = parsed.get("objects") if isinstance(parsed, dict) else None
+        if not isinstance(items, list):
+            return {"rows": {}, "sent": len(batch), "skipped": skipped,
+                    "note": "Модель вернула ответ в неожидаемом формате — "
+                            "вердикты правил оставлены без изменений."}
+        allowed_idx = {i for i, _ in batch}
+        rows: dict[int, dict[str, Any]] = {}
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            try:
+                idx = int(it.get("i"))
+            except (TypeError, ValueError):
+                continue
+            if idx not in allowed_idx:
+                continue  # модель придумала строку, которой не давали
+            category = str(it.get("category") or "").strip()
+            if category not in _AI_ROW_VERDICTS:
+                # Категория вне каталога — вердикт правил надёжнее выдумки модели,
+                # но обоснование и черновик всё равно полезны.
+                category = ""
+            try:
+                conf = float(it.get("confidence"))
+            except (TypeError, ValueError):
+                conf = 0.0
+            rows[idx] = {
+                "verdict": category or None,
+                "confidence": max(0.0, min(1.0, conf)),
+                "reasoning": (str(it.get("reasoning") or "").strip() or None),
+                "draft_answer": _clean_answer(it.get("answer")),
+            }
+        note = None
+        if truncated:
+            note = (f"ИИ разобрал первые {len(batch)} объектов из {len(eligible)} — "
+                    f"остальные строки остались с вердиктом правил.")
+        return {"rows": rows, "sent": len(batch), "skipped": skipped, "note": note}
 
     async def _analyze_object(self, plate: str, date: str | None, sheet: float | None,
                               address: str | None, file: str,

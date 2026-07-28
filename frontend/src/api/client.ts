@@ -186,6 +186,24 @@ export const api = {
     return http.post(`/issues/${id}/batch/plate`, { old_plate: oldPlate, new_plate: newPlate, ...(date ? { date } : {}), ...(file ? { file } : {}), ...(index != null ? { index } : {}) }).then(r => r.data)
   },
 
+  // Исправление ДАТЫ неисправности в строке разбора: телеметрия и вердикт этой
+  // строки считаются заново за новую дату (симметрично updateBatchPlate).
+  updateBatchDate(id: number, date: string, plate?: string | null, oldDate?: string | null, file?: string, index?: number): Promise<BatchResult> {
+    return http.post(`/issues/${id}/batch/date`, {
+      date,
+      ...(plate ? { plate } : {}),
+      ...(oldDate ? { old_date: oldDate } : {}),
+      ...(file ? { file } : {}),
+      ...(index != null ? { index } : {}),
+    }).then(r => r.data)
+  },
+
+  // ОДИН платный вызов ИИ на ВСЮ заявку: уверенность, обоснование и черновик
+  // ответа по каждому объекту разбора. Ручные правки оператора не перезаписывает.
+  batchAi(id: number): Promise<BatchResult & { ok: boolean; updated: number; sent: number; skipped: number }> {
+    return http.post(`/issues/${id}/batch/ai`).then(r => r.data)
+  },
+
   composeAnswer(id: number): Promise<{ answer: string }> {
     return http.post(`/issues/${id}/compose_answer`).then(r => r.data)
   },

@@ -3,12 +3,11 @@ import { useState, useMemo, useEffect, useRef, useId, createContext, useContext 
 import {
   ChevronDown, AlertTriangle, X, Check, Star, Bot, RefreshCw, Database,
   Lightbulb, Map, FilePlus, ExternalLink, Pause, Send,
-  Layers, FileText, Sheet,
-  Image as ImageIcon, Paperclip, PanelRightClose, Info, MessageSquare, Sparkles, Wand2,
+  Layers, FileText,
+  PanelRightClose, Info, MessageSquare, Sparkles, Wand2,
   Maximize2, Minimize2,
   Loader2, Lock, User, Headset, Play, ThumbsUp, ThumbsDown,
   Copy, Calendar, Phone, Pencil,
-  type LucideIcon,
 } from 'lucide-react'
 import { api } from '../api/client'
 import { useIssuesStore } from '../store/issuesStore'
@@ -16,8 +15,14 @@ import { useUserStore } from '../store/userStore'
 import { useAuthStore } from '../store/authStore'
 import { StatusBadge } from './StatusBadge'
 import { EmployeeMenu, TypeMenu } from './pickers'
-import type { OkdeskDetail, Template, AutomationResult, BatchResult, BatchObject, ParseResult, VerdictSource } from '../types'
-import { extractPlaceholders, hasPlaceholders, renderTemplate, computedPlaceholderValue } from '../lib/templates'
+import type {
+  OkdeskDetail, Template, AutomationResult, BatchResult, BatchObject, ParseResult,
+  VerdictSource, IssueAttachment, RelatedIssue,
+} from '../types'
+import {
+  extractPlaceholders, hasPlaceholders, renderTemplate,
+  computedPlaceholderValue, isComputedPlaceholder,
+} from '../lib/templates'
 import { STATUS_COLOR, statusPillStyle } from '../lib/status'
 import {
   TelemetryPanel, VerdictPill, VERDICT_TEXT_STYLE,
@@ -52,12 +57,28 @@ function stripHtml(html: string | null | undefined): string {
   return html.replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').trim()
 }
 
-function MetaRow({ label, children }: { label: string; children: React.ReactNode }) {
+/**
+ * Строка «ключ — значение» в «Деталях заявки» (макет .kv): подпись фиксированной
+ * ширины, 1px-разделитель снизу. Раньше это была сетка 2 колонки, из-за чего
+ * значения прыгали по горизонтали от длины подписи.
+ */
+function MetaRow({ label, title, children, action }: {
+  label: string
+  title?: string
+  children: React.ReactNode
+  action?: React.ReactNode
+}) {
   return (
-    <>
-      <span className="text-muted">{label}</span>
-      <span>{children}</span>
-    </>
+    <div className="flex items-center gap-2.5 border-b border-line py-[7px] last:border-b-0">
+      <span
+        title={title}
+        className="w-[148px] shrink-0 text-[9px] font-medium uppercase leading-3 tracking-[0.4px] text-muted"
+      >
+        {label}
+      </span>
+      <span className="min-w-0 flex-1 text-xs leading-[18px] text-secondary">{children}</span>
+      {action}
+    </div>
   )
 }
 
@@ -398,43 +419,49 @@ function AssigneeSection({ issueId, assigneeName }: { issueId: number; assigneeN
   })
 
   return (
-    <div className="flex items-center gap-2 text-xs relative">
-      <span className="text-muted shrink-0">Ответственный</span>
-      <span className={`flex-1 ${assigneeName ? 'text-white' : 'text-muted/50'}`}>
+    <MetaRow
+      label="Ответственный"
+      title="assignee — сотрудник, ведущий заявку в Okdesk"
+      action={
+        <div className="flex shrink-0 items-center gap-1.5">
+          {assignMutation.isPending && (
+            <span className="animate-pulse text-[10px] text-muted">Сохраняю…</span>
+          )}
+          {currentUser && currentUser.name !== assigneeName && (
+            <button
+              onClick={() => assignMutation.mutate(currentUser.id)}
+              disabled={assignMutation.isPending}
+              title={`Назначить заявку на себя (${currentUser.name})`}
+              className="rounded-pill border border-border bg-frame px-3 py-[3px] text-[11px] font-medium text-secondary transition-colors hover:border-accent hover:text-accent disabled:opacity-40"
+            >
+              Взять себе
+            </button>
+          )}
+          <div className="relative">
+            <button
+              onClick={() => setPickerOpen(o => !o)}
+              disabled={assignMutation.isPending}
+              title="Выбрать другого ответственного"
+              className="flex items-center rounded-pill border border-border bg-frame px-2 py-[3px] text-muted transition-colors hover:border-accent hover:text-accent disabled:opacity-40"
+            >
+              <ChevronDown size={13} />
+            </button>
+            {pickerOpen && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setPickerOpen(false)} />
+                <div className="absolute right-0 top-full z-50 mt-1 w-40 rounded-md border border-border bg-card py-1 shadow-lg">
+                  <EmployeeMenu selectedName={assigneeName} onPick={emp => assignMutation.mutate(emp.id)} />
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      }
+    >
+      <span className={assigneeName ? 'font-medium text-white' : 'text-muted/50'}>
         {assigneeName ?? 'Не назначен'}
       </span>
-
-      {currentUser && currentUser.name !== assigneeName && (
-        <button
-          onClick={() => assignMutation.mutate(currentUser.id)}
-          disabled={assignMutation.isPending}
-          className="text-[10px] px-2 py-0.5 rounded-md border border-accent/50 text-accent hover:bg-accent/10 transition-colors disabled:opacity-40 shrink-0"
-        >
-          Взять себе
-        </button>
-      )}
-
-      <div className="relative shrink-0">
-        <button
-          onClick={() => setPickerOpen(o => !o)}
-          disabled={assignMutation.isPending}
-          className="flex items-center px-1.5 py-0.5 rounded-md border border-border hover:border-accent text-muted hover:text-white transition-colors disabled:opacity-40"
-        >
-          <ChevronDown size={13} />
-        </button>
-
-        {pickerOpen && (
-          <div className="absolute right-0 top-full mt-1 bg-card border border-border rounded-md py-1 z-50 w-40 shadow-lg">
-            <EmployeeMenu selectedName={assigneeName} onPick={emp => assignMutation.mutate(emp.id)} />
-          </div>
-        )}
-        {pickerOpen && <div className="fixed inset-0 z-40" onClick={() => setPickerOpen(false)} />}
-      </div>
-
-      {assignMutation.isPending && (
-        <span className="text-[10px] text-muted animate-pulse shrink-0">Сохранение...</span>
-      )}
-    </div>
+    </MetaRow>
   )
 }
 
@@ -453,25 +480,34 @@ function TypeSection({ issueId, typeName, typeCode }: { issueId: number; typeNam
   const isDefault = !typeCode || typeCode === 'inner'
 
   return (
-    <div className="col-span-2 flex items-center gap-2 relative">
-      <span className="text-muted shrink-0">Тип</span>
-      <button
-        onClick={() => setOpen(o => !o)}
-        className={`flex items-center gap-1 text-left hover:text-white transition-colors ${isDefault ? 'text-warning' : 'text-white'}`}
-      >
-        {isDefault && !mutation.isPending && <AlertTriangle size={12} />}
-        {mutation.isPending ? 'Меняю…' : isDefault ? 'Не указан — нажмите чтобы выбрать' : typeName}
-        <ChevronDown size={12} className="text-muted" />
-      </button>
-      {open && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute left-10 top-full mt-1 z-50 bg-card border border-border rounded-md py-1 min-w-[200px] max-h-72 overflow-y-auto shadow-lg">
-            <TypeMenu selectedCode={typeCode} onPick={t => { mutation.mutate(t.code); setOpen(false) }} />
-          </div>
-        </>
-      )}
-    </div>
+    <MetaRow
+      label="Тип заявки"
+      title="type — от типа зависят доступные статусы и шаблоны; без типа Okdesk не пустит заявку ни в «В работе», ни в «Решена»"
+      action={
+        <div className="relative shrink-0">
+          <button
+            onClick={() => setOpen(o => !o)}
+            title="Сменить тип заявки"
+            className="rounded-pill border border-border bg-frame px-3 py-[3px] text-[11px] font-medium text-secondary transition-colors hover:border-accent hover:text-accent"
+          >
+            Изменить
+          </button>
+          {open && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+              <div className="absolute right-0 top-full z-50 mt-1 max-h-72 min-w-[200px] overflow-y-auto rounded-md border border-border bg-card py-1 shadow-lg">
+                <TypeMenu selectedCode={typeCode} onPick={t => { mutation.mutate(t.code); setOpen(false) }} />
+              </div>
+            </>
+          )}
+        </div>
+      }
+    >
+      <span className={`inline-flex items-center gap-1 ${isDefault ? 'text-warning' : 'font-medium text-white'}`}>
+        {isDefault && !mutation.isPending && <AlertTriangle size={12} className="shrink-0" />}
+        {mutation.isPending ? 'Меняю…' : isDefault ? 'Не указан — выберите тип' : typeName}
+      </span>
+    </MetaRow>
   )
 }
 
@@ -518,44 +554,61 @@ function EditableParameters({ d, issueId }: { d: OkdeskDetail; issueId: number }
   // Параметры, которые не входят в редактируемую тройку — показываем как есть.
   const otherParams = d.parameters.filter(p => !EDITABLE_PARAMS.some(ep => ep.match.test(p.name)))
 
+  const filled = EDITABLE_PARAMS.filter(ep => (vals[ep.code] ?? '').trim()).length
+
   return (
     <Section title="Параметры заявки" defaultOpen={false} storageKey="params">
-      <div className="space-y-2">
+      <div>
         {EDITABLE_PARAMS.map(ep => (
-          <div key={ep.code} className="grid grid-cols-[140px_1fr] items-center gap-x-3 gap-y-1">
-            <span className="text-muted">{ep.label}</span>
+          <div key={ep.code} className="flex items-center gap-2.5 border-b border-line py-[7px]">
+            <span className="w-[148px] shrink-0 text-[9px] font-medium uppercase leading-3 tracking-[0.4px] text-muted">
+              {ep.label}
+            </span>
+            {/* Тихий inline-edit (макет .inl): поле выглядит текстом, обводка
+                появляется по клику — «параметры Okdesk», а не форма-анкета. */}
             <input
               type="text"
               value={vals[ep.code] ?? ''}
               onChange={e => setVals(v => ({ ...v, [ep.code]: e.target.value }))}
               disabled={isDemo || mutation.isPending}
-              placeholder="—"
-              className="bg-frame border border-border rounded-md px-2 py-1 text-xs text-white placeholder:text-muted/50 focus:border-accent outline-none disabled:opacity-50 disabled:cursor-not-allowed"
+              placeholder="не заполнено — Okdesk не пустит в «В работе»"
+              title={isDemo
+                ? 'Недоступно в демо-режиме'
+                : `Параметр Okdesk «${ep.label}» (${ep.code})`}
+              className="-ml-2 min-w-0 flex-1 rounded-pill border border-transparent bg-transparent px-2 py-[3px] text-xs leading-[18px] text-white outline-none transition-colors placeholder:text-warning hover:border-line focus:border-accent focus:bg-frame disabled:cursor-not-allowed disabled:opacity-55"
             />
           </div>
         ))}
-        {otherParams.length > 0 && (
-          <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 pt-1">
-            {otherParams.map(p => (
-              <MetaRow key={p.name} label={p.name}>{p.value}</MetaRow>
-            ))}
-          </div>
-        )}
+        {otherParams.map(p => (
+          <MetaRow key={p.name} label={p.name}>{p.value}</MetaRow>
+        ))}
       </div>
       {mutation.isError && (
         <p className="text-danger text-[11px]">
           {(mutation.error as { response?: { data?: { detail?: string } } })?.response?.data?.detail || 'Не удалось сохранить параметры'}
         </p>
       )}
-      <button
-        onClick={() => mutation.mutate()}
-        disabled={isDemo || mutation.isPending || !dirty}
-        title={isDemo ? 'Недоступно в демо-режиме' : 'Сохранить параметры в Okdesk'}
-        className={`flex items-center justify-center gap-1.5 w-full bg-frame border border-border hover:border-accent text-xs font-semibold py-1.5 rounded-md transition-colors disabled:opacity-40 text-muted hover:text-accent ${mutation.isPending ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
-      >
-        {mutation.isPending ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
-        {mutation.isPending ? 'Сохраняю…' : 'Сохранить параметры'}
-      </button>
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[10px] leading-4 text-muted">
+          {mutation.isSuccess && !dirty
+            ? '✓ параметры сохранены в Okdesk'
+            : dirty ? 'есть несохранённые правки' : `заполнено ${filled} из ${EDITABLE_PARAMS.length}`}
+        </span>
+        <button
+          onClick={() => mutation.mutate()}
+          disabled={isDemo || mutation.isPending || !dirty}
+          title={isDemo ? 'Недоступно в демо-режиме' : 'Сохранить параметры в Okdesk'}
+          className={`flex shrink-0 items-center gap-1.5 rounded-pill bg-accent px-3 py-[5px] text-xs font-medium text-black transition-opacity hover:opacity-90 disabled:opacity-40 ${mutation.isPending ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
+        >
+          {mutation.isPending ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
+          {mutation.isPending ? 'Сохраняю…' : 'Сохранить параметры'}
+        </button>
+      </div>
+      {/* Почему пустое поле подсвечено предупреждением, а не прочерком. */}
+      <p className="text-[10px] leading-4 text-muted">
+        Пустые «Местоположение техники», «Контактное лицо» или «Номер телефона» блокируют перевод
+        заявки в «В работе» — Okdesk отдаёт ошибку валидации. Правки уходят в Okdesk, а не только в кэш.
+      </p>
     </Section>
   )
 }
@@ -568,36 +621,58 @@ function OkdeskInfo({ d, issueId, assigneeName }: { d: OkdeskDetail; issueId: nu
 
   return (
     <div className="text-xs">
-      {/* Участники */}
+      {/* Участники. Тип и ответственный — первыми: без типа заявку не решить,
+          а ответственный определяет, кто её ведёт. */}
       <Section title="Участники" storageKey="people">
-        <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
-          {d.author_name && <MetaRow label="Автор">{d.author_name}</MetaRow>}
-          {d.service_object_name && <MetaRow label="Объект">{d.service_object_name}</MetaRow>}
+        <div>
           <TypeSection issueId={issueId} typeName={d.type_name} typeCode={d.type_code} />
-          {d.source && <MetaRow label="Источник">{d.source}</MetaRow>}
+          <AssigneeSection issueId={issueId} assigneeName={assigneeName} />
+          {d.author_name && (
+            <MetaRow label="Автор" title="author_name — кто создал заявку в Okdesk">{d.author_name}</MetaRow>
+          )}
+          {d.service_object_name && (
+            <MetaRow label="Объект обслуживания" title="service_object_name — объект обслуживания в Okdesk">
+              {d.service_object_name}
+            </MetaRow>
+          )}
+          {d.source && (
+            <MetaRow label="Источник" title="source — откуда пришла заявка в Okdesk">{d.source}</MetaRow>
+          )}
         </div>
-        <AssigneeSection issueId={issueId} assigneeName={assigneeName} />
       </Section>
 
       {/* Сроки */}
       <Section title="Сроки" defaultOpen={false} storageKey="dates">
-        <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+        <div>
           {deadline && (
-            <MetaRow label="Срок выполнения">
+            <MetaRow label="Срок выполнения" title="deadline_at — срок выполнения по SLA">
               <span className={`inline-flex items-center gap-1 ${overdue ? 'text-orange-400' : ''}`}>
                 {deadline} {overdue && <AlertTriangle size={11} />}
               </span>
             </MetaRow>
           )}
-          {d.completed_at && <MetaRow label="Завершена">{formatDate(d.completed_at)}</MetaRow>}
-          {d.delayed_to && <MetaRow label="Отложена до">{formatDate(d.delayed_to)}</MetaRow>}
-          {d.planned_reaction_at && <MetaRow label="Плановая реакция">{formatDate(d.planned_reaction_at)}</MetaRow>}
-          {d.reacted_at && <MetaRow label="Фактическая реакция">{formatDate(d.reacted_at)}</MetaRow>}
+          {d.planned_reaction_at && (
+            <MetaRow label="Плановая реакция" title="planned_reaction_at — когда по SLA надо было ответить">
+              {formatDate(d.planned_reaction_at)}
+            </MetaRow>
+          )}
+          {d.reacted_at && (
+            <MetaRow label="Фактическая реакция" title="reacted_at — когда ответили фактически">
+              {formatDate(d.reacted_at)}
+            </MetaRow>
+          )}
           {d.spent_time_total != null && d.spent_time_total > 0 && (
-            <MetaRow label="Потрачено">
+            <MetaRow label="Потрачено" title="spent_time_total — суммарные трудозатраты по заявке">
               {d.spent_time_total} ч.
             </MetaRow>
           )}
+          {/* Прочерки вместо скрытия: пустое «отложена до» — тоже факт. */}
+          <MetaRow
+            label="Отложена до · завершена"
+            title="delayed_to / completed_at — заполняются, когда заявка отложена или завершена"
+          >
+            {formatDate(d.delayed_to) ?? '—'} · {formatDate(d.completed_at) ?? '—'}
+          </MetaRow>
         </div>
       </Section>
 
@@ -639,35 +714,60 @@ function ClientQuestionBlock({ description, source, createdAt }: {
 function RelatedIssuesSection({ d, onOpenExternal }: { d: OkdeskDetail; onOpenExternal: (extId: number) => void }) {
   const total = (d.parent_id ? 1 : 0) + d.child_ids.length
   if (total === 0) return null
+  // Бэкенд отдаёт связи со статусом и темой (`related`); старые ответы без этого
+  // поля собираем из id — связь важнее подписи.
+  const related: RelatedIssue[] = d.related?.length
+    ? d.related
+    : [
+        ...(d.parent_id ? [{ external_id: d.parent_id, role: 'parent' as const, subject: null, status: null, url: null }] : []),
+        ...d.child_ids.map(id => ({ external_id: id, role: 'child' as const, subject: null, status: null, url: null })),
+      ]
+  const parents = related.filter(r => r.role === 'parent')
+  const children = related.filter(r => r.role === 'child')
+
+  const row = (r: RelatedIssue) => (
+    <div key={`${r.role}-${r.external_id}`} className="flex items-center gap-2 border-b border-line py-[7px] last:border-b-0">
+      <button
+        onClick={() => onOpenExternal(r.external_id)}
+        title={`Открыть заявку №${r.external_id} в карточке`}
+        className="shrink-0 text-xs font-medium leading-[18px] text-white tabular-nums hover:underline"
+      >
+        №{r.external_id}
+      </button>
+      {r.status && <StatusBadge status={r.status} />}
+      <span className="min-w-0 flex-1 truncate text-xs leading-[18px] text-muted" title={r.subject ?? undefined}>
+        {r.subject ?? 'тема неизвестна — заявки нет в локальном кэше'}
+      </span>
+      {r.url && (
+        <a
+          href={r.url}
+          target="_blank"
+          rel="noreferrer"
+          title={`Открыть заявку №${r.external_id} в Okdesk`}
+          className="shrink-0 text-muted hover:text-accent transition-colors"
+        >
+          <ExternalLink size={12} />
+        </a>
+      )}
+    </div>
+  )
+
   return (
     <Block title="Связанные заявки" count={total} storageKey="related">
-      <div className="space-y-2">
-        {d.parent_id && (
-          <div className="space-y-1">
-            <p className="text-[11px] font-medium text-muted">Родительская</p>
-            <button
-              onClick={() => onOpenExternal(d.parent_id!)}
-              className="w-full flex items-center gap-2 bg-frame rounded-md px-2.5 py-2 text-xs text-white hover:underline text-left"
-            >
-              №{d.parent_id}
-            </button>
-          </div>
-        )}
-        {d.child_ids.length > 0 && (
-          <div className="space-y-1">
-            <p className="text-[11px] font-medium text-muted">Дочерние ({d.child_ids.length})</p>
-            {d.child_ids.map(id => (
-              <button
-                key={id}
-                onClick={() => onOpenExternal(id)}
-                className="w-full flex items-center gap-2 bg-frame rounded-md px-2.5 py-2 text-xs text-white hover:underline text-left"
-              >
-                №{id}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
+      {parents.length > 0 && (
+        <div>
+          <span className="mb-0.5 block text-[9px] font-medium uppercase leading-3 tracking-[0.4px] text-muted">Родительская</span>
+          {parents.map(row)}
+        </div>
+      )}
+      {children.length > 0 && (
+        <div>
+          <span className="mb-0.5 block text-[9px] font-medium uppercase leading-3 tracking-[0.4px] text-muted">
+            Дочерние ({children.length})
+          </span>
+          {children.map(row)}
+        </div>
+      )}
     </Block>
   )
 }
@@ -732,6 +832,12 @@ export function TemplatePicker({ onSelect, onSelectFull, issueId, trigger = 'ico
     setFill(null)
   }
 
+  const closePicker = () => {
+    setOpen(false)
+    setSearch('')
+    setFill(null)
+  }
+
   const handleSelect = (t: Template) => {
     if (hasPlaceholders(t.content)) {
       // Case-insensitive lookup over suggested values from the cached analysis.
@@ -781,18 +887,144 @@ export function TemplatePicker({ onSelect, onSelectFull, issueId, trigger = 'ico
       )
   }, [templates, search, catFilter])
 
-  if (!open) {
-    if (trigger === 'text') {
-      return (
+  // Кнопка «Шаблон ▾» в липком баре: панель раскрывается НАД баром (инлайн-поп),
+  // а не центральной модалкой — оператор видит поле ответа и подставляемый текст
+  // одновременно. Модалка для этого закрывала весь экран.
+  if (trigger === 'text') {
+    const names = fill ? extractPlaceholders(fill.tpl.content) : []
+    const preview = fill ? renderTemplate(fill.tpl.content, fill.values) : ''
+    return (
+      <div className="relative shrink-0">
         <button
-          onClick={() => setOpen(true)}
-          title="Выбрать шаблон ответа"
-          className="flex shrink-0 items-center gap-1 rounded-pill bg-frame border border-border px-3 py-[5px] text-xs font-medium text-secondary hover:border-muted hover:text-white transition-colors"
+          onClick={() => (open ? closePicker() : setOpen(true))}
+          title="Выбрать шаблон ответа — шаблон с плейсхолдерами запросит значения"
+          className={`flex shrink-0 items-center gap-1 rounded-pill border px-3 py-[5px] text-xs font-medium transition-colors ${
+            open ? 'border-accent bg-accent/10 text-accent' : 'border-border bg-frame text-secondary hover:border-muted hover:text-white'
+          }`}
         >
-          Шаблон <ChevronDown size={12} />
+          Шаблон <ChevronDown size={12} className={open ? 'rotate-180 transition-transform' : 'transition-transform'} />
         </button>
-      )
-    }
+        {open && (
+          <>
+            <div className="fixed inset-0 z-40" onClick={closePicker} />
+            <div className="absolute bottom-full right-0 z-50 mb-2 w-[452px] max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-border bg-darker shadow-lg">
+              <div className="flex items-center justify-between gap-2 border-b border-line px-3 py-2.5 text-xs font-medium">
+                <span>{fill ? fill.tpl.name : 'Шаблоны ответов'}</span>
+                <button onClick={closePicker} title="Закрыть панель шаблонов" className="text-muted hover:text-white">
+                  <X size={14} />
+                </button>
+              </div>
+
+              {!fill && (
+                <>
+                  <div className="flex items-center gap-1.5 px-3 pt-2.5">
+                    <input
+                      autoFocus
+                      type="text"
+                      placeholder="Поиск по названию или тексту…"
+                      title="Поиск по названию и тексту шаблона"
+                      value={search}
+                      onChange={e => setSearch(e.target.value)}
+                      className="min-w-0 flex-1 rounded-pill border border-border bg-frame px-3 py-1.5 text-xs outline-none focus:border-accent"
+                    />
+                    {categoryNames.length > 0 && (
+                      <select
+                        value={catFilter}
+                        onChange={e => setCatFilter(e.target.value)}
+                        title="Фильтр по категории шаблона"
+                        className="shrink-0 max-w-[40%] rounded-pill border border-border bg-frame px-2.5 py-1.5 text-xs outline-none focus:border-accent"
+                      >
+                        <option value="">Все категории</option>
+                        {categoryNames.map(c => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                    )}
+                  </div>
+                  <div className="mt-2.5 max-h-[232px] overflow-y-auto">
+                    {visible.length === 0 && <p className="px-3 py-2.5 text-[11px] text-muted">Шаблоны не найдены</p>}
+                    {visible.map(t => (
+                      <button
+                        key={t.id}
+                        onClick={() => handleSelect(t)}
+                        title={t.content.slice(0, 140)}
+                        className="flex w-full items-center gap-2 border-b border-line px-3 py-[7px] text-left last:border-b-0 hover:bg-card-hover"
+                      >
+                        <span className="min-w-0 flex-1 truncate text-xs font-medium leading-[18px] text-white">
+                          {t.is_favorite && <Star size={10} className="mr-1 inline fill-warning text-warning" />}
+                          {t.name}
+                        </span>
+                        {t.category_name && <SumBadge title="Категория шаблона">{t.category_name}</SumBadge>}
+                        {(t.is_dynamic || hasPlaceholders(t.content)) && (
+                          <SumBadge title="Динамический шаблон — запросит значения плейсхолдеров">дин.</SumBadge>
+                        )}
+                        {t.usage_count > 0 && (
+                          <span title={`Использован ${t.usage_count} раз`} className="shrink-0 rounded-pill bg-white/[0.08] px-[7px] text-[11px] leading-4 text-muted tabular-nums">
+                            {t.usage_count}
+                          </span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+
+              {fill && (
+                <>
+                  <div className="max-h-[300px] space-y-2.5 overflow-y-auto px-3 py-2.5">
+                    {names.map(name => {
+                      // [сегодня]/[вчера]/[завтра] считаются по МСК и правке не подлежат:
+                      // редактируемое поле создавало иллюзию, что дату можно сдвинуть.
+                      const computed = isComputedPlaceholder(name)
+                      return (
+                        <div key={name}>
+                          <span className="mb-1 block text-[9px] font-medium uppercase leading-3 tracking-[0.4px] text-muted">[{name}]</span>
+                          <input
+                            autoFocus={name === names[0] && !computed}
+                            type="text"
+                            value={fill.values[name] ?? ''}
+                            disabled={computed}
+                            onChange={e => setFill(f => f && { ...f, values: { ...f.values, [name]: e.target.value } })}
+                            title={computed
+                              ? 'Подставляется автоматически по МСК'
+                              : 'Значение подставлено из разбора заявки — можно поправить'}
+                            className="w-full rounded-pill border border-border bg-frame px-3 py-1.5 text-xs outline-none focus:border-accent disabled:opacity-55"
+                          />
+                        </div>
+                      )
+                    })}
+                    <div>
+                      <span className="mb-1 block text-[9px] font-medium uppercase leading-3 tracking-[0.4px] text-muted">Предпросмотр</span>
+                      <p className="whitespace-pre-wrap rounded-xl border border-border bg-frame px-3 py-2 text-[11px] leading-relaxed text-white">{preview}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 border-t border-line px-3 py-2.5">
+                    <span title="[сегодня], [вчера], [завтра] подставляются автоматически по МСК" className="mr-auto text-[10px] leading-[14px] text-muted">
+                      [сегодня] / [вчера] / [завтра] — автоподстановка
+                    </span>
+                    <button
+                      onClick={() => setFill(null)}
+                      title="Вернуться к списку шаблонов"
+                      className="rounded-pill border border-border bg-frame px-3 py-[5px] text-xs font-medium text-secondary hover:border-muted hover:text-white"
+                    >
+                      Назад
+                    </button>
+                    <button
+                      onClick={() => emit(fill.tpl, renderTemplate(fill.tpl.content, fill.values))}
+                      title="Вставить готовый текст в поле ответа"
+                      className="flex items-center gap-1.5 rounded-pill bg-accent px-3 py-[5px] text-xs font-medium text-black hover:opacity-90"
+                    >
+                      <Check size={13} /> Вставить
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    )
+  }
+
+  if (!open) {
     return (
       <button
         onClick={() => setOpen(true)}
@@ -940,6 +1172,18 @@ const ALL_STATUSES = [
   { code: 'closed',   label: 'Закрыть',             bg: STATUS_COLOR.closed,    commentRequired: false, needsDelay: false },
 ]
 
+/**
+ * Пункты меню «Ещё» в липком баре. Каждый ведёт в модалку смены статуса —
+ * раньше «В работе» и «Ожидание ответа» отправлялись сразу, причём дата возврата
+ * подставлялась молча (+3 дня), а обязательный комментарий Okdesk мог оказаться
+ * пустым. Подписи объясняют требования ДО нажатия.
+ */
+const BAR_MENU_ACTIONS: { code: string; label: string; hint: string }[] = [
+  { code: 'wait', label: 'В работе', hint: 'только для выездных типов' },
+  { code: 'delayed', label: 'Ожидание ответа', hint: 'комментарий + отложить до' },
+  { code: 'no_time', label: 'Нет времени', hint: 'комментарий + дата возврата' },
+]
+
 const DEPARTURE_TYPES = new Set(['departure', 'departure_fuel'])
 const FINAL_STATUSES  = new Set(['completed', 'closed', 'inst_fin'])
 
@@ -955,23 +1199,56 @@ function getAvailableStatuses(currentStatus: string | null, typeCode: string | n
   })
 }
 
+/**
+ * Публичный / Приватный — сегмент видимости комментария (v4). Один компонент на
+ * липкий бар и модалку статуса: раньше в баре были пилюли, а в модалке чекбокс.
+ */
+function VisibilitySegments({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <div className="flex w-fit shrink-0 items-center rounded-pill border border-border bg-frame p-0.5">
+      {([true, false] as const).map(pub => (
+        <button
+          key={String(pub)}
+          onClick={() => onChange(pub)}
+          title={pub ? 'Публичный — виден клиенту' : 'Внутренний комментарий — не виден клиенту'}
+          className={`rounded-pill px-2.5 py-[3px] text-[11px] font-medium transition-colors ${
+            value === pub
+              ? pub ? 'bg-accent/15 text-accent' : 'bg-warning/15 text-warning'
+              : 'text-muted hover:text-white'
+          }`}
+        >
+          {pub ? 'Публичный' : 'Приватный'}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 // Modal shown after picking a status — comment + optional delay_to
 function StatusActionModal({
   issueId,
   externalId,
   targetStatus,
+  typeMissing = false,
+  initialComment = '',
+  initialPublic = true,
   onClose,
   onDone,
 }: {
   issueId: number
   externalId: number
   targetStatus: typeof ALL_STATUSES[number]
+  /** Тип заявки «Не указан» — Okdesk отклонит смену статуса, гард в модалке. */
+  typeMissing?: boolean
+  /** Текст и видимость, набранные в липком баре: переносим, а не заставляем перепечатывать. */
+  initialComment?: string
+  initialPublic?: boolean
   onClose: () => void
   onDone: (notice?: string) => void
 }) {
   const queryClient = useQueryClient()
-  const [comment, setComment] = useState('')
-  const [commentPublic, setCommentPublic] = useState(true)
+  const [comment, setComment] = useState(initialComment)
+  const [commentPublic, setCommentPublic] = useState(initialPublic)
   const [delayTo, setDelayTo] = useState(() => {
     const d = new Date(); d.setDate(d.getDate() + 3)
     return d.toISOString().slice(0, 16)
@@ -987,7 +1264,9 @@ function StatusActionModal({
     },
   })
 
-  const canSubmit = (!targetStatus.commentRequired || comment.trim()) && (!targetStatus.needsDelay || delayTo)
+  const canSubmit = !typeMissing
+    && (!targetStatus.commentRequired || comment.trim())
+    && (!targetStatus.needsDelay || delayTo)
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -1002,6 +1281,14 @@ function StatusActionModal({
         </div>
 
         <div className="px-5 py-4 space-y-4">
+          {/* Гард, а не тост после отказа: Okdesk отклоняет смену статуса при
+              type_code = inner, и узнать об этом надо ДО нажатия. */}
+          {typeMissing && (
+            <div className="flex items-start gap-2 rounded-md bg-warning/15 px-3 py-2 text-[11px] leading-4 text-warning">
+              <AlertTriangle size={13} className="mt-px shrink-0" />
+              <span>Сначала укажите тип заявки — в разделе «Детали заявки». Без типа Okdesk не примет смену статуса.</span>
+            </div>
+          )}
           {targetStatus.needsDelay && (
             <div className="space-y-1.5">
               <p className="text-[10px] font-semibold uppercase tracking-widest text-muted/60">
@@ -1031,15 +1318,9 @@ function StatusActionModal({
               />
               <TemplatePicker onSelect={text => setComment(text)} issueId={issueId} />
             </div>
-            <label className="flex items-center gap-2 cursor-pointer select-none w-fit">
-              <input
-                type="checkbox"
-                checked={commentPublic}
-                onChange={e => setCommentPublic(e.target.checked)}
-                className="w-3.5 h-3.5 accent-accent"
-              />
-              <span className="text-xs text-muted">Публичный комментарий</span>
-            </label>
+            {/* Тот же сегмент, что в липком баре: один орган управления на всё
+                приложение, а не чекбокс здесь и пилюли там. */}
+            <VisibilitySegments value={commentPublic} onChange={setCommentPublic} />
           </div>
         </div>
 
@@ -1198,23 +1479,17 @@ function ParseDisagreeNote({ objects }: { objects: BatchObject[] }) {
   )
 }
 
-// Управление одиночным анализом: запуск, уточнение номера/даты, предупреждения.
-// Данные (таблица разбора, метрики, вердикт) рисуют блоки «① Разбор» и
-// «② Телеметрия и вердикт» — они читают тот же кэш `automate-cached`.
+/**
+ * Пояснения к одиночному разбору: метка «показан сохранённый анализ», ошибка
+ * прогона и подозрение на ошибку клиента в гос.номере.
+ *
+ * Платной кнопки здесь БОЛЬШЕ НЕТ: она одна на карточку и живёт в «Телеметрии»
+ * (см. AiAnswerCta) — там же, где появляются её результаты: обоснование,
+ * уверенность и черновик. Данные таблицы рисуют SingleParseTable/BatchAnalysis.
+ */
 function AutoAnalysis({ issueId, issueTitle, companyName }: { issueId: number; issueTitle?: string | null; companyName?: string | null }) {
-  const queryClient = useQueryClient()
-  const isDemo = useAuthStore(s => s.user?.role === 'demo')
-  const [result, setResult] = useState<AutomationResult | null>(null)
-
-  // Demo: allow analysis only once per issue. Track in localStorage.
-  const demoAnalyzedKey = `demo_analyzed_${issueId}`
-  const demoAlreadyAnalyzed = isDemo && !!localStorage.getItem(demoAnalyzedKey)
-
   // Multi-attachment («общая») issue → single-object analysis is misleading
   // (it picks just the first plate). Defer to «Разбор по объектам» below.
-  // Batch = несколько вложений; ИЛИ одно вложение агрегатной/«общей» заявки;
-  // ИЛИ сохранённый разбор пометил заявку как агрегатную; ИЛИ в нём >=2 объекта
-  // (напр. 63317: один файл, ~40 ТС) — см. useBatchMode.
   const { isBatch } = useBatchMode(issueId, issueTitle, companyName)
 
   // Cached result — show last analysis without re-running the AI (saves tokens).
@@ -1224,139 +1499,159 @@ function AutoAnalysis({ issueId, issueTitle, companyName }: { issueId: number; i
     enabled: !isBatch,
     staleTime: 5 * 60_000,
   })
-  const cached = cachedQ.data?.cached ? cachedQ.data : null
-
-  const run = useMutation({
-    mutationFn: (override?: { plate?: string; date?: string } | void) => api.automateIssue(issueId, override || undefined),
-    onSuccess: (data) => {
-      setResult(data)
-      if (isDemo) localStorage.setItem(demoAnalyzedKey, '1')
-      queryClient.invalidateQueries({ queryKey: ['issue', issueId] })
-      queryClient.invalidateQueries({ queryKey: ['automate-cached', issueId] })
-      // Трек мог быть закэширован с ошибкой «номер не найден» до анализа — сбрасываем (64736, 64965)
-      queryClient.invalidateQueries({ queryKey: ['track', issueId] })
-    },
-  })
-
-  const shown = result ?? (cached as AutomationResult | null)
+  const shown = cachedQ.data?.cached ? (cachedQ.data as unknown as AutomationResult) : null
   const p = shown?.parsed
-  const isCached = !result && !!cached
-
-  // Смена заявки: результат прошлой заявки не должен «залипать» в новой карточке
-  // (компонент не пересоздаётся по key, живёт на смене issueId).
-  useEffect(() => { setResult(null) }, [issueId])
-
-  // Авто-прогона здесь НЕТ намеренно. `automate` — единственный путь, который тратит
-  // DeepSeek (fallback-извлечение номера/даты + черновик ответа), и стрелять им на
-  // каждое открытие карточки нельзя. Факты (номер, дата, пробеги, телеметрия) и
-  // предварительный вердикт по правилам считаются детерминированным разбором без
-  // токенов — он и наполняет таблицу при открытии; ИИ зовётся отдельной кнопкой.
 
   // Подозрение на ошибку клиента в гос.номере: не тот формат ИЛИ объект не найден в мониторинге.
   const plateSuspect = !!shown && (!!p?.plate_format_suspect || shown.error === 'object_not_found')
 
   // У мультиобъектной заявки разбор ведёт BatchAnalysis в том же блоке —
   // одиночный автоанализ взял бы только первый ТС и вводил бы в заблуждение.
-  if (isBatch) return null
-
-  // Анализ уже есть → кнопка сжимается в иконку «обновить» и уходит вправо;
-  // первичный запуск остаётся широкой текстовой кнопкой (главное действие блока).
-  const compact = !!shown
+  if (isBatch || !shown) return null
 
   return (
-    <div className="space-y-3">
-      <div className={compact ? 'flex justify-end' : ''}>
-        <button
-          onClick={() => run.mutate()}
-          disabled={run.isPending || demoAlreadyAnalyzed}
-          title={demoAlreadyAnalyzed ? 'Демо: анализ доступен один раз'
-            : compact ? 'Обновить анализ'
-            : 'Платный шаг: отвечает ИИ (DeepSeek)'}
-          className={`flex items-center justify-center gap-2 bg-frame border border-accent/40 text-accent hover:bg-accent/10 text-xs font-semibold rounded-md transition-colors disabled:opacity-40 ${compact ? (run.isPending ? 'px-2.5 py-1.5' : 'p-1.5') : 'w-full py-2'} ${run.isPending ? 'animate-pulse cursor-wait' : ''} ${demoAlreadyAnalyzed ? 'cursor-not-allowed' : ''}`}
-        >
-          {run.isPending ? (
-            <Working label={compact ? 'Анализирую…' : 'Анализирую заявку и данные geo…'} />
-          ) : compact ? (
-            <RefreshCw size={15} />
-          ) : (
-            <><Bot size={14} /> Автоанализ заявки</>
-          )}
-        </button>
-      </div>
+    <div className="space-y-2 text-xs">
+      <p className="flex items-center gap-1 text-[10px] text-muted/70">
+        <Database size={11} /> показан сохранённый анализ
+        {cachedQ.data?.created_at
+          ? ` от ${new Date(cachedQ.data.created_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}`
+          : ''}
+      </p>
 
-      {/* Честная подпись у платной кнопки: факты и предварительный вердикт в
-          таблице выше бесплатны, ИИ добавляет обоснование, уверенность и черновик.
-          Никаких «≈N токенов / ≈N секунд» — такого расчёта в проекте нет. */}
-      {!compact && !run.isPending && (
-        <p className="text-[10px] leading-4 text-muted">
-          Платный шаг, отвечает ИИ: обоснование вердикта, уверенность и черновик ответа.
-          Факты и предварительный вердикт по правилам уже посчитаны бесплатно.
-        </p>
+      {shown.error && (
+        <p className="flex items-start gap-1.5 text-warning"><AlertTriangle size={13} className="shrink-0 mt-0.5" /> {shown.reasoning}</p>
       )}
 
-      {isCached && (
-        <p className="flex items-center gap-1 text-[10px] text-muted/70"><Database size={11} /> показан сохранённый анализ{cachedQ.data?.created_at ? ` от ${new Date(cachedQ.data.created_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}` : ''}</p>
-      )}
-
-      {run.isError && (
-        <p className="text-xs text-orange-400">Ошибка анализа. Попробуйте снова.</p>
-      )}
-
-      {/* Пока идёт ПЕРВЫЙ анализ (результата ещё нет) — заметная заглушка в области данных */}
-      {run.isPending && !shown && (
-        <div className="flex items-center gap-2 bg-frame border border-accent/30 rounded-md px-3 py-3 text-xs text-secondary animate-pulse">
-          <Loader2 size={15} className="animate-spin text-accent shrink-0" />
-          <span>ИИ анализирует заявку и данные… это может занять несколько секунд.</span>
+      {/* Заметное предупреждение о вероятной ошибке клиента в гос.номере. */}
+      {plateSuspect && (
+        <div className="flex items-start gap-2 bg-warning/10 border border-warning/40 rounded-md px-3 py-2.5 text-warning">
+          <AlertTriangle size={15} className="shrink-0 mt-0.5" />
+          <span className="text-[11px] leading-relaxed">
+            {p?.plate_format_suspect
+              ? <>Гос.номер «<b className="font-semibold">{p?.plate ?? '—'}</b>» не соответствует формату — вероятно, ошибка клиента. Исправьте номер прямо в таблице разбора.</>
+              : <>Гос.номер «<b className="font-semibold">{p?.plate ?? '—'}</b>» не найден в системе мониторинга — возможно, ошибка клиента в номере. Исправьте номер прямо в таблице разбора.</>}
+          </span>
         </div>
       )}
-
-      {shown && (
-        <div className="space-y-2.5 text-xs">
-          {shown.error && (
-            <p className="flex items-start gap-1.5 text-warning"><AlertTriangle size={13} className="shrink-0 mt-0.5" /> {shown.reasoning}</p>
-          )}
-
-          {/* «Что прочитал ИИ» переехало в блок «① Разбор» — гос.номер, дата и
-              пробеги живут в таблице разбора, там же и правятся. */}
-
-          {/* Заметное предупреждение о вероятной ошибке клиента в гос.номере. */}
-          {plateSuspect && (
-            <div className="flex items-start gap-2 bg-warning/10 border border-warning/40 rounded-md px-3 py-2.5 text-warning">
-              <AlertTriangle size={15} className="shrink-0 mt-0.5" />
-              <span className="text-[11px] leading-relaxed">
-                {p?.plate_format_suspect
-                  ? <>Гос.номер «<b className="font-semibold">{p?.plate ?? '—'}</b>» не соответствует формату — вероятно, ошибка клиента. Исправьте номер прямо в таблице разбора.</>
-                  : <>Гос.номер «<b className="font-semibold">{p?.plate ?? '—'}</b>» не найден в системе мониторинга — возможно, ошибка клиента в номере. Исправьте номер прямо в таблице разбора.</>}
-              </span>
-            </div>
-          )}
-
-          {/* Сетка метрик и строка вердикта переехали в TelemetryPanel — блок
-              «② Телеметрия и вердикт» рисует их по выбранному в таблице объекту. */}
-
-          {shown.draft_answer && (
-            <div className="space-y-1.5">
-              {shown.needs_remote_diagnostics && (
-                <div className="flex items-start gap-1.5 bg-warning/10 border border-warning/30 rounded-md px-3 py-2 text-[11px] text-warning leading-relaxed">
-                  <AlertTriangle size={13} className="shrink-0 mt-0.5" /> Требуется удалённая диагностика (клиент подтвердил питание)
-                </div>
-              )}
-              {shown.spec_vehicle && (
-                <div className="flex items-start gap-1.5 bg-warning/10 border border-warning/30 rounded-md px-3 py-2 text-[11px] text-warning leading-relaxed">
-                  <AlertTriangle size={13} className="shrink-0 mt-0.5" /> Спецтехника — оценивать по факту работы
-                </div>
-              )}
-              {/* Обоснование вердикта переехало в блок «② Телеметрия и вердикт» —
-                  оно объясняет метрики, а не разбор. */}
-            </div>
-          )}
-        </div>
-      )}
-      {/* Черновик ответа показывает блок «Ответ» (кнопка «Составить ответ»),
-          решение заявки — липкий бар. Здесь ни того, ни другого нет: одно
-          действие на экране и один источник черновика. */}
     </div>
   )
+}
+
+/**
+ * ЕДИНСТВЕННАЯ платная кнопка карточки — «✦ Ответ ИИ». Живёт в «Телеметрии»,
+ * рядом с местом, где появляются её результаты.
+ *
+ * Разделение по стоимости (см. память project_free_parse_levels): факты, метрики
+ * и предварительный вердикт считаются правилами бесплатно при открытии заявки;
+ * обоснование «почему такой вердикт», уверенность и черновик ответа даёт только
+ * модель. Один вызов на заявку: для мультиобъектной — `POST /batch/ai`
+ * (все объекты за раз), для одиночной — `automate` (он богаче: few-shot,
+ * проверка возобновления данных, разбор комментариев).
+ */
+function AiAnswerCta({ issueId, isBatch, objectCount }: {
+  issueId: number
+  isBatch: boolean
+  objectCount: number
+}) {
+  const queryClient = useQueryClient()
+  const isDemo = useAuthStore(s => s.user?.role === 'demo')
+  // Демо-витрина: один вызов модели на заявку, иначе показ превращается в
+  // бесплатный DeepSeek. Отметка живёт в localStorage.
+  const demoKey = `demo_analyzed_${issueId}`
+  const demoUsed = isDemo && !!localStorage.getItem(demoKey)
+
+  const run = useMutation<unknown, unknown, void>({
+    mutationFn: () => (isBatch ? api.batchAi(issueId) : api.automateIssue(issueId)),
+    onSuccess: () => {
+      if (isDemo) localStorage.setItem(demoKey, '1')
+      queryClient.invalidateQueries({ queryKey: ['automate-cached', issueId] })
+      queryClient.invalidateQueries({ queryKey: ['batch-cached', issueId] })
+      queryClient.invalidateQueries({ queryKey: ['parse-free', issueId] })
+      queryClient.invalidateQueries({ queryKey: ['issue', issueId] })
+      // Трек мог быть закэширован с ошибкой «номер не найден» до анализа (64736, 64965).
+      queryClient.invalidateQueries({ queryKey: ['track', issueId] })
+    },
+  })
+
+  return (
+    <div className="rounded-[10px] border-l-2 border-border bg-frame px-3 py-2.5 space-y-2">
+      <div className="flex items-center gap-1.5 text-[11px] font-medium text-secondary">
+        <Sparkles size={12} className="shrink-0" /> Ответ ИИ ещё не запрашивали
+      </div>
+      <p className="text-[11px] leading-4 text-secondary">
+        Метрики, флаги и предварительный вердикт выше посчитаны правилами при открытии
+        заявки — это бесплатно. Обоснование «почему такой вердикт», уверенность и
+        черновик ответа даёт модель: платный шаг, поэтому только по кнопке.
+      </p>
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[10px] leading-4 text-muted">
+          {demoUsed
+            ? 'демо-режим: анализ доступен один раз на заявку'
+            : isBatch
+            ? `${objectCount} ${pluralObjects(objectCount)} за один вызов · платный шаг, отвечает ИИ`
+            : 'платный шаг, отвечает ИИ'}
+        </span>
+        <button
+          onClick={() => run.mutate()}
+          disabled={run.isPending || demoUsed}
+          title={demoUsed
+            ? 'Демо: анализ доступен один раз на заявку'
+            : 'Отправить разбор в модель — вернёт обоснование, уверенность и черновик ответа. Платный вызов'}
+          className={`flex shrink-0 items-center gap-1.5 rounded-pill bg-accent px-4 py-[5px] text-xs font-medium text-black transition-opacity hover:opacity-90 disabled:opacity-40 ${run.isPending ? 'animate-pulse cursor-wait' : ''} ${demoUsed ? 'cursor-not-allowed' : ''}`}
+        >
+          {run.isPending ? <Working label="Спрашиваю ИИ…" /> : <><Sparkles size={12} /> Ответ ИИ</>}
+        </button>
+      </div>
+      {run.isPending && (
+        <div className="h-1 w-full overflow-hidden rounded-pill bg-base">
+          <div className="h-full w-1/4 animate-pulse rounded-pill bg-accent" />
+        </div>
+      )}
+      {run.isError && (
+        <p className="text-[11px] text-orange-400">ИИ не ответил. Попробуйте снова.</p>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Регионы, с которыми работает поддержка (Россети Волга + Урал). Названия нужны,
+ * чтобы «регион 63» читалось как «Самара» — по номеру оператор понимает, чей это
+ * филиал и к какой бригаде монтажников идти.
+ */
+const PLATE_REGIONS: Record<string, string> = {
+  '02': 'Башкортостан', '12': 'Марий Эл', '13': 'Мордовия', '16': 'Татарстан',
+  '18': 'Удмуртия', '21': 'Чувашия', '30': 'Астрахань', '34': 'Волгоград',
+  '43': 'Киров', '52': 'Нижний Новгород', '56': 'Оренбург', '58': 'Пенза',
+  '59': 'Пермь', '63': 'Самара', '64': 'Саратов', '66': 'Свердловская обл.',
+  '73': 'Ульяновск', '74': 'Челябинск', '96': 'Свердловская обл.',
+  '116': 'Татарстан', '152': 'Нижний Новгород', '156': 'Оренбург',
+  '163': 'Самара', '164': 'Саратов', '173': 'Ульяновск', '196': 'Свердловская обл.',
+}
+
+/**
+ * Регион по коду в конце гос.номера. Отдельного поля в системе нет — код региона
+ * и есть источник (тот же приём, что в правилах просроченных заявок).
+ * Возвращает «63 (Самара)» либо «63», если название неизвестно; null — если в
+ * номере кода региона нет.
+ */
+function plateRegion(plate: string | null | undefined): string | null {
+  if (!plate) return null
+  const m = /(\d{2,3})$/.exec(plate.replace(/\s/g, ''))
+  if (!m) return null
+  const code = m[1]
+  const name = PLATE_REGIONS[code]
+  return name ? `${code} (${name})` : code
+}
+
+/** «1 объект / 3 объекта / 6 объектов» — падеж считаем, а не подставляем. */
+function pluralObjects(n: number): string {
+  const mod100 = n % 100
+  const mod10 = n % 10
+  if (mod100 >= 11 && mod100 <= 14) return 'объектов'
+  if (mod10 === 1) return 'объект'
+  if (mod10 >= 2 && mod10 <= 4) return 'объекта'
+  return 'объектов'
 }
 
 /**
@@ -1413,6 +1708,11 @@ function rowFromAutomate(res: AutomationResult): BatchObject {
     // `automate` без DeepSeek не бывает — у кэшей без поля источник всё равно ИИ.
     verdict_source: res.verdict_source ?? 'ai',
     heuristic_category: res.heuristic_category ?? null,
+    // Результаты платного прогона едут в строке — блок телеметрии читает их
+    // оттуда же, что и у пакетной заявки, и не знает, откуда пришёл разбор.
+    confidence: res.confidence ?? null,
+    reasoning: res.reasoning ?? null,
+    draft_answer: res.draft_answer ?? null,
   }
 }
 
@@ -1635,10 +1935,12 @@ const VERDICT_STYLE = VERDICT_TEXT_STYLE
  * у кнопки «Составить ответ» блока «③ Ответ»: с вложениями — ответ по таблице
  * разбора, без вложений — по одиночному автоанализу.
  */
-function DraftChip({ issueId, hasExtractable, plate, onUseDraft }: {
+function DraftChip({ issueId, hasExtractable, plate, draft, onUseDraft }: {
   issueId: number
   hasExtractable: boolean
   plate?: string | null
+  /** Готовый черновик выбранной строки — вставляем БЕЗ запроса и без токенов. */
+  draft?: string | null
   onUseDraft: (text: string) => void
 }) {
   const isDemo = useAuthStore(s => s.user?.role === 'demo')
@@ -1655,24 +1957,38 @@ function DraftChip({ issueId, hasExtractable, plate, onUseDraft }: {
     },
     onSuccess: (answer) => { if (answer) onUseDraft(answer) },
   })
+  // Черновик уже есть (прогон ИИ по объектам) — чип просто переносит его в поле
+  // ответа. Раньше он всегда стрелял платным запросом, даже когда текст был готов.
+  if (draft) {
+    return (
+      <button
+        onClick={() => onUseDraft(draft)}
+        title="Вставить черновик, подготовленный ИИ для выбранного объекта"
+        className="flex shrink-0 items-center gap-1 rounded-pill border border-accent bg-accent/15 px-2.5 py-[3px] text-[11px] font-medium text-accent transition-colors hover:bg-accent hover:text-black"
+      >
+        <Sparkles size={11} /> черновик ИИ{plate ? ` для ${plate}` : ''}
+      </button>
+    )
+  }
   return (
     <>
       <button
         onClick={() => composeMut.mutate()}
         disabled={composeMut.isPending || isDemo}
-        title={isDemo ? 'Недоступно в демо-режиме' : 'Вставить черновик, подготовленный ИИ для выбранного объекта'}
+        title={isDemo ? 'Недоступно в демо-режиме'
+          : 'Составить черновик ответа — платный вызов ИИ (быстрее получить его вместе с разбором кнопкой «Ответ ИИ» в «Телеметрии»)'}
         className={`flex shrink-0 items-center gap-1 rounded-pill border border-accent bg-accent/15 px-2.5 py-[3px] text-[11px] font-medium text-accent hover:bg-accent hover:text-black transition-colors disabled:opacity-40 ${composeMut.isPending ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
       >
         {composeMut.isPending
           ? <Working label="Составляю…" />
-          : <><Sparkles size={11} /> черновик ИИ{plate ? ` для ${plate}` : ''}</>}
+          : <><Sparkles size={11} /> составить черновик{plate ? ` для ${plate}` : ''}</>}
       </button>
       {composeMut.isError && <p className="text-[11px] text-orange-400">Ошибка составления ответа. Попробуйте снова.</p>}
     </>
   )
 }
 
-function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, selectedIdx, onSelectObject }: {
+function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, selectedIdx, onSelectObject, onParse, onUseDraft }: {
   issueId: number
   issueTitle?: string | null
   issueDescription?: string | null
@@ -1681,6 +1997,13 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
   /** Индекс строки, чью телеметрию показывает блок «② Телеметрия и вердикт». */
   selectedIdx?: number | null
   onSelectObject?: (idx: number, objects: import('../types').BatchObject[]) => void
+  /**
+   * Строки разбора наружу: карточке нужно знать их число (один вызов ИИ на все
+   * объекты) и звали ли ИИ — от этого зависит платная кнопка в «Телеметрии».
+   */
+  onParse?: (objects: import('../types').BatchObject[], aiNote?: string | null) => void
+  /** Вставить готовый текст в поле ответа липкого бара (сводный ответ по ОДКР). */
+  onUseDraft?: (text: string) => void
 }) {
   const queryClient = useQueryClient()
   const isDemo = useAuthStore(s => s.user?.role === 'demo')
@@ -1700,7 +2023,15 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
   // правим только по явному клику на карандаш). cancelPlateRef — отмена по Escape.
   const [editingPlateKey, setEditingPlateKey] = useState<string | null>(null)
   const cancelPlateRef = useRef(false)
-  const [localBatch, setLocalBatch] = useState<import('../types').BatchResult | null>(null)
+  // Какая строка правит дату (симметрично номеру — по клику на карандаш).
+  const [editingDateKey, setEditingDateKey] = useState<string | null>(null)
+  const cancelDateRef = useRef(false)
+  const [dateLoading, setDateLoading] = useState<Set<string>>(new Set())
+  const [dateError, setDateError] = useState<string | null>(null)
+  // Разбор пересчитан в этой сессии (а не показан из кэша) — только для подписи.
+  // Сами данные всегда берём из кэша react-query: источник один, иначе результат
+  // прогона ИИ (он пишет в тот же кэш) не попадал бы в таблицу.
+  const [freshRun, setFreshRun] = useState(false)
   // Авто-дораспознавание больших сканов: счётчик проходов и последний прогресс
   // (чтобы остановиться при отсутствии продвижения, а не крутить бесконечно).
   const ocrRoundsRef = useRef(0)
@@ -1718,9 +2049,10 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
   }
 
   useEffect(() => {
-    setLocalBatch(null)
+    setFreshRun(false)
     setVerdictError(null)
     setPlateError(null)
+    setDateError(null)
     // Сброс авто-дораспознавания: ключи завязаны на конкретную заявку — нельзя,
     // чтобы запланированный проход выстрелил по другой/закрытой заявке.
     ocrRoundsRef.current = 0
@@ -1757,12 +2089,27 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
   })
   const cached = cachedQ.data?.cached ? cachedQ.data : null
 
+  /** Разбор — один источник правды: кэш запроса. Все правки пишут сюда же. */
+  const putBatch = (data: BatchResult) => {
+    queryClient.setQueryData(['batch-cached', issueId], { cached: true, ...data })
+  }
+
+  // Строки разбора наружу: карточке нужно их число (один вызов ИИ на все объекты)
+  // и звали ли ИИ — от этого зависит платная кнопка в «Телеметрии». Эффект стоит
+  // ДО любых ранних выходов: хуки не могут вызываться условно.
+  const reportRows = cached?.objects ?? null
+  const reportNote = cached?.ai_note ?? null
+  useEffect(() => {
+    if (reportRows) onParse?.(reportRows, reportNote)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reportRows, reportNote])
+
   const run = useMutation({
     mutationFn: () => api.automateBatch(issueId),
     onSuccess: (data) => {
-      setLocalBatch(null)
       setVerdictError(null)
-      queryClient.invalidateQueries({ queryKey: ['batch-cached', issueId] })
+      setFreshRun(true)
+      putBatch(data)
       // Авто-дораспознавание: сервер за один проход осиливает не весь большой PDF.
       // Пока complete=false и есть ПРОДВИЖЕНИЕ по страницам — повторяем разбор сами,
       // оператору не нужно гадать, сколько раз жать. Если прогресс встал (страницы
@@ -1786,12 +2133,18 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
 
   // Старт разбора по кнопке: сбрасываем счётчики авто-дораспознавания и статус
   // дочерних (повторный разбор не должен наследовать старые отметки).
+  // Сводный ответ по агрегатной (ОДКР) заявке: группировка по вердиктам делается
+  // детерминированно в коде, LLM только формулирует (см. compose_aggregate_answer).
+  const aggregate = useMutation({
+    mutationFn: () => api.composeAnswer(issueId),
+    onSuccess: (data) => { if (data.answer) onUseDraft?.(data.answer) },
+  })
+
   const startRun = () => {
     cancelOcrLoop()
     ocrRoundsRef.current = 0
     lastPagesRef.current = -1
     setAutoOcr(true)
-    setLocalBatch(null)
     clearBatchChildren(issueId)
     run.mutate()
   }
@@ -1829,11 +2182,30 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
     setPlateError(null)
     try {
       const updated = await api.updateBatchPlate(issueId, o.plate ?? '', np, o.date || undefined, o.file || undefined, idx)
-      setLocalBatch(updated)
+      putBatch(updated)
     } catch {
       setPlateError(`Не удалось обновить номер на ${np} — проверьте, найден ли он в гео.`)
     } finally {
       setPlateLoading(prev => { const s = new Set(prev); s.delete(key); return s })
+    }
+  }
+
+  // Ручная правка ДАТЫ неисправности: клиент так же часто путает дату (в т.ч.
+  // опечатка года), как и номер. Бэкенд пересчитывает телеметрию и вердикт этой
+  // строки за новую дату — раньше дату в пакетном разборе править было нельзя.
+  const handleDateChange = async (o: import('../types').BatchObject, raw: string, idx: number) => {
+    const nd = raw.trim()
+    if (!nd || nd === (o.date ?? '')) return
+    const key = rowKey(o, idx)
+    setDateLoading(prev => new Set([...prev, key]))
+    setDateError(null)
+    try {
+      const updated = await api.updateBatchDate(issueId, nd, o.plate, o.date, o.file || undefined, idx)
+      putBatch(updated)
+    } catch {
+      setDateError(`Не удалось обновить дату на ${nd} — проверьте данные ТС в гео.`)
+    } finally {
+      setDateLoading(prev => { const s = new Set(prev); s.delete(key); return s })
     }
   }
 
@@ -1842,8 +2214,8 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
   // OCR не делаем; таблица рисуется из результата run/кеша (>=2 объекта → мультиобъект).
   if (extractable.length < 1 && !multiInText) return null
 
-  const res = localBatch ?? run.data ?? (cached as BatchResult | null)
-  const isCached = !localBatch && !run.data && !!cached
+  const res = cached as BatchResult | null
+  const isCached = !!cached && !freshRun
   const isAggregate = !!res?.is_aggregate
   // OCR ещё не дочитал все вложения → идёт авто-дораспознавание (или предложить
   // продолжить, если цикл остановился по лимиту проходов).
@@ -1863,7 +2235,7 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
     setVerdictError(null)
     try {
       const updated = await api.updateBatchVerdict(issueId, o.plate, newVerdict, o.file || undefined, o.date || undefined)
-      setLocalBatch(updated)
+      putBatch(updated)
     } catch {
       setVerdictError(`Не удалось сохранить вердикт для ${o.plate}`)
     } finally {
@@ -1992,7 +2364,42 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
                           </span>
                         )}
                       </td>
-                      <td className="pr-2">{o.date ?? '—'}</td>
+                      <td className="pr-2">
+                        {isDemo || !o.plate ? (o.date ?? '—') : editingDateKey === key ? (
+                          <span className="inline-flex items-center gap-1">
+                            <input
+                              type="date"
+                              autoFocus
+                              defaultValue={o.date ?? ''}
+                              disabled={dateLoading.has(key)}
+                              onClick={e => e.stopPropagation()}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+                                else if (e.key === 'Escape') { cancelDateRef.current = true; (e.target as HTMLInputElement).blur() }
+                              }}
+                              onBlur={e => {
+                                const val = e.target.value
+                                setEditingDateKey(null)
+                                if (cancelDateRef.current) { cancelDateRef.current = false; return }
+                                handleDateChange(o, val, idx)
+                              }}
+                              className="w-[8.5rem] rounded border border-accent bg-frame px-1 py-0.5 text-[11px] text-white outline-none disabled:opacity-50"
+                            />
+                            <span className="shrink-0 text-[9px] text-muted/60">Enter / Esc</span>
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1">
+                            <span className={o.date ? '' : 'text-warning'}>{o.date ?? 'нет даты'}</span>
+                            <button
+                              onClick={e => { e.stopPropagation(); setEditingDateKey(key) }}
+                              title="Изменить дату неисправности и перепроверить в гео"
+                              className="shrink-0 text-muted/40 hover:text-accent transition-colors"
+                            ><Pencil size={11} /></button>
+                            {o.date_edited && <span title="Дата изменена оператором, перепроверено в гео" className="shrink-0 text-info">●</span>}
+                            {dateLoading.has(key) && <span className="shrink-0 animate-spin text-muted">↻</span>}
+                          </span>
+                        )}
+                      </td>
                       <td className="pr-2">{o.sheet_mileage_km ?? '—'}</td>
                       <td className="pr-2">{o.declared_system_km ?? '—'}</td>
                       <td className="pr-2">{o.system_mileage_km ?? '—'}</td>
@@ -2091,10 +2498,28 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
           <ParseDisagreeNote objects={res.objects} />
           <ParseTableNote />
           {isAggregate && (
-            <p className="flex items-start gap-1.5 text-[11px] text-muted leading-relaxed">
-              <Info size={13} className="shrink-0 mt-0.5 text-info" />
-              <span>Агрегатная заявка (ОДКР) — отвечаем одним ответом по всем объектам, без разбивки на дочерние.</span>
-            </p>
+            <div className="space-y-1.5">
+              <p className="flex items-start gap-1.5 text-[11px] text-muted leading-relaxed">
+                <Info size={13} className="shrink-0 mt-0.5 text-info" />
+                <span>Агрегатная заявка (ОДКР) — отвечаем одним ответом по всем объектам, без разбивки на дочерние.</span>
+              </p>
+              {/* Сводный ответ живёт здесь, а не в чипе бара: он про ВСЮ заявку,
+                  а чип подставляет черновик выбранного объекта. */}
+              <button
+                onClick={() => aggregate.mutate()}
+                disabled={aggregate.isPending || isDemo}
+                title={isDemo ? 'Недоступно в демо-режиме'
+                  : 'Собрать ОДИН ответ по всем объектам заявки и вставить в поле ответа — платный вызов ИИ'}
+                className={`flex items-center gap-1.5 rounded-pill border border-accent bg-accent/15 px-3 py-[5px] text-[11px] font-medium text-accent transition-colors hover:bg-accent hover:text-black disabled:opacity-40 ${aggregate.isPending ? 'animate-pulse cursor-wait' : ''}`}
+              >
+                {aggregate.isPending
+                  ? <Working label="Собираю сводный ответ…" />
+                  : <><Sparkles size={11} /> Один ответ по всем объектам</>}
+              </button>
+              {aggregate.isError && (
+                <p className="text-[11px] text-orange-400">Не удалось собрать сводный ответ. Попробуйте снова.</p>
+              )}
+            </div>
           )}
           {!isAggregate && (() => {
             const children = res.objects.filter((o, i) => o.plate && !rowCreated[rowKey(o, i)]?.ok && (o.verdict === 'Данные верны' || o.verdict === 'Нет данных'))
@@ -2115,12 +2540,19 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
       {run.isError && <p className="text-xs text-orange-400">Ошибка разбора. Попробуйте снова.</p>}
       {verdictError && <p className="text-xs text-orange-400">{verdictError}</p>}
       {plateError && <p className="text-xs text-orange-400">{plateError}</p>}
+      {dateError && <p className="text-xs text-orange-400">{dateError}</p>}
     </div>
   )
 }
 
-const KIND_ICON: Record<string, LucideIcon> = {
-  pdf: FileText, word: FileText, excel: Sheet, image: ImageIcon, text: FileText, other: Paperclip,
+/** Цветной квадрат типа файла (макет .fi-*): по нему тип виден без чтения имени. */
+const KIND_TILE: Record<string, { bg: string; label: string }> = {
+  word: { bg: '#2B579A', label: 'W' },
+  excel: { bg: '#217346', label: 'X' },
+  pdf: { bg: '#C1341A', label: 'P' },
+  image: { bg: '#5B5BD6', label: 'IMG' },
+  text: { bg: '#3F3F46', label: 'TXT' },
+  other: { bg: '#3F3F46', label: '?' },
 }
 
 function formatSize(bytes: number | null): string {
@@ -2130,46 +2562,135 @@ function formatSize(bytes: number | null): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} МБ`
 }
 
+/**
+ * Статус распознавания ОДНОГО файла (поле `ocr` из `GET /attachments`).
+ * Раньше фронт писал «ИИ читает» у всякого извлекаемого файла — в том числе у
+ * большого PDF, прочитанного на 4 страницы из 6. Теперь состояние честное.
+ */
+function ocrLabel(a: IssueAttachment): { text: string; warn: boolean; hint: string } {
+  const st = a.ocr?.status
+  const pages = a.ocr?.pages_done ?? 0
+  if (st === 'done') {
+    return { text: '✓ распознан', warn: false, hint: 'Текст извлечён полностью — ИИ его прочитал' }
+  }
+  if (st === 'partial') {
+    return {
+      text: pages > 0 ? `прочитано ${pages} стр.` : 'частично',
+      warn: true,
+      hint: 'Большой документ распознаётся порциями — нажмите «Продолжить распознавание» в блоке «Разбор»',
+    }
+  }
+  if (st === 'unavailable') {
+    return {
+      text: a.kind === 'image' ? 'скан, OCR недоступен' : 'текст не извлекается',
+      warn: true,
+      hint: 'Растровый скан без текстового слоя — ИИ пропускает его и говорит об этом в разборе',
+    }
+  }
+  // queued либо старый бэкенд без поля ocr — не выдумываем «распознан».
+  return {
+    text: a.extractable ? 'в очереди' : 'текст не извлекается',
+    warn: false,
+    hint: a.extractable
+      ? 'Ещё не читался — распознавание запускается кнопкой в блоке «Разбор»'
+      : 'Формат без текстового слоя — ИИ его не читает',
+  }
+}
+
+const ATTACH_PREVIEW = 12
+
 function AttachmentsSection({ issueId }: { issueId: number }) {
   const { data: items = [] } = useQuery({
     queryKey: ['attachments', issueId],
     queryFn: () => api.listAttachments(issueId),
     staleTime: 5 * 60_000,
   })
+  const [expanded, setExpanded] = useState(false)
 
   if (items.length === 0) return null
+
+  // Агрегатный прогресс OCR живёт ЗДЕСЬ, рядом с файлами: раньше он был только в
+  // «Разборе», и оператор не понимал, какие именно вложения ИИ уже прочитал.
+  // Действие («Продолжить распознавание») остаётся в «Разборе» — две кнопки на
+  // одну операцию хуже, чем одна подпись, куда идти.
+  const readable = items.filter(a => a.extractable)
+  const readDone = readable.filter(a => a.ocr?.status === 'done').length
+  const pagesDone = items.reduce((sum, a) => sum + (a.ocr?.pages_done ?? 0), 0)
+  const scans = items.filter(a => a.ocr?.status === 'unavailable').length
+  const partial = readable.filter(a => a.ocr?.status === 'partial').length
+  const percent = readable.length > 0 ? Math.round((readDone / readable.length) * 100) : 0
+  const shown = expanded ? items : items.slice(0, ATTACH_PREVIEW)
 
   // Свёрнуто по умолчанию: список файлов оттесняет вниз более важный контекст
   // заявки. Раскрытие — кликом по заголовку секции, состояние помнит localStorage.
   return (
     <Block title="Вложения" count={items.length} defaultOpen={false} storageKey="attachments">
-      <div className="space-y-1.5">
-        {items.map(a => {
-          const KI = KIND_ICON[a.kind] ?? Paperclip
+      {readable.length > 0 && (
+        <div className="space-y-1.5">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[11px] leading-4 text-secondary">
+              ИИ прочитал <b className="font-medium text-white">{readDone} из {readable.length}</b> файлов
+            </span>
+            {pagesDone > 0 && (
+              <SumBadge title="Распознано страниц во всех вложениях">страниц {pagesDone}</SumBadge>
+            )}
+            {scans > 0 && (
+              <SumBadge title="Растровые сканы без текстового слоя — OCR их не берёт">скан {scans}</SumBadge>
+            )}
+          </div>
+          <div
+            title={`Прогресс распознавания вложений: ${readDone} из ${readable.length}`}
+            className="h-1 w-full overflow-hidden rounded-pill bg-frame"
+          >
+            <div className="h-full rounded-pill bg-accent" style={{ width: `${percent}%` }} />
+          </div>
+          {(partial > 0 || readDone < readable.length) && (
+            <p className="text-[10px] leading-4 text-muted">
+              Большие документы читаются порциями, чтобы не блокировать сервис. Дочитать остаток —
+              кнопка «Продолжить распознавание» в блоке «Разбор».
+            </p>
+          )}
+        </div>
+      )}
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(74px,1fr))] gap-1.5">
+        {shown.map(a => {
           const url = api.attachmentUrl(issueId, a.id)
+          const tile = KIND_TILE[a.kind] ?? KIND_TILE.other
+          const ocr = ocrLabel(a)
           return (
             <a
               key={a.id}
               href={url}
               target="_blank"
               rel="noreferrer"
-              title="Открыть / скачать вложение"
-              className="flex items-center gap-2.5 bg-frame border border-border hover:border-accent rounded-md px-3 py-2 group transition-colors"
+              title={`${a.name ?? `#${a.id}`} — открыть / скачать. ${ocr.hint}`}
+              className="min-w-0 rounded-[10px] border border-line bg-frame px-1.5 pb-[7px] pt-2.5 text-center hover:border-accent transition-colors"
             >
-              <KI size={18} className="shrink-0 text-muted" />
-              <div className="flex-1 min-w-0">
-                <div className="text-xs text-white truncate">{a.name ?? `#${a.id}`}</div>
-                <div className="text-[10px] text-muted flex items-center gap-1.5">
-                  {formatSize(a.size)}
-                  {a.extractable && <span className="inline-flex items-center gap-1 text-green-400/80">· <Sparkles size={10} /> ИИ читает</span>}
-                  {!a.extractable && a.kind === 'image' && <span className="text-warning/70">· скан (OCR недоступен)</span>}
-                </div>
-              </div>
-              <ExternalLink size={13} className="shrink-0 text-muted opacity-0 group-hover:opacity-100 transition-opacity" />
+              <span
+                style={{ background: tile.bg }}
+                className="mx-auto mb-1.5 flex h-[26px] w-[26px] items-center justify-center rounded-[5px] text-[9px] font-bold leading-none text-white"
+              >
+                {tile.label}
+              </span>
+              <span className="block truncate text-[10px] leading-[14px] text-muted">{a.name ?? `#${a.id}`}</span>
+              <span className="block text-[9px] leading-3 text-muted/60">{formatSize(a.size)}</span>
+              <span className={`block truncate text-[9px] leading-3 ${ocr.warn ? 'text-warning' : 'text-muted'}`}>
+                {ocr.text}
+              </span>
             </a>
           )
         })}
       </div>
+      {items.length > ATTACH_PREVIEW && (
+        <button
+          onClick={() => setExpanded(v => !v)}
+          title={expanded ? 'Показать только первые файлы' : `Показать все ${items.length} вложений`}
+          className="flex items-center gap-1 text-[11px] font-medium text-accent hover:underline"
+        >
+          {expanded ? 'Свернуть список' : `Показать все ${items.length}`}
+          <ChevronDown size={12} className={expanded ? 'rotate-180 transition-transform' : 'transition-transform'} />
+        </button>
+      )}
     </Block>
   )
 }
@@ -2251,7 +2772,38 @@ const AI_ERROR_KIND_LABEL: Record<string, string> = Object.fromEntries(
  * Оценка качества ИИ-разбора заявки (петля обратной связи).
  * Показывает текущую оценку (если есть) и форму для её выставления/изменения.
  */
-function AiFeedbackPanel({ issueId }: { issueId: number }) {
+/** Кнопка-вариант (макет .opt): выбор одного значения из набора пилюлей. */
+function OptPill({ on, onClick, title, children }: {
+  on: boolean
+  onClick: () => void
+  title?: string
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      className={`shrink-0 rounded-pill border px-[11px] py-1 text-[11px] font-medium leading-4 transition-colors ${
+        on ? 'border-accent bg-accent/15 text-accent' : 'border-border bg-frame text-secondary hover:border-muted hover:text-white'
+      }`}
+    >
+      {children}
+    </button>
+  )
+}
+
+/** Вердикты, которые оператор может назвать «правильной категорией» в оценке. */
+const FEEDBACK_CATEGORIES = [
+  'Глушение', 'Данные верны', 'Не было питания', 'Нет данных',
+  'Терминал подключился', 'Проверить',
+]
+
+function AiFeedbackPanel({ issueId, aiAnswered, objectCount }: {
+  issueId: number
+  /** ИИ по заявке отвечал — иначе оценивать нечего: вердикт посчитан правилами. */
+  aiAnswered: boolean
+  objectCount: number
+}) {
   const queryClient = useQueryClient()
   const isDemo = useAuthStore(s => s.user?.role === 'demo')
   const [showBadForm, setShowBadForm] = useState(false)
@@ -2325,76 +2877,112 @@ function AiFeedbackPanel({ issueId }: { issueId: number }) {
         </div>
       )}
 
-      {/* Кнопки оценки — компактные иконки в одну строку справа */}
-      <div className="flex justify-end gap-2">
-        <button
-          onClick={saveGood}
-          disabled={submit.isPending || isDemo}
-          title={isDemo ? 'Недоступно в демо-режиме' : 'Разобрано верно'}
-          className={`flex items-center justify-center p-1.5 rounded-md border transition-colors disabled:opacity-40 ${
-            feedback?.rating === 'good'
-              ? 'border-green-500/60 bg-green-500/10 text-green-400'
-              : 'border-border text-muted hover:text-green-400 hover:border-green-500/50'
-          } ${isDemo ? 'cursor-not-allowed' : ''}`}
-        >
-          <ThumbsUp size={15} />
-        </button>
-        <button
-          onClick={() => setShowBadForm(v => !v)}
-          disabled={submit.isPending || isDemo}
-          title={isDemo ? 'Недоступно в демо-режиме' : 'Ошибка разбора'}
-          className={`flex items-center justify-center p-1.5 rounded-md border transition-colors disabled:opacity-40 ${
-            feedback?.rating === 'bad' || showBadForm
-              ? 'border-orange-500/60 bg-orange-500/10 text-orange-400'
-              : 'border-border text-muted hover:text-orange-400 hover:border-orange-500/50'
-          } ${isDemo ? 'cursor-not-allowed' : ''}`}
-        >
-          <ThumbsDown size={15} />
-        </button>
+      {/* Вопрос + оценка в одну строку: без вопроса иконки 👍/👎 висели без
+          повода. Пока ИИ не звали, оценивать нечего — вердикт посчитан правилами. */}
+      <div className="flex items-center justify-between gap-2">
+        <span className="min-w-0 text-[11px] leading-4 text-secondary">
+          {aiAnswered
+            ? `ИИ разобрал ${objectCount} ${pluralObjects(objectCount)} — разбор верный?`
+            : 'ИИ ещё не вызывали — оценивать нечего: вердикт посчитан правилами'}
+        </span>
+        {aiAnswered && (
+          <div className="flex shrink-0 gap-2">
+            <button
+              onClick={saveGood}
+              disabled={submit.isPending || isDemo}
+              title={isDemo ? 'Недоступно в демо-режиме' : 'Разобрано верно — заявка уйдёт в тренировочные образцы как удачный пример'}
+              className={`flex items-center justify-center p-1.5 rounded-md border transition-colors disabled:opacity-40 ${
+                feedback?.rating === 'good'
+                  ? 'border-green-500/60 bg-green-500/10 text-green-400'
+                  : 'border-border text-muted hover:text-green-400 hover:border-green-500/50'
+              } ${isDemo ? 'cursor-not-allowed' : ''}`}
+            >
+              <ThumbsUp size={15} />
+            </button>
+            <button
+              onClick={() => setShowBadForm(v => !v)}
+              disabled={submit.isPending || isDemo}
+              title={isDemo ? 'Недоступно в демо-режиме' : 'Ошибка разбора — указать, что именно ИИ понял неправильно'}
+              className={`flex items-center justify-center p-1.5 rounded-md border transition-colors disabled:opacity-40 ${
+                feedback?.rating === 'bad' || showBadForm
+                  ? 'border-orange-500/60 bg-orange-500/10 text-orange-400'
+                  : 'border-border text-muted hover:text-orange-400 hover:border-orange-500/50'
+              } ${isDemo ? 'cursor-not-allowed' : ''}`}
+            >
+              <ThumbsDown size={15} />
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Форма «ошибка разбора» */}
       {showBadForm && !isDemo && (
         <div className="border border-line rounded-md px-3 py-2.5 space-y-2">
+          {/* Пилюли вместо выпадающих списков: вариантов мало, они видны сразу, а
+              выбор — один клик (в макете это .opt). */}
           <div>
-            <label className="block text-[10px] uppercase tracking-widest text-muted/60 mb-1">Тип ошибки</label>
-            <select
-              value={errorKind}
-              onChange={e => setErrorKind(e.target.value as import('../types').AiFeedbackErrorKind)}
-              className="w-full bg-frame border border-border rounded-md px-2 py-1.5 text-xs focus:outline-none focus:border-accent"
-            >
+            <span className="mb-1 block text-[9px] font-medium uppercase leading-3 tracking-[0.4px] text-muted">Тип ошибки</span>
+            <div className="flex flex-wrap gap-1.5">
               {AI_ERROR_KINDS.map(k => (
-                <option key={k.value} value={k.value} className="bg-card text-primary">{k.label}</option>
+                <OptPill
+                  key={k.value}
+                  on={errorKind === k.value}
+                  onClick={() => setErrorKind(k.value)}
+                  title={`${k.value} — ${k.label.toLowerCase()}`}
+                >
+                  {k.label}
+                </OptPill>
               ))}
-            </select>
+            </div>
           </div>
           <div>
-            <label className="block text-[10px] uppercase tracking-widest text-muted/60 mb-1">Комментарий</label>
+            <span className="mb-1 block text-[9px] font-medium uppercase leading-3 tracking-[0.4px] text-muted">Комментарий</span>
             <textarea
               value={fbComment}
               onChange={e => setFbComment(e.target.value)}
               rows={2}
               placeholder="Что именно не так…"
-              className="w-full bg-frame border border-border rounded-md px-2 py-1.5 text-xs resize-none focus:outline-none focus:border-accent leading-relaxed"
+              title="Свободный комментарий — попадёт в раздел «Оценки ИИ» и в дообучение"
+              className="w-full resize-none rounded-xl border border-border bg-frame px-2.5 py-1.5 text-xs leading-relaxed outline-none focus:border-accent"
             />
           </div>
           <div>
-            <label className="block text-[10px] uppercase tracking-widest text-muted/60 mb-1">Правильная категория (необязательно)</label>
-            <input
-              type="text"
-              value={correctCategory}
-              onChange={e => setCorrectCategory(e.target.value)}
-              placeholder="напр. Глушение"
-              className="w-full bg-frame border border-border rounded-md px-2 py-1.5 text-xs focus:outline-none focus:border-accent"
-            />
+            <span className="mb-1 block text-[9px] font-medium uppercase leading-3 tracking-[0.4px] text-muted">
+              Правильная категория (необязательно)
+            </span>
+            <div className="flex flex-wrap gap-1.5">
+              {FEEDBACK_CATEGORIES.map(c => (
+                <OptPill
+                  key={c}
+                  on={correctCategory === c}
+                  onClick={() => setCorrectCategory(prev => (prev === c ? '' : c))}
+                  title={`Вердикт «${c}»`}
+                >
+                  {c}
+                </OptPill>
+              ))}
+            </div>
           </div>
-          <button
-            onClick={saveBad}
-            disabled={submit.isPending}
-            className={`flex items-center justify-center gap-1.5 w-full bg-orange-600/90 hover:bg-orange-500 text-white text-xs font-semibold py-1.5 rounded-lg transition-colors disabled:opacity-50 ${submit.isPending ? 'animate-pulse cursor-wait' : ''}`}
-          >
-            {submit.isPending ? <Working label="Сохраняю…" /> : <><Check size={14} /> Сохранить</>}
-          </button>
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[10px] leading-4 text-muted">Оценка видна в разделе «Оценки ИИ» и идёт в few-shot</span>
+            <div className="flex shrink-0 gap-2">
+              <button
+                onClick={() => setShowBadForm(false)}
+                title="Отменить оценку"
+                className="rounded-pill border border-border bg-frame px-3 py-[5px] text-xs font-medium text-secondary hover:border-muted hover:text-white transition-colors"
+              >
+                Отмена
+              </button>
+              <button
+                onClick={saveBad}
+                disabled={submit.isPending}
+                title="Сохранить оценку разбора"
+                className={`flex items-center gap-1.5 rounded-pill bg-accent px-3 py-[5px] text-xs font-medium text-black transition-opacity hover:opacity-90 disabled:opacity-50 ${submit.isPending ? 'animate-pulse cursor-wait' : ''}`}
+              >
+                {submit.isPending ? <Working label="Сохраняю…" /> : <><Check size={13} /> Сохранить</>}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -2415,6 +3003,10 @@ export function IssueDetail() {
   // у одиночной заявки подставляется единственная строка.
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null)
   const [selectedObj, setSelectedObj] = useState<import('../types').BatchObject | null>(null)
+  // Строки текущего разбора (1 или N) и пояснение прогона ИИ: от них зависит
+  // платная кнопка в «Телеметрии» — один вызов модели на ВСЕ объекты заявки.
+  const [parseRows, setParseRows] = useState<BatchObject[]>([])
+  const [batchAiNote, setBatchAiNote] = useState<string | null>(null)
   const [pendingStatus, setPendingStatus] = useState<typeof ALL_STATUSES[number] | null>(null)
   const [resolveNotice, setResolveNotice] = useState<string | null>(null)
   const [toast, setToast] = useState<string | null>(null)
@@ -2462,6 +3054,8 @@ export function IssueDetail() {
   useEffect(() => {
     setComment(lastTemplate)
     setBarExpanded(false)
+    setParseRows([])
+    setBatchAiNote(null)
     // Новая заявка — активную секцию считаем заново (см. эффект ниже); сама
     // раскрытость секций при этом сохраняется, она живёт в localStorage.
     sectionPickedRef.current = false
@@ -2480,10 +3074,12 @@ export function IssueDetail() {
     enabled: selectedIssueId != null,
     staleTime: 30_000,
   })
-  // Лента комментариев по умолчанию показывает только последний — старая
-  // переписка нужна редко, а вся лента уводит блок «Ответ» далеко вверх.
+  // Лента по умолчанию показывает ХВОСТ переписки: одного последнего комментария
+  // не хватало, чтобы понять контекст (вопрос клиента → ответ → уточнение), а вся
+  // лента у долгих заявок уводит остальные секции далеко вниз.
   const [allComments, setAllComments] = useState(false)
-  const visibleComments = allComments ? comments : comments.slice(-1)
+  const COMMENTS_PREVIEW = 4
+  const visibleComments = allComments ? comments : comments.slice(-COMMENTS_PREVIEW)
 
   // Кол-во извлекаемых вложений для управления видимостью AutoAnalysis
   const { data: issueAttachments = [] } = useQuery({
@@ -2493,6 +3089,17 @@ export function IssueDetail() {
     staleTime: 5 * 60_000,
   })
   const extractableCount = issueAttachments.filter((a: import('../types').IssueAttachment) => a.extractable).length
+
+  // Оценка разбора — в счётчик секции, чтобы видеть её не разворачивая блок.
+  const { data: fbSummary } = useQuery({
+    queryKey: ['ai-feedback', selectedIssueId],
+    queryFn: () => api.getAiFeedback(selectedIssueId!),
+    enabled: selectedIssueId != null,
+    staleTime: 30_000,
+  })
+  const feedbackLabel = fbSummary?.feedback
+    ? (fbSummary.feedback.rating === 'good' ? 'верно' : 'с ошибкой')
+    : 'не оценён'
 
   // Тот же ключ, что у AutoAnalysis: подписываемся на кэш анализа, чтобы блок
   // телеметрии знал уверенность и «можно авто» без подъёма состояния наверх.
@@ -2522,23 +3129,15 @@ export function IssueDetail() {
     },
   })
 
-  const quickResolve = useMutation({
-    mutationFn: (statusCode: 'completed' | 'delayed' | 'wait') => {
-      const delayTo = statusCode === 'delayed'
-        ? (() => { const d = new Date(); d.setDate(d.getDate() + 3); return d.toISOString().slice(0, 16) })()
-        : undefined
-      // «В работе» (wait) — смена статуса без обязательного ответа клиенту: комментарий
-      // отправляем, только если оператор его написал.
-      return api.resolveIssue(selectedIssueId!, statusCode, comment || undefined, delayTo, commentPublic)
-    },
-    onSuccess: (data) => {
-      setComment('')
-      queryClient.invalidateQueries({ queryKey: ['issue', selectedIssueId] })
-      queryClient.invalidateQueries({ queryKey: ['issues'] })
-      queryClient.invalidateQueries({ queryKey: ['comments', selectedIssueId] })
-      if (!data.status_changed) setResolveNotice('Статус не изменён — смените вручную в Okdesk.')
-    },
-  })
+  /**
+   * Смена статуса ВСЕГДА через модалку: там обязательный комментарий, дата
+   * возврата и гард по типу заявки. Раньше «В работе» и «Ожидание ответа»
+   * отправлялись из меню молча, а дата возврата подставлялась сама (+3 дня).
+   */
+  const openStatus = (code: string) => {
+    const st = ALL_STATUSES.find(s => s.code === code)
+    if (st) setPendingStatus(st)
+  }
 
   if (!selectedIssueId) return null
 
@@ -2566,12 +3165,37 @@ export function IssueDetail() {
   // кнопке «Ответить и решить» ниже). Тем же условием раскрываем «Детали заявки»:
   // тип правится там, и оператор видит блокер сразу, а не по тосту в конце.
   const typeMissing = !od?.type_code || od.type_code === 'inner'
+  // Счётчик секции «Детали заявки»: тип и заполненность обязательной тройки
+  // параметров — то, из-за чего заявка застревает. Видно, не разворачивая блок.
+  const paramsFilled = od
+    ? EDITABLE_PARAMS.filter(ep => od.parameters.some(p => ep.match.test(p.name) && p.value?.trim())).length
+    : 0
+  const detailsLabel = od
+    ? `${typeMissing ? 'тип не указан' : od.type_name} · параметры ${paramsFilled}/${EDITABLE_PARAMS.length}`
+    : null
   // Уверенность и признак «можно авто» есть только у одиночного анализа: в пакетном
   // разборе бэкенд отдаёт по объекту вердикт и метрики, но не оценку уверенности.
   const singleAnalysis = automateCached?.cached ? (automateCached as unknown as AutomationResult) : null
   // Источник вердикта ВЫБРАННОЙ строки: от него зависит вид пилюли, полоса доверия
   // и наличие обоснования в блоке телеметрии (см. VerdictPill).
   const selectedSource: VerdictSource | null = selectedObj ? rowVerdictSource(selectedObj) : null
+  // Уверенность, обоснование и черновик читаем ИЗ СТРОКИ: с per-object прогоном
+  // (`POST /batch/ai`) они свои у каждого ТС. Фолбэк на сводный одиночный анализ —
+  // для старых кэшей `automate`, где полей в строке ещё нет.
+  const rowConfidence = selectedObj?.confidence ?? singleAnalysis?.confidence ?? null
+  const rowReasoning = selectedObj?.reasoning ?? singleAnalysis?.reasoning ?? null
+  const rowDraft = selectedObj?.draft_answer ?? singleAnalysis?.draft_answer ?? null
+  // ИИ по ЭТОЙ строке уже отвечал. У строки, которую переписал оператор,
+  // обоснование и черновик ИИ снимаются на бэкенде — там платная кнопка остаётся
+  // доступной: прогон не перезаписывает ручные правки (такие строки в модель
+  // просто не уходят), но добьёт обоснования по остальным объектам.
+  const aiAnswered = selectedSource === 'ai'
+  // Один вызов модели на всю заявку: число строк и режим берём из фактического
+  // состава разбора, а не из наличия вложений.
+  const aiObjectCount = parseRows.length || 1
+  const aiIsBatch = parseRows.length >= 2
+  // Регион — из кода в гос.номере выбранной (или первой) строки разбора.
+  const regionLabel = plateRegion(selectedObj?.plate ?? parseRows[0]?.plate ?? null)
 
   return (
     <ActiveSectionContext.Provider value={activeSectionValue}>
@@ -2649,6 +3273,19 @@ export function IssueDetail() {
             >
               {trackOpen ? <PanelRightClose size={14} /> : <Map size={14} />}
             </button>
+            {/* Адрес портала Okdesk знает только бэкенд (OKDESK_BASE_URL) —
+                без него кнопку не показываем, чтобы не вести в никуда. */}
+            {od?.okdesk_url && (
+              <a
+                href={od.okdesk_url}
+                target="_blank"
+                rel="noreferrer"
+                title={`Открыть заявку #${issue.external_id} в Okdesk`}
+                className="flex h-[27px] w-[27px] items-center justify-center rounded-pill border border-border bg-frame text-secondary hover:border-accent hover:text-accent transition-colors"
+              >
+                <ExternalLink size={14} />
+              </a>
+            )}
             <button
               onClick={() => selectIssue(null)}
               title="Закрыть карточку"
@@ -2700,14 +3337,17 @@ export function IssueDetail() {
 
         {/* Детали заявки — свойства, участники, сроки, параметры. Второй сверху:
             без типа заявку не решить, а тип правится именно здесь (см. forceOpen). */}
-        <Block title="Детали заявки" storageKey="details" defaultOpen={false} forceOpen={od && typeMissing ? issue.id : null}>
-          <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
-            <span className="text-muted">Компания</span>
-            <span>{issue.company_name ?? '—'}</span>
-            <span className="text-muted">Контакт</span>
-            <span>{issue.contact_name ?? '—'}</span>
-            <span className="text-muted">Создана</span>
-            <span>{formatDate(issue.created_at) ?? '—'}</span>
+        <Block
+          title="Детали заявки"
+          storageKey="details"
+          defaultOpen={false}
+          count={detailsLabel}
+          forceOpen={od && typeMissing ? issue.id : null}
+        >
+          <div>
+            <MetaRow label="Компания">{issue.company_name ?? '—'}</MetaRow>
+            <MetaRow label="Контакт">{issue.contact_name ?? '—'}</MetaRow>
+            <MetaRow label="Создана">{formatDate(issue.created_at) ?? '—'}</MetaRow>
           </div>
 
           {/* Live Okdesk info */}
@@ -2737,12 +3377,23 @@ export function IssueDetail() {
             onOpenExternal={openExternal}
             selectedIdx={selectedIdx}
             onSelectObject={(idx, objects) => { setSelectedIdx(idx); setSelectedObj(objects[idx] ?? null) }}
+            onParse={(objects, note) => {
+              setParseRows(objects)
+              setBatchAiNote(note ?? null)
+              // Строки обновились (прогон ИИ, правка номера/даты) — выбранный объект
+              // должен показывать НОВЫЕ данные, а не копию до правки.
+              setSelectedObj(prev => {
+                if (selectedIdx != null && objects[selectedIdx]) return objects[selectedIdx]
+                return prev
+              })
+            }}
+            onUseDraft={text => { setComment(text); setCommentPublic(true); setBarExpanded(true) }}
           />
           <SingleParseTable
             issueId={issue.id}
             issueTitle={issue.subject}
             companyName={issue.company_name}
-            onSelect={obj => { setSelectedIdx(0); setSelectedObj(obj) }}
+            onSelect={obj => { setSelectedIdx(0); setSelectedObj(obj); setParseRows([obj]) }}
           />
           <AutoAnalysis
             issueId={issue.id}
@@ -2761,15 +3412,17 @@ export function IssueDetail() {
           <TelemetryPanel
             telemetry={selectedObj?.telemetry ?? null}
             category={selectedObj?.verdict ?? null}
-            confidence={singleAnalysis?.confidence ?? null}
+            confidence={rowConfidence}
             needsReview={singleAnalysis?.needs_review ?? false}
             autoEligible={singleAnalysis?.auto_eligible}
             subtitle={selectedObj?.plate ?? null}
             // Обоснование — только у вердикта ИИ: у правил и у ручной правки его нет,
             // а чужой текст от прошлого прогона объяснял бы не тот вердикт.
-            reasoning={selectedSource === 'ai' ? singleAnalysis?.reasoning ?? null : null}
+            reasoning={aiAnswered ? rowReasoning : null}
             verdictSource={selectedSource}
             heuristicCategory={selectedObj?.heuristic_category ?? null}
+            editedBy={selectedObj?.verdict_edited_by ?? null}
+            editedAt={formatDate(selectedObj?.verdict_edited_at) ?? null}
           />
           {!selectedObj && (
             <p className="text-[13px] text-muted">
@@ -2784,6 +3437,52 @@ export function IssueDetail() {
               чтобы пересчитать телеметрию по объектам.
             </p>
           )}
+
+          {/* Платный шаг — на месте своих же результатов: пока ИИ не звали, здесь
+              кнопка, после прогона — обоснование (в TelemetryPanel) и черновик. */}
+          {selectedObj && !aiAnswered && (
+            <AiAnswerCta issueId={issue.id} isBatch={aiIsBatch} objectCount={aiObjectCount} />
+          )}
+          {batchAiNote && (
+            <p className="flex items-start gap-1.5 text-[11px] leading-4 text-muted">
+              <Info size={13} className="mt-px shrink-0 text-info" /> {batchAiNote}
+            </p>
+          )}
+
+          {aiAnswered && rowDraft && (
+            <div className="space-y-1.5">
+              <span className="block text-[9px] font-medium uppercase leading-3 tracking-[0.4px] text-muted">
+                Черновик ответа клиенту
+              </span>
+              {/* Флаги, из-за которых черновик нельзя отправлять «как есть». */}
+              {singleAnalysis?.needs_remote_diagnostics && (
+                <div className="flex items-start gap-1.5 rounded-md bg-warning/10 px-3 py-2 text-[11px] leading-4 text-warning">
+                  <AlertTriangle size={13} className="mt-px shrink-0" /> Требуется удалённая диагностика (клиент подтвердил питание)
+                </div>
+              )}
+              {selectedObj?.spec_vehicle && (
+                <div className="flex items-start gap-1.5 rounded-md bg-warning/10 px-3 py-2 text-[11px] leading-4 text-warning">
+                  <AlertTriangle size={13} className="mt-px shrink-0" /> Спецтехника — оценивать по факту работы
+                </div>
+              )}
+              <p
+                title="Черновик составлен ИИ для выбранного объекта"
+                className="whitespace-pre-wrap rounded-[10px] border border-border bg-frame px-3 py-2.5 text-[13px] leading-5 text-secondary"
+              >
+                {rowDraft}
+              </p>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] leading-4 text-muted">Составлен ИИ — прочитайте перед отправкой</span>
+                <button
+                  onClick={() => { setComment(rowDraft); setBarExpanded(true) }}
+                  title="Перенести черновик в поле ответа в нижнем баре"
+                  className="shrink-0 rounded-pill border border-border bg-frame px-3 py-[5px] text-xs font-medium text-secondary hover:border-accent hover:text-accent transition-colors"
+                >
+                  Вставить в ответ
+                </button>
+              </div>
+            </div>
+          )}
         </Block>
 
         {/* Оценка разбора — петля обратной связи для обучения ИИ. Сразу после
@@ -2792,9 +3491,10 @@ export function IssueDetail() {
           title="Оценка разбора"
           storageKey="feedback"
           defaultOpen={false}
+          count={feedbackLabel}
           right={<span>влияет на обучение ИИ</span>}
         >
-          <AiFeedbackPanel issueId={issue.id} />
+          <AiFeedbackPanel issueId={issue.id} aiAnswered={aiAnswered} objectCount={aiObjectCount} />
         </Block>
 
         {/* Комментарии — только лента: составление ответа живёт в липком баре. */}
@@ -2864,12 +3564,13 @@ export function IssueDetail() {
               )
             })}
             {comments.length === 0 && <p className="text-xs text-muted">Комментариев нет</p>}
-            {comments.length > 1 && (
+            {comments.length > COMMENTS_PREVIEW && (
               <button
                 onClick={() => setAllComments(v => !v)}
+                title={allComments ? `Оставить последние ${COMMENTS_PREVIEW}` : 'Показать всю переписку по заявке'}
                 className="text-xs text-accent hover:underline"
               >
-                {allComments ? 'Свернуть до последнего' : `Показать все ${comments.length} комментариев`}
+                {allComments ? `Свернуть до последних ${COMMENTS_PREVIEW}` : `Показать все ${comments.length} комментариев`}
               </button>
             )}
           </div>
@@ -2891,6 +3592,8 @@ export function IssueDetail() {
             od?.type_name ? `тип «${od.type_name}»` : null,
             issue.assignee_name ? `ответственный ${issue.assignee_name}` : null,
             od?.source ? `источник ${od.source}` : null,
+            // Регион выводим из кода в гос.номере — отдельного поля в системе нет.
+            regionLabel ? `регион ${regionLabel}` : null,
           ].filter(Boolean).join(' · ')}
         </div>
       </div>
@@ -2900,6 +3603,18 @@ export function IssueDetail() {
           По фокусу на поле раскрывается второй ряд. «Передать монтажникам» из
           бара убрано — это отдельная секция в конце карточки. */}
       <div className="shrink-0 border-t border-border bg-darker px-4 py-2.5 flex flex-col gap-2">
+        {/* Гард живёт в баре ПОСТОЯННО, пока у заявки нет типа: тост показывался
+            уже после нажатия, то есть оператор узнавал о блокере в последний
+            момент. Чинится в «Деталях заявки» — секция раскрывается сама. */}
+        {typeMissing && (
+          <div
+            title="Okdesk не примет смену статуса, пока у заявки тип «Не указан» — выберите тип в разделе «Детали заявки»"
+            className="flex items-center gap-1.5 rounded-md bg-warning/15 px-2.5 py-1.5 text-[11px] leading-4 text-warning"
+          >
+            <AlertTriangle size={13} className="shrink-0" />
+            Сначала укажите тип заявки — без типа Okdesk не пустит заявку ни в «В работе», ни в «Решена»
+          </div>
+        )}
         <div className="flex items-center gap-2">
           <textarea
             value={comment}
@@ -2916,21 +3631,18 @@ export function IssueDetail() {
 
           <TemplatePicker trigger="text" onSelect={text => setComment(text)} issueId={issue.id} />
 
+          {/* Главное действие ведёт в модалку решения, а не отправляет молча:
+              комментарий уходит клиенту, и его надо увидеть целиком перед
+              отправкой (в модалке же живёт гард по типу заявки). */}
           <button
-            disabled={!comment || quickResolve.isPending || isDemo}
-            onClick={() => {
-              if (typeMissing) {
-                setToast('Сначала укажите тип заявки')
-                return
-              }
-              quickResolve.mutate('completed')
-            }}
-            title={isDemo ? 'Недоступно в демо-режиме' : 'Отправить ответ клиенту и перевести заявку в «Решена»'}
-            className={`flex shrink-0 items-center gap-1.5 rounded-pill bg-accent hover:bg-accent/90 text-black px-4 py-[7px] text-[13px] font-medium transition-colors disabled:opacity-40 ${quickResolve.isPending && quickResolve.variables === 'completed' ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
+            disabled={isDemo || typeMissing}
+            onClick={() => openStatus('completed')}
+            title={isDemo ? 'Недоступно в демо-режиме'
+              : typeMissing ? 'Сначала укажите тип заявки — Okdesk не пустит заявку в «Решена»'
+              : 'Отправить ответ клиенту и перевести заявку в «Решена»'}
+            className={`flex shrink-0 items-center gap-1.5 rounded-pill bg-accent hover:bg-accent/90 text-black px-4 py-[7px] text-[13px] font-medium transition-colors disabled:opacity-40 ${isDemo || typeMissing ? 'cursor-not-allowed' : ''}`}
           >
-            {quickResolve.isPending && quickResolve.variables === 'completed'
-              ? <Working label="Отправляю…" />
-              : <><Check size={14} /> Ответить и решить</>}
+            <Check size={14} /> Ответить и решить
           </button>
         </div>
 
@@ -2942,27 +3654,11 @@ export function IssueDetail() {
                   issueId={issue.id}
                   hasExtractable={useBatch}
                   plate={selectedObj?.plate ?? null}
+                  draft={aiAnswered ? rowDraft : null}
                   onUseDraft={text => { setComment(text); setCommentPublic(true) }}
                 />
                 {/* Сегмент видимости: публичный ответ уходит клиенту */}
-                <div className="flex shrink-0 items-center rounded-pill border border-border bg-frame p-0.5">
-                  {([true, false] as const).map(pub => (
-                    <button
-                      key={String(pub)}
-                      onClick={() => setCommentPublic(pub)}
-                      title={pub ? 'Публичный — виден клиенту' : 'Внутренний комментарий — не виден клиенту'}
-                      className={`rounded-pill px-2.5 py-[3px] text-[11px] font-medium transition-colors ${
-                        commentPublic === pub
-                          ? pub
-                            ? 'bg-accent/15 text-accent'
-                            : 'bg-warning/15 text-warning'
-                          : 'text-muted hover:text-white'
-                      }`}
-                    >
-                      {pub ? 'Публичный' : 'Приватный'}
-                    </button>
-                  ))}
-                </div>
+                <VisibilitySegments value={commentPublic} onChange={setCommentPublic} />
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 <div className="relative">
@@ -2977,31 +3673,34 @@ export function IssueDetail() {
                   {moreActionsOpen && (
                     <>
                       <div className="fixed inset-0 z-40" onClick={() => setMoreActionsOpen(false)} />
-                      <div className="absolute right-0 bottom-full mb-1 z-50 w-[230px] rounded-md overflow-hidden border border-border bg-frame shadow-lg">
+                      <div className="absolute right-0 bottom-full mb-1 z-50 w-[288px] rounded-md overflow-hidden border border-border bg-frame shadow-lg">
                         <button
                           disabled={!comment || addComment.isPending}
                           onClick={() => { setMoreActionsOpen(false); addComment.mutate(comment) }}
                           title="Отправить комментарий, не меняя статус (Ctrl+Enter)"
-                          className="w-full flex items-center gap-2 px-3 py-2.5 text-[13px] text-left hover:bg-card-hover disabled:opacity-40"
+                          className="w-full flex items-center justify-between gap-2 border-b border-line px-3 py-2.5 text-left text-[13px] hover:bg-card-hover disabled:opacity-40"
                         >
-                          <Send size={13} className="text-secondary" /> Отправить комментарий
+                          <span className="flex items-center gap-2"><Send size={13} className="text-secondary" /> Отправить комментарий</span>
+                          <span className="text-[10px] leading-[14px] text-muted">без смены статуса</span>
                         </button>
-                        <button
-                          disabled={quickResolve.isPending}
-                          onClick={() => { setMoreActionsOpen(false); quickResolve.mutate('wait') }}
-                          title="Перевести в «В работе» (комментарий необязателен)"
-                          className="w-full flex items-center gap-2 px-3 py-2.5 text-[13px] text-left hover:bg-card-hover disabled:opacity-40"
-                        >
-                          <Play size={13} style={{ color: STATUS_COLOR.wait }} /> В работе
-                        </button>
-                        <button
-                          disabled={!comment || quickResolve.isPending}
-                          onClick={() => { setMoreActionsOpen(false); quickResolve.mutate('delayed') }}
-                          title="Отправить ответ и перевести в «Ожидание ответа» (+3 дня)"
-                          className="w-full flex items-center gap-2 px-3 py-2.5 text-[13px] text-left hover:bg-card-hover disabled:opacity-40"
-                        >
-                          <Pause size={13} style={{ color: STATUS_COLOR.delayed }} /> Ожидание ответа
-                        </button>
+                        {BAR_MENU_ACTIONS.map(a => {
+                          const st = ALL_STATUSES.find(s => s.code === a.code)
+                          if (!st) return null
+                          const Icon = a.code === 'wait' ? Play : Pause
+                          return (
+                            <button
+                              key={a.code}
+                              onClick={() => { setMoreActionsOpen(false); openStatus(a.code) }}
+                              title={`Перевести в «${a.label}» — откроется окно с комментарием${st.needsDelay ? ' и датой возврата' : ''}`}
+                              className="w-full flex items-center justify-between gap-2 border-b border-line px-3 py-2.5 text-left text-[13px] last:border-b-0 hover:bg-card-hover disabled:opacity-40"
+                            >
+                              <span className="flex items-center gap-2">
+                                <Icon size={13} style={{ color: STATUS_COLOR[a.code as keyof typeof STATUS_COLOR] }} /> {a.label}
+                              </span>
+                              <span className="text-[10px] leading-[14px] text-muted">{a.hint}</span>
+                            </button>
+                          )
+                        })}
                       </div>
                     </>
                   )}
@@ -3031,8 +3730,16 @@ export function IssueDetail() {
         issueId={issue.id}
         externalId={issue.external_id}
         targetStatus={pendingStatus}
+        typeMissing={typeMissing && pendingStatus.code !== 'opened'}
+        initialComment={comment}
+        initialPublic={commentPublic}
         onClose={() => setPendingStatus(null)}
-        onDone={(notice) => { setPendingStatus(null); if (notice) setResolveNotice(notice) }}
+        onDone={(notice) => {
+          setPendingStatus(null)
+          setComment('')       // ответ ушёл — поле не должно предлагать отправить его ещё раз
+          setBarExpanded(false)
+          if (notice) setResolveNotice(notice)
+        }}
       />
     )}
 

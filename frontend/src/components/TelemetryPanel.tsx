@@ -14,6 +14,9 @@ interface TelemetryPanelProps {
   verdictSource?: VerdictSource | null
   /** Вердикт детерминированной эвристики — для строки расхождения «правила → ИИ». */
   heuristicCategory?: string | null
+  /** Кто и когда переписал вердикт вручную (источник `operator`). */
+  editedBy?: string | null
+  editedAt?: string | null
 }
 
 /**
@@ -188,6 +191,8 @@ export function TelemetryPanel({
   reasoning = null,
   verdictSource = null,
   heuristicCategory = null,
+  editedBy = null,
+  editedAt = null,
 }: TelemetryPanelProps) {
   const [reasoningOpen, setReasoningOpen] = useState(false)
   const src = normalizeVerdictSource(verdictSource)
@@ -199,7 +204,9 @@ export function TelemetryPanel({
   if (src === 'rules') {
     verdictNote = 'предварительно — ИИ ещё не вызывался'
   } else if (src === 'operator') {
-    verdictNote = 'исправлено вручную'
+    // Без имени и времени пилюля «✎ оператор» не даёт понять, стоит ли ей верить:
+    // правка могла быть неделю назад и по старым данным.
+    verdictNote = ['исправлено вручную', editedBy, editedAt].filter(Boolean).join(' · ')
   } else if (percent != null) {
     verdictNote = `Уверенность ${percent}%`
     if (autoEligible) verdictNote += ' — авто-ответ доступен'
