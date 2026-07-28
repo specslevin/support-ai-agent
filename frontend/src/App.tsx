@@ -19,13 +19,20 @@ import { api, authApi } from './api/client'
 
 const queryClient = new QueryClient()
 
-/** Ширина рельсы карточки заявки (макет v4). Единственное место с этим числом —
- *  и в ветке «Заявки», и в ветке «ИИ-чат» карточка всегда ровно такая. */
-const RAIL_W = 'w-[680px]'
+/**
+ * Ширина рельсы карточки заявки. Была жёстко 680px (макет v4) — оператор проводит
+ * в карточке больше времени, чем в треке, и на широком мониторе половина экрана
+ * простаивала. Теперь ПРОЦЕНТ от доступной ширины с двумя границами:
+ *   680px  — нижняя: все 8 колонок таблицы разбора влезают без скролла;
+ *   1100px — верхняя: дальше строки становятся неудобно длинными для чтения
+ *            (глаз теряет строку, а плитки телеметрии расползаются).
+ * clamp() решает ровно ту задачу, о которой спрашивал пользователь: одно правило
+ * на все разрешения, без медиа-запросов и без «на 4K карточка во весь экран».
+ */
+const RAIL_W = 'w-[clamp(680px,46%,1100px)]'
 
-/** Порог, ниже которого при открытом треке левая панель (список/чат) скрывается:
- *  треку нужно ≥520px, рельсе — 680px, вместе это уже 1200px. */
-const WIDE = 'min-[1600px]:flex'
+/** Раскрытая на всю ширину карточка (кнопка ⤢): список скрыт, гэпа не остаётся. */
+const RAIL_W_WIDE = 'flex-1 min-w-0'
 
 /** Трек + графики. Не оверлей, а обычный flex-сосед СЛЕВА от рельсы карточки.
  *  Одна и та же разметка для обеих веток («Заявки» и «ИИ-чат»). Закрытая панель
@@ -33,7 +40,10 @@ const WIDE = 'min-[1600px]:flex'
 function TrackSlot({ issueId, open }: { issueId: number | null; open: boolean }) {
   if (!open || issueId == null) return null
   return (
-    <div className="flex-1 min-w-[520px] min-h-0 overflow-hidden bg-base">
+    /* min-w 460, а не 520: карточка теперь занимает процент ширины и не уже 680,
+       и на ноутбучных 1366 (минус сайдбар) сумма 680+520 уже не влезала — панели
+       уезжали в горизонтальный скролл. */
+    <div className="flex-1 min-w-[460px] min-h-0 overflow-hidden bg-base">
       <div className="track-slide h-full flex flex-col min-h-0">
         <TrackPanel issueId={issueId} />
       </div>
@@ -159,10 +169,10 @@ function Dashboard() {
         {section === 'chat' ? (
           /* Порядок слева-направо: [чат] [трек] [карточка 680] */
           <div className="flex flex-1 min-h-0">
+            {/* Трек открыт → чат скрывается целиком: трек и карточка занимают ВСЮ
+                ширину. Узкая полоска чата рядом с ними была бесполезна. */}
             <div className={`flex-col min-h-0 flex-1 min-w-0 ${
-              trackOpen && selectedIssueId
-                ? `hidden ${WIDE}`
-                : detailExpanded && selectedIssueId ? 'hidden' : 'flex'
+              selectedIssueId && (trackOpen || detailExpanded) ? 'hidden' : 'flex'
             }`}>
               <ChatPanel />
             </div>
@@ -170,7 +180,7 @@ function Dashboard() {
             <TrackSlot issueId={selectedIssueId} open={trackOpen} />
 
             {selectedIssueId && (
-              <div className={`${RAIL_W} shrink-0 border-l border-border flex flex-col min-h-0 overflow-hidden`}>
+              <div className={`${detailExpanded && !trackOpen ? RAIL_W_WIDE : `${RAIL_W} shrink-0`} border-l border-border flex flex-col min-h-0 overflow-hidden`}>
                 <IssueDetail />
               </div>
             )}
@@ -184,13 +194,11 @@ function Dashboard() {
 
             {/* Content — порядок слева-направо: [список] [трек] [карточка 680] */}
             <div className="flex flex-1 min-h-0">
-              {/* Список: тянется по остатку ширины; при открытом треке ужимается
-                  до узкой полосы (номер + тема + статус читаются), а на окне
-                  меньше 1600px уходит совсем — треку и рельсе нужно ≥1200px. */}
+              {/* Список тянется по остатку ширины. Трек открыт (или карточка
+                  развёрнута кнопкой ⤢) → список скрывается ЦЕЛИКОМ: раньше от него
+                  оставалась полоса 280px, и рабочие панели не занимали всю ширину. */}
               <div className={`flex-col min-h-0 border-r border-border ${
-                trackOpen && selectedIssueId
-                  ? `w-[280px] shrink-0 hidden ${WIDE}`
-                  : detailExpanded && selectedIssueId ? 'hidden' : 'flex flex-1 min-w-0'
+                selectedIssueId && (trackOpen || detailExpanded) ? 'hidden' : 'flex flex-1 min-w-0'
               }`}>
                 <IssuesList viewMode={viewMode} onViewModeChange={setViewMode} />
               </div>
@@ -198,7 +206,7 @@ function Dashboard() {
               <TrackSlot issueId={selectedIssueId} open={trackOpen} />
 
               {selectedIssueId && (
-                <div className={`${RAIL_W} shrink-0 border-l border-border flex flex-col min-h-0 overflow-hidden`}>
+                <div className={`${detailExpanded && !trackOpen ? RAIL_W_WIDE : `${RAIL_W} shrink-0`} border-l border-border flex flex-col min-h-0 overflow-hidden`}>
                   <IssueDetail />
                 </div>
               )}

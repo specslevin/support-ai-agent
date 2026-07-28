@@ -48,7 +48,10 @@ body{background:var(--base);color:var(--text);
   font-size:12px}
 
 /* ── рельса 680 ──────────────────────────────────────────────────── */
-.rail{flex:0 0 680px;width:680px;height:980px;display:flex;flex-direction:column;
+/* Рельса тянется ПРОЦЕНТОМ ширины: 680 — нижняя граница (8 колонок разбора без
+   скролла), 1100 — верхняя (дальше строки неудобно длинные). Было жёстко 680, и на
+   широком мониторе половина экрана простаивала, хотя оператор живёт в карточке. */
+.rail{flex:0 0 clamp(680px,46%,1100px);height:980px;display:flex;flex-direction:column;
   background:var(--base);border:1px solid var(--line);border-radius:14px;overflow:hidden;
   position:relative}
 .rail-body{flex:1;overflow-y:auto;overscroll-behavior:contain}
@@ -116,9 +119,9 @@ body{background:var(--base);color:var(--text);
 /* ── таблица разбора ─────────────────────────────────────────────── */
 table{width:100%;table-layout:fixed;border-collapse:separate;border-spacing:1px;
   background:var(--line);border-radius:8px;overflow:hidden}
-th{background:#131313;padding:6px;text-align:left;font:500 10px/14px inherit;
+th{background:#131313;padding:7px 6px;text-align:left;font:500 10px/14px inherit;
   color:var(--muted);white-space:nowrap;letter-spacing:.2px}
-td{background:var(--frame);padding:6px;font-size:11px;line-height:16px;
+td{background:var(--frame);padding:8px 6px;font-size:11px;line-height:16px;
   color:var(--secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 tbody tr{cursor:pointer}
 tbody tr:hover td{background:var(--hover)}
@@ -236,13 +239,18 @@ td.act{text-align:center;padding:3px}
 .bar{flex-shrink:0;border-top:1px solid var(--border);background:var(--darker);
   padding:10px 16px;display:flex;flex-direction:column;gap:8px;position:relative}
 .bar-row{display:flex;align-items:center;gap:8px}
+/* Раскрытый бар: поле ответа занимает ВСЮ ширину своей строкой, кнопки уезжают в
+   ряд ниже. Раньше они стояли рядом с полем и отбирали у него треть, а само поле
+   было фиксированных 84px — длинный ответ читался через скролл в три строки. */
+.bar-row.exp{flex-direction:column;align-items:stretch}
+.bar-row.exp .btn{display:none}
 .bar-icons{display:flex;align-items:center;gap:6px;min-width:0}
 .reply{flex:1;min-width:0;background:var(--frame);border:1px solid var(--border);
   border-radius:999px;color:var(--text);padding:7px 14px;font:inherit;resize:none;
   height:36px;line-height:20px;outline:none;transition:height .12s,border-radius .12s}
 .reply::placeholder{color:var(--muted)}
 .reply:focus{border-color:var(--accent)}
-.reply.exp{height:84px;border-radius:12px}
+.reply.exp{height:auto;min-height:96px;max-height:240px;border-radius:12px}
 .bar-more{display:none;align-items:center;justify-content:space-between;gap:8px;
   flex-wrap:wrap}
 .bar-more.on{display:flex}
@@ -734,8 +742,8 @@ td.act{text-align:center;padding:3px}
             </div>
             <div class="wrow info" id="agg-note" style="display:none">ⓘ Агрегатная заявка (ОДКР)
               — отвечаем одним ответом по всем объектам, без разбивки на дочерние.
-              <button class="chip" style="margin-left:auto" onclick="aggAnswer()"
-                title="Собрать ОДИН ответ по всем объектам заявки и вставить в поле ответа — платный вызов ИИ">✦ Один ответ по всем объектам</button></div>
+              <button class="btn btn-2 btn-sm" style="margin-left:auto" onclick="aggAnswer()"
+                title="Собрать ОДИН ответ по всем объектам: вердикты группируются по правилам, формулировки готовые. Модель не вызывается, шаг бесплатный">Один ответ по всем объектам (по правилам)</button></div>
             <div class="tbl-sum" id="tbl-sum"><span class="meta">Всего 3:</span><span class="count">Глушение 1</span><span class="count">Данные верны 1</span><span class="count">Не было питания 1</span></div>
             <table>
               <colgroup>
@@ -1083,9 +1091,9 @@ td.act{text-align:center;padding:3px}
       <div class="bar-row">
         <textarea id="reply" class="reply" rows="1" placeholder="Ответить клиенту…"
                   title="Текст ответа. Ctrl+Enter — отправить комментарий без смены статуса"
-                  onfocus="expandBar(true)"></textarea>
+                  onfocus="expandBar(true)" oninput="autoGrow()"></textarea>
         <button class="btn btn-2 btn-sm" onclick="togglePop('tpl-pop')"
-                title="Выбрать шаблон ответа — шаблон с плейсхолдерами запросит значения">Шаблон ▾</button>
+                title="Шаблон ответа — шаблон с плейсхолдерами запросит значения">☰</button>
         <button class="btn btn-1" id="resolve-btn" onclick="openStatus('completed')"
                 title="Отправить ответ клиенту и перевести заявку в «Решена»">Ответить и решить</button>
       </div>
@@ -1099,9 +1107,13 @@ td.act{text-align:center;padding:3px}
           </div>
         </div>
         <div class="bar-icons">
+          <button class="btn btn-2 btn-sm" onclick="togglePop('tpl-pop')"
+                  title="Шаблон ответа — шаблон с плейсхолдерами запросит значения">☰</button>
           <button class="btn btn-2 btn-sm" onclick="togglePop('more-menu')"
-                  title="Другие действия: В работе, Ожидание ответа, отправить комментарий без смены статуса">Ещё ▾</button>
-          <button class="btn btn-2 btn-sm" onclick="expandBar(false)" title="Свернуть поле ответа">Свернуть</button>
+                  title="Другие действия: отправить комментарий без смены статуса, В работе, Ожидание ответа, Нет времени">⋯</button>
+          <button class="btn btn-2 btn-sm" onclick="expandBar(false)" title="Свернуть поле ответа">⌄</button>
+          <button class="btn btn-1 btn-sm" onclick="openStatus('completed')"
+                  title="Отправить ответ клиенту и перевести заявку в «Решена»">✓ Ответить и решить</button>
         </div>
       </div>
 
@@ -1616,8 +1628,19 @@ function runAI(){
 }
 
 function expandBar(on){
-  document.getElementById('reply').classList.toggle('exp', on);
+  const r = document.getElementById('reply');
+  r.classList.toggle('exp', on);
+  document.querySelector('.bar-row').classList.toggle('exp', on);
   document.getElementById('bar-more').classList.toggle('on', on);
+  autoGrow();
+}
+/* Высота поля растёт под текст до 240px, дальше скролл: фиксированные 84px
+   показывали длинный ответ тремя строками, и оператор не видел, что отправляет. */
+function autoGrow(){
+  const r = document.getElementById('reply');
+  if (!r.classList.contains('exp')) { r.style.height = ''; return; }
+  r.style.height = 'auto';
+  r.style.height = Math.min(r.scrollHeight, 240) + 'px';
 }
 function insertDraft(){
   const r = document.getElementById('reply');

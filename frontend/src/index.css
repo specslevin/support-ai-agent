@@ -71,13 +71,24 @@
 }
 
 @layer components {
-  /* Карточка заявки v4 — рельса фиксированной ширины 680px, ВСЕГДА одна колонка
-     (двухколоночная схема v3 с container-query отменена). Тело просто скроллится
-     по вертикали; overscroll-behavior не даёт скроллу «протечь» на список слева. */
+  /* Карточка заявки v4 — ВСЕГДА одна колонка (двухколоночная схема v3 с
+     container-query отменена). Ширина рельсы задаётся в App.tsx процентом с
+     границами 680…1100px. Тело просто скроллится по вертикали;
+     overscroll-behavior не даёт скроллу «протечь» на список слева. */
   .issue-body {
     overflow-y: auto;
     overscroll-behavior: contain;
   }
+
+  /* Поле ответа в липком баре: место под скроллбар зарезервировано ВСЕГДА, иначе
+     при появлении полосы прокрутки правый скруглённый угол выглядел обрезанным
+     (и текст прыгал на 6px). Полоса тонкая и в цвет рамки. */
+  .reply-field {
+    scrollbar-gutter: stable;
+  }
+  .reply-field::-webkit-scrollbar { width: 6px; }
+  .reply-field::-webkit-scrollbar-track { background: transparent; }
+  .reply-field::-webkit-scrollbar-thumb { @apply bg-border rounded-pill; }
 
   /* Трек-панель выезжает СЛЕВА от рельсы. Анимируем только transform+opacity:
      анимация width пересчитывала бы лейаут каждый кадр (заметный лаг на карте

@@ -7,7 +7,7 @@ import {
   PanelRightClose, Info, MessageSquare, Sparkles, Wand2,
   Maximize2, Minimize2,
   Loader2, Lock, User, Headset, Play, ThumbsUp, ThumbsDown,
-  Copy, Calendar, Phone, Pencil,
+  Copy, Calendar, Phone, Pencil, MoreHorizontal, ChevronsDownUp,
 } from 'lucide-react'
 import { api } from '../api/client'
 import { useIssuesStore } from '../store/issuesStore'
@@ -895,14 +895,15 @@ export function TemplatePicker({ onSelect, onSelectFull, issueId, trigger = 'ico
     const preview = fill ? renderTemplate(fill.tpl.content, fill.values) : ''
     return (
       <div className="relative shrink-0">
+        {/* Иконка, а не «Шаблон ▾»: подпись отбирала ширину у поля ответа. */}
         <button
           onClick={() => (open ? closePicker() : setOpen(true))}
-          title="Выбрать шаблон ответа — шаблон с плейсхолдерами запросит значения"
-          className={`flex shrink-0 items-center gap-1 rounded-pill border px-3 py-[5px] text-xs font-medium transition-colors ${
+          title="Шаблон ответа — шаблон с плейсхолдерами запросит значения"
+          className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-pill border transition-colors ${
             open ? 'border-accent bg-accent/10 text-accent' : 'border-border bg-frame text-secondary hover:border-muted hover:text-white'
           }`}
         >
-          Шаблон <ChevronDown size={12} className={open ? 'rotate-180 transition-transform' : 'transition-transform'} />
+          <FileText size={14} />
         </button>
         {open && (
           <>
@@ -1197,6 +1198,32 @@ function getAvailableStatuses(currentStatus: string | null, typeCode: string | n
     if (FINAL_STATUSES.has(s.code) && typeIsDefault) return false
     return true
   })
+}
+
+/**
+ * Главное действие бара — «Ответить и решить». Ведёт в модалку решения, а не
+ * отправляет молча: комментарий уходит клиенту, его надо увидеть целиком (в
+ * модалке же гард по типу заявки). Текст оставлен — это единственная кнопка бара,
+ * смысл которой нельзя прятать в тултип.
+ */
+function ResolveButton({ disabled, isDemo, typeMissing, onClick }: {
+  disabled: boolean
+  isDemo: boolean
+  typeMissing: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      disabled={disabled}
+      onClick={onClick}
+      title={isDemo ? 'Недоступно в демо-режиме'
+        : typeMissing ? 'Сначала укажите тип заявки — Okdesk не пустит заявку в «Решена»'
+        : 'Отправить ответ клиенту и перевести заявку в «Решена»'}
+      className={`flex shrink-0 items-center gap-1.5 rounded-pill bg-accent hover:bg-accent/90 text-black px-3.5 py-[6px] text-[13px] font-medium transition-colors disabled:opacity-40 ${disabled ? 'cursor-not-allowed' : ''}`}
+    >
+      <Check size={14} /> Ответить и решить
+    </button>
+  )
 }
 
 /**
@@ -1668,13 +1695,19 @@ const PARSE_COLUMNS: { label: string; title: string }[] = [
   { label: 'Вердикт', title: 'Вердикт ИИ — можно изменить' },
 ]
 
+/**
+ * Пункты нативного списка вердиктов. Цвет и фон — инлайном: option наследуют цвет
+ * от прозрачного select-оверлея, из-за чего список был чёрным по чёрному.
+ */
+const VERDICT_OPTION_STYLE: React.CSSProperties = { color: '#FFFFFF', backgroundColor: '#1E1E1E' }
+
 /** actions — сколько служебных колонок без подписи идёт справа (трек, дочерняя). */
 function ParseTableHead({ actions }: { actions: number }) {
   return (
     <thead className="text-muted">
       <tr className="text-left">
         {PARSE_COLUMNS.map(c => (
-          <th key={c.label} title={c.title} className="font-medium py-1 pr-2 whitespace-nowrap">
+          <th key={c.label} title={c.title} className="font-medium py-1.5 pr-2 whitespace-nowrap">
             {c.label}
           </th>
         ))}
@@ -1821,8 +1854,8 @@ function SingleParseTable({ issueId, issueTitle, companyName, onSelect }: {
       <table className="w-full text-[11px]">
         <ParseTableHead actions={1} />
         <tbody>
-          <tr className="border-t border-border/50">
-            <td className="py-1.5 pr-2 font-mono">
+          <tr className="border-t border-line">
+            <td className="py-2 pr-2 font-mono">
               {isDemo ? (p?.plate ?? '—') : editingField === 'plate' ? (
                 <span className="inline-flex items-center gap-1">
                   <input
@@ -2322,7 +2355,7 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
                       key={idx}
                       onClick={() => onSelectObject?.(idx, res.objects)}
                       title="Показать телеметрию этого ТС"
-                      className={`border-t border-border/50 cursor-pointer ${
+                      className={`border-t border-line cursor-pointer ${
                         trackOpen && trackPlate === o.plate && trackDate === o.date
                           ? 'bg-accent/10 border-l-2 border-l-accent/60'
                           : selectedIdx === idx
@@ -2330,7 +2363,7 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
                           : 'hover:bg-card-hover/60'
                       }`}
                     >
-                      <td className="py-1 pr-2 font-mono">
+                      <td className="py-2 pr-2 font-mono">
                         {isDemo ? (o.plate ?? '—') : editingPlateKey === key ? (
                           <span className="inline-flex items-center gap-1">
                             <input
@@ -2419,19 +2452,29 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
                                 title={verdictCellHint(o)}
                               />
                               <span className="ml-1.5 shrink-0 text-[11px] text-muted">▾</span>
+                              {/* Список вердиктов был НЕВИДИМ: у select стоял
+                                  text-transparent (чтобы не просвечивал поверх
+                                  пилюли), а option наследуют цвет от select —
+                                  в раскрытом списке получался чёрный текст на
+                                  чёрном. Цвет каждого пункта задаём инлайном:
+                                  класс `text-primary` в проекте не утилита, а имя
+                                  ЦВЕТА (`text-text-primary`), поэтому и не работал.
+                                  Нативный список оставляем: таблица лежит в
+                                  overflow-x-auto, и свой попап там обрезался бы. */}
                               <select
                                 value={o.verdict}
                                 disabled={isVerdictLoading}
                                 onChange={e => handleVerdictChange(o, e.target.value, idx)}
+                                onClick={e => e.stopPropagation()}
                                 title={verdictCellHint(o)}
                                 aria-label="Вердикт по объекту"
-                                className="absolute inset-0 h-full w-full cursor-pointer appearance-none border-0 bg-transparent text-transparent opacity-0 outline-none disabled:cursor-wait"
+                                className="absolute inset-0 h-full w-full cursor-pointer appearance-none border-0 bg-transparent opacity-0 outline-none disabled:cursor-wait"
                               >
                                 {ALLOWED_VERDICTS.map(v => (
-                                  <option key={v} value={v} className="bg-card text-primary">{v}</option>
+                                  <option key={v} value={v} style={VERDICT_OPTION_STYLE}>{v}</option>
                                 ))}
                                 {!ALLOWED_VERDICTS.includes(o.verdict as typeof ALLOWED_VERDICTS[number]) && (
-                                  <option value={o.verdict} className="bg-card text-primary">{o.verdict}</option>
+                                  <option value={o.verdict} style={VERDICT_OPTION_STYLE}>{o.verdict}</option>
                                 )}
                               </select>
                             </span>
@@ -2504,17 +2547,21 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
                 <span>Агрегатная заявка (ОДКР) — отвечаем одним ответом по всем объектам, без разбивки на дочерние.</span>
               </p>
               {/* Сводный ответ живёт здесь, а не в чипе бара: он про ВСЮ заявку,
-                  а чип подставляет черновик выбранного объекта. */}
+                  а чип подставляет черновик выбранного объекта.
+                  ВАЖНО: текст собирается ДЕТЕРМИНИРОВАННО в коде — группировка по
+                  вердиктам + готовые формулировки (compose_aggregate_answer). Модель
+                  здесь не участвует: она путала, какой ТС в какой группе (64435).
+                  Поэтому кнопка нейтральная и без ✦ — это не вызов ИИ и он бесплатный. */}
               <button
                 onClick={() => aggregate.mutate()}
                 disabled={aggregate.isPending || isDemo}
                 title={isDemo ? 'Недоступно в демо-режиме'
-                  : 'Собрать ОДИН ответ по всем объектам заявки и вставить в поле ответа — платный вызов ИИ'}
-                className={`flex items-center gap-1.5 rounded-pill border border-accent bg-accent/15 px-3 py-[5px] text-[11px] font-medium text-accent transition-colors hover:bg-accent hover:text-black disabled:opacity-40 ${aggregate.isPending ? 'animate-pulse cursor-wait' : ''}`}
+                  : 'Собрать ОДИН ответ по всем объектам: вердикты группируются по правилам, формулировки готовые. Модель не вызывается, шаг бесплатный'}
+                className={`flex items-center gap-1.5 rounded-pill border border-border bg-frame px-3 py-[5px] text-[11px] font-medium text-secondary transition-colors hover:border-accent hover:text-accent disabled:opacity-40 ${aggregate.isPending ? 'animate-pulse cursor-wait' : ''}`}
               >
                 {aggregate.isPending
                   ? <Working label="Собираю сводный ответ…" />
-                  : <><Sparkles size={11} /> Один ответ по всем объектам</>}
+                  : <><Layers size={11} /> Один ответ по всем объектам (по правилам)</>}
               </button>
               {aggregate.isError && (
                 <p className="text-[11px] text-orange-400">Не удалось собрать сводный ответ. Попробуйте снова.</p>
@@ -3016,6 +3063,9 @@ export function IssueDetail() {
   // Галочки «скопировано» в шапке (номер заявки и телефон контакта).
   const [numCopied, setNumCopied] = useState(false)
   const [phoneCopied, setPhoneCopied] = useState(false)
+  // Поле ответа растёт под текст: фиксированные 84px показывали длинный ответ
+  // тремя строками через скролл — оператор не видел, что именно отправляет.
+  const replyRef = useRef<HTMLTextAreaElement>(null)
   // Секция, с которой оператор работает прямо сейчас: только она носит лаймовую
   // полосу и акцентный заголовок. Раскрыто при этом может быть сколько угодно.
   const [activeSection, setActiveSection] = useState<string | null>(null)
@@ -3036,6 +3086,16 @@ export function IssueDetail() {
     const id = setTimeout(() => setToast(null), 3500)
     return () => clearTimeout(id)
   }, [toast])
+
+  // Авто-высота поля ответа: до 240px растём под текст, дальше скролл — иначе
+  // раскрытый бар отъедал бы у карточки пол-экрана на длинном ответе.
+  useEffect(() => {
+    const el = replyRef.current
+    if (!el) return
+    if (!barExpanded) { el.style.height = ''; return }
+    el.style.height = 'auto'
+    el.style.height = `${Math.min(el.scrollHeight, 240)}px`
+  }, [comment, barExpanded])
 
   // On opening a new issue, prefill the comment with the last-used template
   // (until the operator picks another). Empty if none chosen yet.
@@ -3615,8 +3675,14 @@ export function IssueDetail() {
             Сначала укажите тип заявки — без типа Okdesk не пустит заявку ни в «В работе», ни в «Решена»
           </div>
         )}
-        <div className="flex items-center gap-2">
+        {/* Раскрытый бар: поле ответа занимает ВСЮ ширину своей строкой, кнопки
+            уезжают в ряд ниже. Раньше они стояли рядом с полем и отбирали у него
+            треть ширины, а само поле было фиксированных 84px — длинный ответ
+            читался через скролл в три строки. Теперь высота растёт под текст
+            (до 240px), дальше скролл. */}
+        <div className={`flex gap-2 ${barExpanded ? 'flex-col' : 'items-center'}`}>
           <textarea
+            ref={replyRef}
             value={comment}
             onChange={e => setComment(e.target.value)}
             onFocus={() => setBarExpanded(true)}
@@ -3626,24 +3692,15 @@ export function IssueDetail() {
             rows={1}
             placeholder="Ответить клиенту…"
             title="Ctrl+Enter — отправить комментарий без смены статуса"
-            className={`flex-1 min-w-0 bg-frame border border-border text-[13px] leading-5 text-white placeholder:text-muted px-3.5 py-[7px] resize-none outline-none transition-all focus:border-accent ${barExpanded ? 'h-[84px] rounded-xl' : 'h-9 rounded-pill'}`}
+            className={`reply-field min-w-0 w-full bg-frame border border-border text-[13px] leading-5 text-white placeholder:text-muted px-3.5 py-2 resize-none outline-none focus:border-accent ${barExpanded ? 'min-h-[96px] rounded-xl' : 'h-9 rounded-pill'}`}
           />
 
-          <TemplatePicker trigger="text" onSelect={text => setComment(text)} issueId={issue.id} />
-
-          {/* Главное действие ведёт в модалку решения, а не отправляет молча:
-              комментарий уходит клиенту, и его надо увидеть целиком перед
-              отправкой (в модалке же живёт гард по типу заявки). */}
-          <button
-            disabled={isDemo || typeMissing}
-            onClick={() => openStatus('completed')}
-            title={isDemo ? 'Недоступно в демо-режиме'
-              : typeMissing ? 'Сначала укажите тип заявки — Okdesk не пустит заявку в «Решена»'
-              : 'Отправить ответ клиенту и перевести заявку в «Решена»'}
-            className={`flex shrink-0 items-center gap-1.5 rounded-pill bg-accent hover:bg-accent/90 text-black px-4 py-[7px] text-[13px] font-medium transition-colors disabled:opacity-40 ${isDemo || typeMissing ? 'cursor-not-allowed' : ''}`}
-          >
-            <Check size={14} /> Ответить и решить
-          </button>
+          {!barExpanded && (
+            <>
+              <TemplatePicker trigger="text" onSelect={text => setComment(text)} issueId={issue.id} />
+              <ResolveButton disabled={isDemo || typeMissing} isDemo={isDemo} typeMissing={typeMissing} onClick={() => openStatus('completed')} />
+            </>
+          )}
         </div>
 
         {barExpanded && (
@@ -3660,15 +3717,18 @@ export function IssueDetail() {
                 {/* Сегмент видимости: публичный ответ уходит клиенту */}
                 <VisibilitySegments value={commentPublic} onChange={setCommentPublic} />
               </div>
-              <div className="flex shrink-0 items-center gap-2">
+              {/* Второстепенные действия — иконками: подписи «Ещё ▾» и «Свернуть»
+                  отбирали ширину у поля ответа, а смысл читается из тултипа. */}
+              <div className="flex shrink-0 items-center gap-1.5">
+                <TemplatePicker trigger="text" onSelect={text => setComment(text)} issueId={issue.id} />
                 <div className="relative">
                   <button
                     onClick={() => setMoreActionsOpen(v => !v)}
                     disabled={isDemo}
-                    title={isDemo ? 'Недоступно в демо-режиме' : 'Другие действия: отправить комментарий, В работе, Ожидание ответа'}
-                    className={`flex items-center gap-1 rounded-pill bg-frame border border-border px-3 py-[5px] text-xs font-medium text-secondary hover:border-muted hover:text-white transition-colors disabled:opacity-40 ${isDemo ? 'cursor-not-allowed' : ''}`}
+                    title={isDemo ? 'Недоступно в демо-режиме' : 'Другие действия: отправить комментарий без смены статуса, В работе, Ожидание ответа, Нет времени'}
+                    className={`flex h-7 w-7 items-center justify-center rounded-pill bg-frame border border-border text-secondary hover:border-muted hover:text-white transition-colors disabled:opacity-40 ${isDemo ? 'cursor-not-allowed' : ''}`}
                   >
-                    Ещё <ChevronDown size={12} />
+                    <MoreHorizontal size={14} />
                   </button>
                   {moreActionsOpen && (
                     <>
@@ -3708,10 +3768,11 @@ export function IssueDetail() {
                 <button
                   onClick={() => setBarExpanded(false)}
                   title="Свернуть поле ответа"
-                  className="flex items-center rounded-pill bg-frame border border-border px-3 py-[5px] text-xs font-medium text-secondary hover:border-muted hover:text-white transition-colors"
+                  className="flex h-7 w-7 items-center justify-center rounded-pill bg-frame border border-border text-secondary hover:border-muted hover:text-white transition-colors"
                 >
-                  Свернуть
+                  <ChevronsDownUp size={14} />
                 </button>
+                <ResolveButton disabled={isDemo || typeMissing} isDemo={isDemo} typeMissing={typeMissing} onClick={() => openStatus('completed')} />
               </div>
             </div>
             <p className="text-[10px] leading-4 text-muted">
