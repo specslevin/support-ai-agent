@@ -187,6 +187,8 @@ td.act{text-align:center;padding:3px}
 .pill-src .st{font:500 9px/12px inherit;letter-spacing:.4px;text-transform:uppercase;
   color:var(--muted)}
 .conf.mini{display:inline-block;width:34px;margin:0 0 0 6px;vertical-align:middle}
+/* бейдж «спецтехника» рядом с вердиктом не сжимается — сжимается сам вердикт */
+.vwrap .badge{flex:0 0 auto;margin-left:6px}
 .vdis{color:var(--muted);font-size:11px;margin-left:6px}
 .tbl-note b{color:var(--secondary);font-weight:500}
 /* блок «зови ИИ» — тот же .why, но лайм слева гасим: акцент здесь у кнопки */
@@ -275,6 +277,34 @@ td.act{text-align:center;padding:3px}
   color:var(--warning);border-radius:10px;padding:6px 10px;font-size:11px;line-height:16px}
 .guard.on{display:flex}
 
+/* ── строки-состояния ──────────────────────────────────────────────
+   Предупреждение живёт строкой, а не подложкой на всю секцию: v4 не терпит
+   вложенных панелей. Жёлтая — «человеку нужно вмешаться», нейтральная (.info)
+   — пояснение, оранжевая (.err) — сорванный запрос, зелёная (.okline) — «всё». */
+.wrow{display:flex;align-items:flex-start;gap:6px;background:var(--warning-15);
+  color:var(--warning);border-radius:10px;padding:6px 10px;font-size:11px;line-height:16px;
+  margin-top:8px}
+.wrow b{font-weight:600}
+.wrow.info{background:var(--frame);color:var(--secondary)}
+.wrow.info b{color:var(--text)}
+.err{color:var(--orange);font-size:11px;line-height:16px;margin-top:6px}
+.okline{display:flex;align-items:center;gap:6px;color:var(--success);font-size:11px;
+  line-height:16px;margin-top:6px}
+.badge.warn{background:var(--warning-15);color:var(--warning)}
+/* демо-режим: правка заблокирована, но элемент остаётся на месте и подписан */
+.demo-off{pointer-events:none;opacity:.45}
+/* подсветка метрик, на которых держится вердикт (TelemetryPanel: обводка +
+   белое значение). Прозрачная рамка у остальных — плитки не «прыгают». */
+.tile{border:1px solid transparent}
+.tile.key{border-color:var(--accent)}
+.tile.key b{color:var(--text);font-weight:600}
+/* «Статус не изменён» — тот же приём, что .hint, но предупреждающим цветом */
+.hint.warn{background:var(--warning-15);color:var(--warning)}
+.hint.warn.on{display:flex;align-items:center;gap:8px}
+.hint .x{margin-left:auto;background:none;border:0;color:inherit;cursor:pointer;
+  font:500 12px/16px inherit;padding:0;opacity:.7}
+.hint .x:hover{opacity:1}
+
 /* кнопки-варианты: тип заявки, ответственный, тип ошибки, вердикт */
 .opt{background:var(--frame);border:1px solid var(--border);color:var(--secondary);
   border-radius:999px;padding:4px 11px;font:500 11px/16px inherit;cursor:pointer;
@@ -341,6 +371,7 @@ td.act{text-align:center;padding:3px}
 .inl:hover{border-color:var(--line)}
 .inl:focus{background:var(--frame);border-color:var(--accent)}
 .inl::placeholder{color:var(--warning)}
+.inl:disabled{opacity:.55;cursor:not-allowed}
 
 /* связанные заявки */
 .rel{display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--line)}
@@ -381,7 +412,15 @@ td.act{text-align:center;padding:3px}
      Разбор разделён по стоимости: факты и предварительный вердикт считаются правилами
      бесплатно при открытии заявки, DeepSeek зовётся отдельно кнопкой «Ответ ИИ» в телеметрии.
      Источник вердикта виден по пилюле: пунктир — правила, сплошная в цвет вердикта с ✦ — ИИ,
-     нейтральная с ✎ — ручная правка оператора. Переключатель «вердикт» показывает оба состояния.</p>
+     нейтральная с ✎ — ручная правка оператора. Переключатель «вердикт» показывает оба состояния.
+     Переключатель «роль» показывает демо-витрину: правки остаются на месте, но погашены и
+     подписаны «Недоступно в демо-режиме», анализ разрешён один раз на заявку.
+     Переключатель «состояния» включает редкие беды по одной: трудные строки разбора (номер не
+     в формате, объект не найден, номер не распознан OCR, спецтехника), агрегатную заявку ОДКР
+     и сорванные запросы. Всё разом не показываем — карточка должна оставаться читаемой.
+     ⤢ в шапке разворачивает карточку на всю ширину, ▤ там же — тот же тумблер трек-панели,
+     что и в строке таблицы. «Подтвердить» в модалке статуса показывает случай, когда Okdesk
+     комментарий принял, а статус оставил прежним.</p>
   <div class="demo-ctl">
     <b>демо-состояние:</b>
     <button class="dbtn" onclick="setMode('one')" id="m-one">1 объект</button>
@@ -394,6 +433,22 @@ td.act{text-align:center;padding:3px}
             title="Как заявка выглядит сразу после открытия: факты и вердикт посчитаны правилами, ИИ не вызывался">до ИИ · по правилам</button>
     <button class="dbtn" onclick="setAI(true)" id="a-ai"
             title="Как заявка выглядит после нажатия «Ответ ИИ»: обоснование, доверие, черновик">после ИИ</button>
+  </div>
+  <div class="demo-ctl">
+    <b>роль:</b>
+    <button class="dbtn on" onclick="setDemo(false)" id="r-op"
+            title="Обычный оператор: правки, разбор и смена статуса доступны">оператор</button>
+    <button class="dbtn" onclick="setDemo(true)" id="r-demo"
+            title="Демо-витрина: все правки заблокированы подписью «Недоступно в демо-режиме», анализ разрешён один раз на заявку">демо-режим</button>
+  </div>
+  <div class="demo-ctl">
+    <b>состояния:</b>
+    <button class="dbtn" onclick="setHard()" id="s-hard"
+            title="Добавить в разбор трудные строки: номер не в формате, объект не найден в мониторинге, номер не распознан OCR, спецтехника">трудные строки</button>
+    <button class="dbtn" onclick="setAgg()" id="s-agg"
+            title="Агрегатная заявка (ОДКР): один ответ по всем объектам, дочерние не создаём">агрегатная (ОДКР)</button>
+    <button class="dbtn" onclick="setErr()" id="s-err"
+            title="Сорванные запросы: ошибка разбора, номер не обновился, вердикт не сохранился">ошибки API</button>
   </div>
 </div>
 
@@ -426,11 +481,18 @@ td.act{text-align:center;padding:3px}
           <b>#64281</b>
           <div class="ico mini" id="copy-btn" title="Скопировать номер заявки"
                onclick="copyNum()">⧉</div>
-          <span class="pill pill-wait" title="Статус в Okdesk">В работе</span>
+          <span class="pill pill-wait" id="hd-status" data-demo
+                title="Статус в Okdesk — щёлкните, чтобы сменить">В работе</span>
           <span class="pill pill-warn" title="Дедлайн 26.07 18:00 — просрочено">⚠ 2 д</span>
+          <span class="badge" id="hd-demo" style="display:none"
+                title="Роль demo: карточка только для чтения">демо</span>
         </div>
         <div class="icons">
-          <div class="ico" title="Переразобрать заявку заново — повторный платный вызов ИИ">↻</div>
+          <div class="ico" id="wide-btn" onclick="toggleWide()"
+               title="Развернуть карточку на всю ширину — список заявок слева скрывается">⤢</div>
+          <div class="ico" id="hd-track" onclick="toggleTrack(sel)"
+               title="Карта трека и графики телеметрии">▤</div>
+          <div class="ico" data-demo title="Переразобрать заявку заново — повторный платный вызов ИИ">↻</div>
           <div class="ico" title="Открыть заявку в Okdesk">→</div>
           <div class="ico" title="Закрыть карточку">✕</div>
         </div>
@@ -447,11 +509,19 @@ td.act{text-align:center;padding:3px}
 
     <div class="hint" id="track-hint">Трек-панель открыта для <b id="hint-plate">А123БВ96</b> —
       нажмите ту же иконку в строке, чтобы закрыть</div>
+    <div class="hint" id="wide-hint">Карточка развёрнута на всю ширину — список заявок слева скрыт
+      (в макете списка нет, поэтому рельса остаётся 680px)</div>
+    <!-- Okdesk принял комментарий, но статус оставил прежним (частый случай:
+         переход запрещён правилами процесса). Молчать нельзя — оператор решит,
+         что заявка ушла из работы. -->
+    <div class="hint warn" id="st-notice">⚠ Статус не изменён — смените вручную в Okdesk.
+      <button class="x" onclick="document.getElementById('st-notice').classList.remove('on')"
+              title="Скрыть уведомление">✕</button></div>
 
     <div class="rail-body">
 
       <!-- ── вопрос клиента ── -->
-      <details class="sec" open>
+      <details class="sec" open id="sec-q">
         <summary><span class="sum-l"><span class="t">Вопрос клиента</span>
           <span class="count">письмо · 23.07 09:40</span></span><span class="chev">▾</span></summary>
         <div class="sbody ctxt">
@@ -472,7 +542,7 @@ td.act{text-align:center;padding:3px}
           <div class="kv">
             <span class="cap">Тип заявки</span>
             <span class="vv"><b id="det-type">Расхождение пробега</b></span>
-            <button class="btn btn-2 btn-sm" onclick="toggleBox('type-opts')"
+            <button class="btn btn-2 btn-sm" data-demo onclick="toggleBox('type-opts')"
                     title="Сменить тип заявки — от типа зависят доступные статусы и шаблоны">Изменить</button>
           </div>
           <div class="flags" id="type-opts" style="display:none">
@@ -495,9 +565,9 @@ td.act{text-align:center;padding:3px}
           <div class="kv">
             <span class="cap">Ответственный</span>
             <span class="vv" id="det-ass"><b>Свириденко А.</b> · Первая линия</span>
-            <button class="btn btn-2 btn-sm" onclick="takeSelf()"
+            <button class="btn btn-2 btn-sm" data-demo onclick="takeSelf()"
                     title="Назначить заявку на себя (Иванов С.) и перейти к ответу">Взять себе</button>
-            <button class="btn btn-2 btn-sm" onclick="toggleBox('ass-opts')"
+            <button class="btn btn-2 btn-sm" data-demo onclick="toggleBox('ass-opts')"
                     title="Выбрать другого ответственного из первой или второй линии">Изменить</button>
           </div>
           <div id="ass-opts" style="display:none">
@@ -513,28 +583,66 @@ td.act{text-align:center;padding:3px}
             </div>
           </div>
 
+          <!-- Участники: то, что Okdesk отдаёт только на чтение -->
+          <div class="kv">
+            <span class="cap" title="author_name — кто создал заявку в Okdesk">Автор</span>
+            <span class="vv"><b>Трофимов Н. В.</b> · контакт клиента</span>
+          </div>
+          <div class="kv">
+            <span class="cap" title="service_object_name — объект обслуживания в Okdesk">Объект обслуживания</span>
+            <span class="vv">Жигулевское ПО — автопарк №3</span>
+          </div>
+          <div class="kv">
+            <span class="cap" title="source — откуда пришла заявка в Okdesk">Источник</span>
+            <span class="vv">Письмо (e-mail)</span>
+          </div>
+
+          <!-- Сроки: отдельная группа, как секция «Сроки» в OkdeskInfo -->
+          <div class="cap" style="margin:10px 0 2px">Сроки</div>
+          <div class="kv">
+            <span class="cap" title="deadline_at — срок выполнения по SLA">Срок выполнения</span>
+            <span class="vv" style="color:var(--warning)">26.07.2026 18:00 ⚠ просрочено на 2 д</span>
+          </div>
+          <div class="kv">
+            <span class="cap" title="planned_reaction_at — когда по SLA надо было ответить">Плановая реакция</span>
+            <span class="vv">23.07.2026 11:40</span>
+          </div>
+          <div class="kv">
+            <span class="cap" title="reacted_at — когда ответили фактически">Фактическая реакция</span>
+            <span class="vv">23.07.2026 10:12 · в срок</span>
+          </div>
+          <div class="kv">
+            <span class="cap" title="spent_time_total — суммарные трудозатраты по заявке">Потрачено</span>
+            <span class="vv">1,5 ч</span>
+          </div>
+          <div class="kv">
+            <span class="cap" title="delayed_to / completed_at — заполняются, когда заявка отложена или завершена">Отложена до · завершена</span>
+            <span class="vv">— · —</span>
+          </div>
+
+          <div class="cap" style="margin:10px 0 2px">Параметры заявки</div>
           <div class="kv">
             <span class="cap" title="Кастомный параметр Okdesk: address">Местоположение техники</span>
-            <input class="inl" id="p-address" oninput="prmDirty()"
+            <input class="inl" id="p-address" data-demo oninput="prmDirty()"
                    value="г. Жигулёвск, ул. Промышленная, 4 — база Жигулевского ПО"
                    title="Параметр Okdesk «Местоположение техники» (address). Поле выглядит текстом — обводка появляется по клику">
           </div>
           <div class="kv">
             <span class="cap" title="Кастомный параметр Okdesk: contact_person">Контактное лицо</span>
-            <input class="inl" id="p-contact" oninput="prmDirty()"
+            <input class="inl" id="p-contact" data-demo oninput="prmDirty()"
                    value="Трофимов Николай Владимирович"
                    title="Параметр Okdesk «Контактное лицо» (contact_person)">
           </div>
           <div class="kv">
             <span class="cap" title="Кастомный параметр Okdesk: tel_person">Номер телефона</span>
-            <input class="inl" id="p-tel" oninput="prmDirty()" value=""
+            <input class="inl" id="p-tel" data-demo oninput="prmDirty()" value=""
                    placeholder="не заполнено — Okdesk не пустит в «В работе»"
                    title="Параметр Okdesk «Номер телефона» (tel_person). Пустое поле блокирует перевод заявки в статус «В работе»">
           </div>
 
           <div class="drow">
             <div class="drow-l"><span class="meta" id="prm-msg">параметры не изменялись</span></div>
-            <button class="btn btn-1 btn-sm" id="prm-save" disabled onclick="prmSave()"
+            <button class="btn btn-1 btn-sm" id="prm-save" data-demo disabled onclick="prmSave()"
                     title="Сохранить параметры в Okdesk">Сохранить параметры</button>
           </div>
           <div class="tbl-note">Пустые «Местоположение техники», «Контактное лицо» или
@@ -545,7 +653,7 @@ td.act{text-align:center;padding:3px}
       <div class="hr"></div>
 
       <!-- ── вложения ── -->
-      <details class="sec">
+      <details class="sec" id="sec-att">
         <summary><span class="sum-l"><span class="t">Вложения</span>
           <span class="count">19</span></span><span class="chev">▾</span></summary>
         <div class="sbody">
@@ -569,16 +677,23 @@ td.act{text-align:center;padding:3px}
             <div class="att" title="Ещё не читался — распознавание остановилось на лимите прохода"><div class="fi fi-w">W</div><div class="fn">23.07.26_ПЛ_10.docx</div><div class="fs">148 КБ</div><div class="fo">в очереди</div></div>
             <div class="att" title="Ещё не читался — распознавание остановилось на лимите прохода"><div class="fi fi-w">W</div><div class="fn">23.07.26_ПЛ_11.docx</div><div class="fs">153 КБ</div><div class="fo">в очереди</div></div>
           </div>
+          <!-- Авто-дораспознавание: пока сервер продвигается по страницам, макет сам
+               заказывает следующий проход. Остановка — по лимиту проходов ИЛИ когда
+               прогресс встал: крутить бесконечно нельзя, а кнопка не должна залипнуть. -->
+          <div class="wrow info" id="ocr-prog" style="display:none">
+            <span id="ocr-prog-t"></span></div>
           <div class="drow">
             <div class="drow-l">
-              <button class="btn btn-2 btn-sm" id="ocr-btn" onclick="ocrStep()"
-                      title="Дочитать остаток больших PDF — распознавание продолжится с той страницы, на которой остановилось">↻ Продолжить распознавание</button>
+              <button class="btn btn-2 btn-sm" id="ocr-btn" data-demo onclick="ocrRun()"
+                      title="Дочитать остаток больших PDF — распознавание продолжится с той страницы, на которой остановилось, и само повторится, пока растёт число прочитанных страниц">↻ Продолжить распознавание</button>
               <button class="att-more" title="Показать все 19 вложений">Развернуть ⌄</button>
             </div>
           </div>
           <div class="tbl-note">Большие PDF читаются порциями, чтобы не блокировать сервис:
-            за один проход — ограниченное число страниц. Скан без текстового слоя ИИ пропускает
-            и говорит об этом в разборе.</div>
+            за один проход — ограниченное число страниц. Дальше проходы идут сами, пока число
+            прочитанных страниц растёт; встал прогресс или исчерпан лимит (15 проходов) —
+            цикл останавливается и предлагает дочитать вручную. Скан без текстового слоя
+            ИИ пропускает и говорит об этом в разборе.</div>
         </div>
       </details>
       <div class="hr"></div>
@@ -592,11 +707,23 @@ td.act{text-align:center;padding:3px}
           <div id="raw-state" style="display:none">
             <div class="ctxt" style="margin-bottom:10px">В заявке 19 вложений и несколько
               единиц техники — нужно распознать файлы и сопоставить с объектами в гео.</div>
-            <button class="btn btn-1 btn-sm" title="Распознать 19 вложений (OCR) и сопоставить с объектами в гео"
+            <button class="btn btn-1 btn-sm" id="raw-btn" data-demo
+                    title="Распознать 19 вложений (OCR) и сопоставить с объектами в гео"
                     onclick="setMode('many')">Разобрать 19 вложений</button>
           </div>
 
           <div id="tbl-state">
+            <!-- Разбор при открытии заявки берётся из кэша: повторно ни OCR, ни модель
+                 не гоняем. Дату сохранения показываем — по ней видно, не устарел ли он.
+                 Одиночный анализ в том же месте печатает «показан сохранённый анализ». -->
+            <div class="drow" style="margin:0 0 8px" id="cached-row">
+              <div class="drow-l"><span class="meta" id="cached-when"
+                title="Данные взяты из SQLite-кэша разбора, а не пересчитаны заново">▤ показан сохранённый разбор от 26.07 11:40</span></div>
+              <button class="btn btn-2 btn-sm" id="reparse-btn" data-demo onclick="reparse()"
+                title="Пересчитать разбор заново: OCR вложений и сопоставление с гео">↻ Обновить разбор</button>
+            </div>
+            <div class="wrow info" id="agg-note" style="display:none">ⓘ Агрегатная заявка (ОДКР)
+              — отвечаем одним ответом по всем объектам, без разбивки на дочерние.</div>
             <div class="tbl-sum" id="tbl-sum"><span class="meta">Всего 3:</span><span class="count">Глушение 1</span><span class="count">Данные верны 1</span><span class="count">Не было питания 1</span></div>
             <table>
               <colgroup>
@@ -638,6 +765,20 @@ td.act{text-align:center;padding:3px}
               </tbody>
             </table>
             <div class="tbl-note" id="dis-note" style="display:none"></div>
+
+            <!-- Подозрение на ошибку клиента в номере: формат не тот ИЛИ объект не
+                 найден в мониторинге. Чинится карандашом в той же строке таблицы. -->
+            <div id="plate-warn"></div>
+
+            <!-- Дочерние заявки: по одной на «Данные верны» / «Нет данных». Когда
+                 созданы все — вместо подсказки зелёная строчка, чтобы оператор не
+                 перепроверял таблицу глазами. У агрегатной (ОДКР) блока нет вовсе. -->
+            <div id="child-hint"></div>
+
+            <!-- Сорванные запросы печатаются строкой под таблицей, каждый своим текстом:
+                 «что именно не вышло» полезнее общего «ошибка». -->
+            <div id="parse-err"></div>
+
             <div class="tbl-note">Строка — объект. Клик выбирает объект и подставляет его
               телеметрию ниже. Карандаши у номера, даты и вердикта — правка с перепроверкой в гео.
               Пилюля вердикта показывает, кто его поставил: пунктир — правила, ✦ и обводка
@@ -667,6 +808,13 @@ td.act{text-align:center;padding:3px}
             <div class="tile"><em>В движении</em><b>6 ч 40 мин</b></div>
             <div class="tile warn"><em>Выбросы скорости</em><b>2</b></div>
             <div class="tile"><em>Расчётная скорость</em><b>58 км/ч</b></div></div>
+          <!-- Разборы, сделанные до появления телеметрии в ответе бэкенда, метрик не
+               содержат: объясняем, почему плиток нет, вместо пустого места. -->
+          <div class="wrow info" id="tel-nometrics" style="display:none">ⓘ В сохранённом разборе
+            метрик нет — нажмите «Обновить разбор» в блоке выше, чтобы пересчитать телеметрию
+            по объектам.</div>
+          <div class="tbl-note" id="tel-hl" style="display:none">Обводка и белое значение —
+            метрики, на которых держится вердикт. Остальные плитки справочные.</div>
           <div class="flags" id="tel-flags">
             <span class="pill pill-warn-o">подозрение на глушение</span>
             <span class="pill pill-warn-o">мало спутников</span>
@@ -680,9 +828,13 @@ td.act{text-align:center;padding:3px}
               поэтому он только по кнопке.</p>
             <div class="drow">
               <div class="drow-l"><span class="meta" id="ai-cost">3 объекта · ~6 тыс. токенов · ≈ 8 с</span></div>
-              <button class="btn btn-1 btn-sm" id="ai-btn" onclick="runAI()"
+              <button class="btn btn-1 btn-sm" id="ai-btn" data-demo onclick="runAI()"
                 title="Отправить разбор в DeepSeek — вернёт обоснование, доверие и черновик ответа. Платный вызов модели, считается по токенам">✦ Ответ ИИ</button>
             </div>
+            <!-- Демо-витрина: один вызов модели на заявку, отметка живёт в localStorage
+                 (demo_analyzed_<id>) — иначе показ превращается в бесплатный DeepSeek. -->
+            <div class="wrow" id="demo-once" style="display:none">⚠ Демо: анализ доступен
+              один раз на заявку — по этой заявке он уже выполнен.</div>
             <div class="conf wait" id="ai-wait" style="display:none;margin:10px 0 0"
                  title="DeepSeek разбирает заявку"><i></i></div>
           </div>
@@ -701,6 +853,8 @@ td.act{text-align:center;padding:3px}
           </div>
           <div id="tel-draft" style="display:none;margin-top:10px">
             <span class="cap" style="display:block;margin-bottom:4px">Черновик ответа клиенту</span>
+            <!-- Флаги, из-за которых черновик нельзя отправлять «как есть». -->
+            <div id="draft-warn"></div>
             <div class="draft" id="draft-text" title="Черновик составлен ИИ для выбранного объекта"></div>
             <div class="drow">
               <div class="drow-l"><span class="meta">Составлен ИИ — прочитайте перед отправкой</span></div>
@@ -780,9 +934,9 @@ td.act{text-align:center;padding:3px}
       <div class="hr"></div>
 
       <!-- ── комментарии ── -->
-      <details class="sec" open>
+      <details class="sec" open id="sec-cmt">
         <summary><span class="sum-l"><span class="t">Комментарии</span>
-          <span class="count">3 из 12</span></span><span class="chev">▾</span></summary>
+          <span class="count">4 из 12</span></span><span class="chev">▾</span></summary>
         <div class="sbody">
           <div class="cmt priv">
             <div class="cmt-hd"><div class="cmt-l">
@@ -791,6 +945,17 @@ td.act{text-align:center;padding:3px}
               <span class="meta" title="Дата и время комментария">26.07 11:02</span></div>
             <div class="ctxt">По Е789ЖЗ96 питание отключалось на сервисе — подтверждено
               заявкой #64119, в ответе клиенту не упоминаем номер заявки.</div>
+          </div>
+          <!-- Авто-уведомление Okdesk: приходит от имени сотрудника, но живым
+               комментарием не является. Ловится по тексту («перешла в статус», «изменил
+               статус»), красится нейтрально и притушевывается, чтобы не спорить за
+               внимание с ответами людей. -->
+          <div class="cmt notice">
+            <div class="cmt-hd"><div class="cmt-l">
+              <span class="badge" title="Автоматическое уведомление Okdesk, а не ответ человека">уведомление</span>
+              <span class="cmt-au">Okdesk</span></div>
+              <span class="meta">25.07 14:22</span></div>
+            <div class="ctxt">Заявка №64281 перешла в статус «В работе».</div>
           </div>
           <div class="cmt client">
             <div class="cmt-hd"><div class="cmt-l">
@@ -868,6 +1033,11 @@ td.act{text-align:center;padding:3px}
             <span class="cap" style="display:block;margin-bottom:4px" id="inst-cap">Формат для календаря</span>
             <div class="draft" id="inst-text" style="white-space:pre-line"
                  title="Текст для передачи монтажнику — проверьте перед отправкой"></div>
+            <!-- Не найденное в заявке поле не выдумываем: ставим прочерк и говорим,
+                 что его дозаполняет человек. -->
+            <div class="tbl-note" id="inst-blanks" style="display:none">Прочерки «____» — поля
+              не найдены в заявке, дозаполните вручную перед отправкой (телефон и адрес
+              правятся в «Деталях заявки»).</div>
             <div class="drow">
               <div class="drow-l"><span class="meta" id="inst-note">Собрано из данных заявки — проверьте адрес и время</span></div>
               <button class="btn btn-2 btn-sm" id="inst-copy" onclick="instCopy()"
@@ -882,7 +1052,10 @@ td.act{text-align:center;padding:3px}
       <div class="hr"></div>
 
       <div class="foot">создана 23.07.2026 09:40 · Трофимов Н. В. · дедлайн 26.07 18:00 ·
-        тип «Расхождение пробега» · регион 63 (Самара)</div>
+        тип «Расхождение пробега» · регион 63 (Самара)
+        <div style="margin-top:4px" title="localStorage: issueCardSections — одна запись на все секции">
+          Раскрытость секций помнится между заявками: высота меняется только кликом по
+          заголовку, при переходе к следующей заявке набор раскрытых остаётся тем же.</div></div>
     </div>
 
     <div class="bar">
@@ -993,7 +1166,7 @@ td.act{text-align:center;padding:3px}
         <div class="mbox-ft">
           <span class="meta" style="margin-right:auto" id="mb-note">Заявка уйдёт из работы до указанной даты</span>
           <button class="btn btn-2 btn-sm" onclick="closeStatus()" title="Закрыть без изменений">Отмена</button>
-          <button class="btn btn-1 btn-sm" id="mb-ok" onclick="closeStatus()"
+          <button class="btn btn-1 btn-sm" id="mb-ok" onclick="applyStatus()"
                   title="Применить смену статуса в Okdesk">Подтвердить</button>
         </div>
       </div>
@@ -1026,6 +1199,21 @@ td.act{text-align:center;padding:3px}
   9) <code>reasoning</code>, <code>confidence</code> и <code>draft_answer</code> приходят только
   от DeepSeek, поэтому до нажатия «Ответ ИИ» этих блоков нет физически — на их месте кнопка
   с честной ценой вызова. Кнопка одна на заявку: модель разбирает все объекты за один вызов.
+  10) Роль <code>demo</code> — только чтение: правки не прячем, а гасим и подписываем
+  «Недоступно в демо-режиме»; один разбор на заявку помечается в
+  <code>localStorage.demo_analyzed_&lt;id&gt;</code>. 11) Авто-дораспознавание больших PDF —
+  цикл проходов с лимитом 15 и остановом, когда <code>ocr_progress.pages_done</code> перестал
+  расти; при остановке кнопка обязана разблокироваться, иначе залипнет навсегда.
+  12) Раскрытость секций — одна запись <code>localStorage.issueCardSections</code> на все
+  секции; активная секция (лаймовая полоса) считается отдельно и в неё не пишется.
+  13) Подсветка метрик — <code>HIGHLIGHTED_METRICS</code> в <code>TelemetryPanel.tsx</code>:
+  обводка акцентом и белое значение у метрик, обосновывающих вердикт; у остальных рамка
+  прозрачная, чтобы плитки не «прыгали». 14) Авто-уведомления Okdesk («перешла в статус»)
+  ловятся по тексту и красятся нейтрально: это не ответ человека. Регэксп обязан быть по
+  <code>[а-яё]</code> — <code>\w</code> в JS кириллицу не матчит. 15) Прочерк «____» в тексте
+  монтажнику — единственный честный способ показать, что поля в заявке нет: не выдумываем
+  и не молчим. 16) «Статус не изменён — смените вручную в Okdesk» показываем всегда, когда
+  <code>status_changed = false</code>: иначе оператор считает, что заявка ушла из работы.
 </div>
 
 <script>
@@ -1083,14 +1271,79 @@ const OBJ = {
     alts:[['версия правил: не было питания','18%'],['обрыв цепи питания','8%']],
     draft:'Добрый день! По Е789ЖЗ96 24.07 терминал не выходил на связь с 09:00 до 12:30 — '+
       'оборудование снимали на сервисе. С 12:30 терминал подключился, данные поступают '+
-      'штатно, пробег по треку совпадает с путевым листом. Считаем вопрос закрытым.'}
+      'штатно, пробег по треку совпадает с путевым листом. Считаем вопрос закрытым.',
+    /* клиент письменно подтвердил, что питание не снимали — значит без удалённой
+       диагностики ответ отправлять нельзя, черновик об этом предупреждает */
+    remote:true},
+
+  /* ── трудные строки (переключатель «трудные строки» вверху) ──────────────
+     Ровно те случаи, на которых разбор спотыкается в бою: клиент ошибся в
+     номере, объекта нет в мониторинге, OCR номер не прочитал, спецтехника без
+     км-пробега, старый кэш без телеметрии. В обычном состоянии их не показываем —
+     иначе таблица превращается в парад предупреждений. */
+  'Х12АВ96':{model:'—',date:'23.07.26',pl:'318',gl:'—',fact:'—',
+    heur:{v:'Проверить',cls:'v-chk'},
+    ai:{v:'Проверить',cls:'v-chk',conf:38,auto:false},
+    op:null,child:'…',hard:true,suspect:'format',telnote:'nodata',
+    metrics:[],flags:[['объект не найден','pill-warn-o']],
+    why:'Гос.номер «Х12АВ96» не проходит проверку формата — две цифры вместо трёх. '+
+      'Скорее всего опечатка клиента в путевом листе: искать в гео нечего.',
+    alts:[['опечатка клиента в путевом листе','—']],
+    draft:'Добрый день! Уточните, пожалуйста, гос.номер: «Х12АВ96» не похож на действующий '+
+      'и в системе мониторинга не найден.'},
+  'Х777ХХ96':{model:'ЭО-2621 (экскаватор)',date:'22.07.26',pl:'—',gl:'—',fact:'—',
+    heur:{v:'Нет данных',cls:'v-chk'},
+    ai:{v:'Нет данных',cls:'v-chk',conf:52,auto:false},
+    op:null,child:'…',hard:true,suspect:'notfound',spec:true,telnote:'nodata',
+    metrics:[],flags:[['объект не найден','pill-warn-o'],['нет данных','pill-warn-o']],
+    why:'Объект по номеру «Х777ХХ96» в мониторинге не найден, а спецтехнику и так нельзя '+
+      'оценивать по км-пробегу — только по факту работы и моточасам.',
+    alts:[['техника не подключена к системе','—']],
+    draft:'Добрый день! По Х777ХХ96 (экскаватор) пробег в километрах не показателен — '+
+      'оцениваем по моточасам. Объект в системе мониторинга не найден, уточните подключение.'},
+  '(без номера)':{model:'—',date:'21.07.26',pl:'274',gl:'—',fact:'—',
+    heur:{v:'Номер не распознан',cls:'v-chk'},
+    ai:{v:'Номер не распознан',cls:'v-chk',conf:20,auto:false},
+    op:null,child:'…',hard:true,noPlate:true,telnote:'stale',
+    metrics:[],flags:[],
+    why:'Акт из скана прочитан (дата и пробег по путевому листу есть), а гос.номер OCR '+
+      'не разобрал. Впишите номер карандашом в строке — бэкенд заново найдёт ТС в гео '+
+      'и пересчитает вердикт по этой строке.',
+    alts:[],
+    draft:'—'}
 };
-const ALL = Object.keys(OBJ);
+/* Обычный состав заявки — трудные строки живут отдельным переключателем. */
+const ALL = ['А123БВ96','В456ГД96','Е789ЖЗ96'];
+const HARD = ['Х12АВ96','Х777ХХ96','(без номера)'];
 let mode = 'many', sel = 'А123БВ96', trackFor = null, curDraft = '';
 /* aiRun — DeepSeek уже звали по этой заявке; aiBusy — вызов в процессе */
 let aiRun = false, aiBusy = false;
+/* Демо-состояния, каждое само по себе: роль demo, трудные строки, агрегатная
+   заявка (ОДКР), сорванные запросы, показ сохранённого разбора. */
+let demo = false, hard = false, agg = false, errs = false, cachedShown = true, wide = false;
+/* Созданные дочерние по строкам: ключ — гос.номер, значение — номер заявки. */
+const madeChild = {'А123БВ96':'#64512'};
 
-function plates(){ return mode === 'one' ? ['А123БВ96'] : ALL; }
+function plates(){
+  const base = mode === 'one' ? ['А123БВ96'] : ALL;
+  return hard && mode !== 'one' ? base.concat(HARD) : base;
+}
+/* «1 объект / 3 объекта / 6 объектов» — падеж считаем, а не подставляем «объекта». */
+function plural(n){
+  const t = n % 100, o = n % 10;
+  if (t > 10 && t < 20) return 'объектов';
+  if (o === 1) return 'объект';
+  if (o >= 2 && o <= 4) return 'объекта';
+  return 'объектов';
+}
+/* Какие метрики обосновывают вердикт — им обводка и белое значение.
+   Вердикты вне словаря не подсвечивают ничего (HIGHLIGHTED_METRICS). */
+const HL = {
+  'Глушение':['Обрыв трека','Телепорты','Спутников < 4'],
+  'Не было питания':['Питание'],
+  'Терминал подключился':['Питание'],
+  'Данные верны':[]
+};
 
 /* Действующий вердикт и его источник: оператор > ИИ (если звали) > правила. */
 function eff(p){
@@ -1123,7 +1376,7 @@ function vpill(p){
 function renderTable(){
   const list = plates();
   document.getElementById('raz-count').textContent =
-    mode === 'raw' ? '19 вложений' : (list.length === 1 ? '1 объект' : list.length + ' объекта');
+    mode === 'raw' ? '19 вложений' : list.length + ' ' + plural(list.length);
   document.getElementById('raw-state').style.display = mode === 'raw' ? 'block' : 'none';
   document.getElementById('tbl-state').style.display = mode === 'raw' ? 'none' : 'block';
   if (mode === 'raw') return;
@@ -1139,10 +1392,23 @@ function renderTable(){
 
   document.getElementById('tbody').innerHTML = list.map(p => {
     const o = OBJ[p], e = eff(p), d = disagree(p);
+    /* Номер: нераспознанный OCR показываем словами и предупреждающим цветом —
+       строка не пропадает, её дозаполняет оператор тем же карандашом. */
+    const pencil = demo ? ''
+      : ' <span class="tmark" style="color:var(--muted)" title="' +
+        (o.noPlate ? 'Вписать гос.номер вручную (OCR не распознал) и проверить в гео'
+                   : 'Изменить гос.номер и перепроверить ТС в гео') + '">✎</span>';
+    const plateCell = o.noPlate
+      ? '<span style="color:var(--warning)" title="OCR не прочитал гос.номер в акте">нет номера</span>' + pencil
+      : p + pencil + (o.hard ? '' :
+          ' <span class="tmark" title="Номер изменён оператором, перепроверено в гео">●</span>');
+    const made = madeChild[p];
+    const canChild = !o.noPlate && (e.v === 'Данные верны' || e.v === 'Нет данных');
     return '<tr class="' + (p === sel ? 'sel' : '') + '" onclick="pick(\'' + p + '\')"' +
       ' title="Показать телеметрию этого ТС">' +
-      '<td class="plate">' + p + ' <span class="tmark" title="Номер изменён оператором, перепроверено в гео">●</span></td>' +
-      '<td class="num" title="Изменить дату неисправности и перепроверить в гео">' + o.date + ' ✎</td>' +
+      '<td class="plate">' + plateCell + '</td>' +
+      '<td class="num" title="Изменить дату неисправности и перепроверить в гео">' +
+        o.date + (demo ? '' : ' ✎') + '</td>' +
       '<td class="num">' + o.pl + '</td><td class="num">' + o.gl + '</td>' +
       '<td class="num">' + o.fact + '</td>' +
       '<td class="' + e.cls + '"><span class="vwrap">' + vpill(p) +
@@ -1150,13 +1416,24 @@ function renderTable(){
           '<i style="width:' + e.conf + '%"></i></span>' : '') +
         (d ? '<span class="vdis" title="Правила: ' + d.from + ' → ' + d.by + ': ' + d.to +
           '">⇄</span>' : '') +
-        '<span class="vdis" title="Изменить вердикт вручную — источник станет «оператор»">▾</span>' +
+        (o.spec ? '<span class="badge warn" title="Спецтехника без км-пробега — оценивать по факту работы/моточасам">спецтехника</span>' : '') +
+        (demo ? '' : '<span class="vdis" title="Изменить вердикт вручную — источник станет «оператор»">▾</span>') +
         '</span></td>' +
-      '<td class="act"><span class="tico ' + (trackFor === p ? 'on' : '') + '"' +
-        ' title="Карта и графики этого ТС" onclick="event.stopPropagation();toggleTrack(\'' + p + '\')">▤</span></td>' +
-      '<td class="act"><span class="tico" title="' +
-        (o.child === '#64512' ? 'Открыть заявку ' + o.child : 'Создать дочернюю заявку') +
-        '" onclick="event.stopPropagation()">' + (o.child === '#64512' ? '↗' : '+') + '</span></td></tr>';
+      '<td class="act">' + (o.metrics.length
+        ? '<span class="tico ' + (trackFor === p ? 'on' : '') + '"' +
+          ' title="Карта и графики этого ТС" onclick="event.stopPropagation();toggleTrack(\'' + p + '\')">▤</span>'
+        : '<span class="tico demo-off" title="Телеметрии по этой строке нет — трек показать не по чему">▤</span>') +
+        '</td>' +
+      '<td class="act">' + (made
+        ? '<span class="tico" title="Открыть дочернюю заявку ' + made + '" onclick="event.stopPropagation()">↗</span>'
+        : o.noPlate
+        ? '<span class="tico demo-off" title="Без гос.номера дочернюю заявку создать нельзя">+</span>'
+        : '<span class="tico' + (demo ? ' demo-off' : '') + '" title="' +
+          (demo ? 'Недоступно в демо-режиме'
+                : canChild ? 'Создать дочернюю заявку по этому ТС'
+                : 'Создать дочернюю заявку') + '" onclick="event.stopPropagation();' +
+          (demo ? '' : 'makeChild(\'' + p + '\')') + '">+</span>') +
+        '</td></tr>';
   }).join('');
 
   /* спокойная строчка «кто с кем не согласен» — без восклицательных знаков */
@@ -1167,6 +1444,43 @@ function renderTable(){
     ? '⇄ Расхождение с правилами: ' + dis.map(([p,d]) =>
         '<b>' + p + '</b> — правила: ' + d.from + ' → ' + d.by + ': ' + d.to).join('; ') + '.'
     : '';
+
+  /* Подозрение на ошибку клиента в номере — отдельной строкой на каждый случай:
+     «не тот формат» и «не найден в мониторинге» чинятся одинаково (карандаш в
+     строке), но клиенту пишутся по-разному. */
+  document.getElementById('plate-warn').innerHTML = list.filter(p => OBJ[p].suspect)
+    .map(p => '<div class="wrow">⚠ ' + (OBJ[p].suspect === 'format'
+      ? 'Гос.номер «<b>' + p + '</b>» не соответствует формату — вероятно, ошибка клиента. ' +
+        'Исправьте номер прямо в таблице разбора.'
+      : 'Гос.номер «<b>' + p + '</b>» не найден в системе мониторинга — возможно, ошибка ' +
+        'клиента в номере. Исправьте номер прямо в таблице разбора.') + '</div>').join('');
+
+  /* Дочерние заявки: подсказка только пока есть что создавать. У агрегатной
+     заявки (ОДКР) блока нет вовсе — там один ответ на всё. */
+  const ch = document.getElementById('child-hint');
+  const eligible = list.filter(p => !OBJ[p].noPlate &&
+    (eff(p).v === 'Данные верны' || eff(p).v === 'Нет данных'));
+  const left = eligible.filter(p => !madeChild[p]);
+  const nOk = eligible.filter(p => eff(p).v === 'Данные верны').length;
+  const nNo = eligible.filter(p => eff(p).v === 'Нет данных').length;
+  ch.innerHTML = (agg || !eligible.length) ? ''
+    : left.length
+    ? '<div class="tbl-note">◇ Отдельные заявки: «данные верны» ' + nOk +
+      (nNo ? ', «нет данных» ' + nNo : '') + ' — создавайте по одной кнопкой <b>+</b> ' +
+      'в строке таблицы.</div>'
+    : '<div class="okline" title="Каждому подходящему ТС уже соответствует дочерняя заявка">' +
+      '✓ Все дочерние заявки созданы</div>';
+  document.getElementById('agg-note').style.display = agg ? 'flex' : 'none';
+
+  /* Сорванный запрос — своим текстом на каждый случай. */
+  document.getElementById('parse-err').innerHTML = errs
+    ? '<div class="err">Ошибка разбора. Попробуйте снова.</div>' +
+      '<div class="err">Не удалось обновить номер на Х12АВ96 — проверьте, найден ли он в гео.</div>' +
+      '<div class="err">Не удалось сохранить вердикт для В456ГД96.</div>'
+    : '';
+
+  /* Метка сохранённого разбора: пропадает, как только разбор пересчитали. */
+  document.getElementById('cached-row').style.display = cachedShown ? 'flex' : 'none';
 }
 
 function renderTel(){
@@ -1185,8 +1499,25 @@ function renderTel(){
   td.innerHTML = d ? '⇄ правила: <b>' + d.from + '</b> → ' + d.by + ': <b>' + d.to + '</b>' +
     (d.by === 'ИИ' ? ' — машина переспорила правила, обоснование ниже'
                    : ' — ручную правку ИИ не перезаписывает') : '';
+  /* Обводка + белое значение у метрик, на которых держится вердикт: глаз должен
+     находить обоснование, не перечитывая все девять плиток. Список — тот же, что
+     HIGHLIGHTED_METRICS в TelemetryPanel.tsx. */
+  const key = (HL[e.v] || []);
   document.getElementById('tel-tiles').innerHTML = o.metrics.map(m =>
-    '<div class="tile ' + m[2] + '"><em title="' + m[0] + '">' + m[0] + '</em><b>' + m[1] + '</b></div>').join('');
+    '<div class="tile ' + m[2] + (key.includes(m[0]) ? ' key' : '') + '" title="' +
+    (key.includes(m[0]) ? 'На этой метрике держится вердикт «' + e.v + '»' : m[0]) + '">' +
+    '<em>' + m[0] + '</em><b>' + m[1] + '</b></div>').join('');
+  document.getElementById('tel-hl').style.display =
+    o.metrics.length && key.some(k => o.metrics.some(m => m[0] === k)) ? 'block' : 'none';
+  /* Плиток нет — объясняем, почему именно: старый кэш или объекта нет в гео. */
+  const nm = document.getElementById('tel-nometrics');
+  nm.style.display = o.metrics.length ? 'none' : 'flex';
+  nm.className = o.telnote === 'nodata' ? 'wrow' : 'wrow info';
+  nm.innerHTML = o.telnote === 'nodata'
+    ? '⚠ Объект в системе мониторинга не найден — телеметрию считать не по чему. ' +
+      'Проверьте гос.номер в строке разбора.'
+    : 'ⓘ В сохранённом разборе метрик нет — нажмите «Обновить разбор» в блоке выше, ' +
+      'чтобы пересчитать телеметрию по объектам.';
   document.getElementById('tel-flags').innerHTML = o.flags.length
     ? o.flags.map(f => '<span class="pill ' + f[1] + '">' + f[0] + '</span>').join('')
     : '<span class="meta">флагов нет</span>';
@@ -1199,9 +1530,17 @@ function renderTel(){
     '<div class="alt"><span>ещё версия: <b>' + a[0] + '</b></span><span>' + a[1] + '</span></div>').join('');
   curDraft = aiRun ? o.draft : '';
   document.getElementById('draft-text').textContent = o.draft;
-  document.getElementById('ai-cost').textContent =
-    plates().length + (plates().length === 1 ? ' объект' : ' объекта') +
-    ' · ~' + (plates().length * 2) + ' тыс. токенов · ≈ ' + (plates().length * 3) + ' с';
+  /* Флаги, из-за которых черновик нельзя отправлять «как есть». */
+  document.getElementById('draft-warn').innerHTML =
+    (o.remote ? '<div class="wrow" style="margin-top:0;margin-bottom:6px">⚠ Требуется ' +
+      'удалённая диагностика (клиент подтвердил питание)</div>' : '') +
+    (o.spec ? '<div class="wrow" style="margin-top:0;margin-bottom:6px">⚠ Спецтехника — ' +
+      'оценивать по факту работы</div>' : '');
+  const n = plates().length;
+  document.getElementById('ai-cost').textContent = demo
+    ? 'демо-режим: анализ доступен один раз на заявку'
+    : n + ' ' + plural(n) + ' · ~' + (n * 2) + ' тыс. токенов · ≈ ' + (n * 3) + ' с';
+  document.getElementById('demo-once').style.display = demo ? 'flex' : 'none';
   const chip = document.getElementById('draft-chip');
   chip.style.display = aiRun ? 'inline-block' : 'none';
   chip.textContent = '✦ черновик ИИ для ' + sel;
@@ -1252,6 +1591,10 @@ function toggleTrack(p){
   const tp = document.getElementById('tp');
   tp.classList.toggle('open', !!trackFor);
   document.getElementById('track-hint').classList.toggle('on', !!trackFor);
+  /* Иконка в шапке — тот же тумблер, что и ▤ в строке: одно состояние на два места. */
+  document.getElementById('hd-track').classList.toggle('on', !!trackFor);
+  document.getElementById('hd-track').title = trackFor
+    ? 'Скрыть карту и графики' : 'Карта трека и графики телеметрии';
   if (trackFor){
     sel = trackFor;
     document.getElementById('tp-title').textContent = trackFor + ' · ' + OBJ[trackFor].model;
@@ -1268,6 +1611,85 @@ function setMode(m){
   if (!plates().includes(sel)) sel = plates()[0];
   if (trackFor && !plates().includes(trackFor)) toggleTrack(null);
   setAI(aiRun);   /* перерисовка + пересчёт подписей, зависящих от числа объектов */
+}
+
+/* ══════════ демо-состояния: роль, трудные строки, ОДКР, ошибки ══════════
+   Состояний много, а экран один: постоянные элементы живут в карточке всегда,
+   а «редкие беды» включаются переключателями вверху. Вываливать их разом нельзя —
+   карточка превратится в список предупреждений и перестанет читаться. */
+
+/* Роль demo: карточка целиком только для чтения. Правки не прячем — оставляем на
+   месте, гасим и подписываем «Недоступно в демо-режиме», чтобы витрина показывала
+   состав интерфейса. Анализ разрешён один раз на заявку. */
+function setDemo(on){
+  demo = !!on;
+  document.getElementById('r-op').classList.toggle('on', !demo);
+  document.getElementById('r-demo').classList.toggle('on', demo);
+  document.getElementById('hd-demo').style.display = demo ? 'inline-block' : 'none';
+  document.querySelectorAll('[data-demo]').forEach(el => {
+    if (el.dataset.t0 === undefined) el.dataset.t0 = el.getAttribute('title') || '';
+    el.setAttribute('title', demo ? 'Недоступно в демо-режиме' : el.dataset.t0);
+    if ('disabled' in el) el.disabled = demo;
+    el.classList.toggle('demo-off', demo && !('disabled' in el));
+  });
+  /* Кнопки со своей логикой доступности пересчитываем, а не оставляем включёнными. */
+  document.getElementById('prm-save').disabled = demo || !prmDirtyFlag;
+  if (!demo && ocrDone >= 19) ocrBtn('✓ всё распознано', true,
+    'Прочитаны все вложения, кроме растрового скана без текстового слоя');
+  updGuard(); renderTable(); renderTel();
+}
+
+/* Трудные строки — вторая половина реальной заявки: клиент ошибся в номере,
+   объекта нет в гео, OCR номер не прочитал, спецтехника. */
+function setHard(){
+  hard = !hard;
+  document.getElementById('s-hard').classList.toggle('on', hard);
+  if (!plates().includes(sel)) sel = plates()[0];
+  if (trackFor && !plates().includes(trackFor)) toggleTrack(null);
+  renderTable(); renderTel();
+}
+/* Агрегатная (ОДКР): один ответ на все объекты, дочерние не создаём. */
+function setAgg(){
+  agg = !agg;
+  document.getElementById('s-agg').classList.toggle('on', agg);
+  renderTable();
+}
+/* Сорванные запросы к бэкенду. */
+function setErr(){
+  errs = !errs;
+  document.getElementById('s-err').classList.toggle('on', errs);
+  renderTable();
+}
+/* Разбор пересчитали — метка «сохранённый» больше не врёт, её убираем. */
+function reparse(){
+  const b = document.getElementById('reparse-btn');
+  b.disabled = true; b.textContent = '↻ Обновляю…';
+  setTimeout(() => {
+    b.disabled = demo; b.textContent = '↻ Обновить разбор';
+    cachedShown = false; renderTable(); renderTel();
+  }, 800);
+}
+/* Дочерняя заявка по строке: номер выдаём сразу, как это делает бэкенд. */
+let nextChild = 64514;
+function makeChild(p){
+  if (demo || madeChild[p]) return;
+  madeChild[p] = '#' + (nextChild++);
+  renderTable();
+}
+/* Разворот карточки на всю ширину — в бою прячет список заявок слева.
+   Рельса остаётся 680px: ширину задаёт не карточка, а раскладка приложения. */
+function toggleWide(){
+  wide = !wide;
+  document.getElementById('wide-btn').classList.toggle('on', wide);
+  document.getElementById('wide-btn').textContent = wide ? '⤡' : '⤢';
+  document.getElementById('wide-btn').title = wide
+    ? 'Вернуть список заявок' : 'Развернуть карточку на всю ширину — список заявок слева скрывается';
+  document.getElementById('wide-hint').classList.toggle('on', wide);
+}
+/* Okdesk принял комментарий, но статус не сменил — говорим об этом прямо. */
+function applyStatus(){
+  closeStatus();
+  if (stCode !== 'comment') document.getElementById('st-notice').classList.add('on');
 }
 
 function copyNum(){
@@ -1538,13 +1960,15 @@ function takeSelf(){
   document.getElementById('ass-opts').querySelectorAll('.opt').forEach(o => o.classList.remove('on'));
   detCount();
 }
+let prmDirtyFlag = false;
 function prmDirty(){
   const b = document.getElementById('prm-save');
-  b.disabled = false;
+  prmDirtyFlag = true; b.disabled = false;
   document.getElementById('prm-msg').textContent = 'есть несохранённые правки';
 }
 function prmSave(){
   const b = document.getElementById('prm-save');
+  prmDirtyFlag = false;
   b.disabled = true; b.textContent = 'Сохраняю…';
   setTimeout(() => {
     b.textContent = 'Сохранить параметры';
@@ -1570,22 +1994,75 @@ function relToggle(){
     empty ? 'Вернуть заполненное состояние' : 'Показать пустое состояние';
 }
 
-/* ══════════ 6 · прогресс OCR ══════════ */
-let ocrDone = 14;
-function ocrStep(){
-  if (ocrDone >= 19) return;
-  ocrDone = 19;
-  document.getElementById('ocr-sum').innerHTML = 'ИИ прочитал <b>19 из 19</b> файлов';
+/* ══════════ 6 · прогресс OCR и авто-дораспознавание ══════════
+   Сервер за один проход не осиливает большой PDF: страниц читает ограниченное
+   число, чтобы не блокировать сервис. Пока число прочитанных страниц РАСТЁТ,
+   следующий проход заказывается сам — оператору не надо гадать, сколько раз
+   жать. Останов — по лимиту проходов (15) или когда прогресс встал; в обоих
+   случаях кнопка снова доступна, иначе она залипла бы навсегда. */
+const MAX_OCR_ROUNDS = 15;
+let ocrDone = 14, ocrPages = 122, ocrRound = 0, ocrBusy = false, ocrLastPages = -1;
+
+function ocrPaint(){
+  document.getElementById('ocr-sum').innerHTML =
+    'ИИ прочитал <b>' + ocrDone + ' из 19</b> файлов';
   const bar = document.getElementById('ocr-bar');
-  bar.querySelector('i').style.width = '100%';
-  bar.title = 'Прогресс распознавания вложений: 19 из 19';
-  document.querySelectorAll('#att-grid .fo').forEach(el => {
-    if (el.textContent.indexOf('OCR недоступен') >= 0) return;
-    el.className = 'fo'; el.textContent = '✓ распознан';
-  });
+  bar.querySelector('i').style.width = Math.round(ocrDone / 19 * 100) + '%';
+  bar.title = 'Прогресс распознавания вложений: ' + ocrDone + ' из 19';
+}
+function ocrSay(txt, warn){
+  const box = document.getElementById('ocr-prog');
+  box.style.display = txt ? 'flex' : 'none';
+  box.className = 'wrow' + (warn ? '' : ' info');
+  document.getElementById('ocr-prog-t').innerHTML = txt;
+}
+function ocrBtn(label, dis, tip){
   const b = document.getElementById('ocr-btn');
-  b.textContent = '✓ всё распознано'; b.disabled = true;
-  b.title = 'Прочитаны все вложения, кроме растрового скана без текстового слоя';
+  b.textContent = label; b.disabled = !!dis; b.title = tip;
+  if (!dis && !demo) b.dataset.t0 = tip;
+}
+function ocrRun(){
+  if (ocrBusy || ocrDone >= 19) return;
+  ocrBusy = true; ocrRound = 0; ocrLastPages = -1;
+  ocrBtn('↻ Распознаю…', true, 'Идёт проход распознавания');
+  ocrPass();
+}
+function ocrPass(){
+  ocrRound++;
+  /* третий проход намеренно не двигает страницы — так видно останов «прогресс встал» */
+  const grew = ocrRound !== 3;
+  if (grew){ ocrDone = Math.min(19, ocrDone + 2); ocrPages += 14; }
+  ocrPaint();
+  document.querySelectorAll('#att-grid .att').forEach((el, i) => {
+    const fo = el.querySelector('.fo');
+    if (!fo || fo.textContent.indexOf('OCR недоступен') >= 0) return;
+    if (i < ocrDone){ fo.className = 'fo'; fo.textContent = '✓ распознан'; }
+  });
+  if (ocrDone >= 19){
+    ocrBusy = false;
+    ocrSay('✓ Распознавание завершено: вложений 19/19, страниц ' + ocrPages +
+      '. Растровый скан без текстового слоя пропущен.', false);
+    ocrBtn('✓ всё распознано', true,
+      'Прочитаны все вложения, кроме растрового скана без текстового слоя');
+    return;
+  }
+  const stalled = ocrPages <= ocrLastPages;
+  ocrLastPages = ocrPages;
+  if (stalled || ocrRound >= MAX_OCR_ROUNDS){
+    ocrBusy = false;
+    ocrSay('Распознавание больших сканов: вложений ' + ocrDone + '/19, страниц ' + ocrPages +
+      '. ' + (stalled
+        ? 'Прогресс не растёт — авто-дораспознавание остановлено.'
+        : 'Исчерпан лимит проходов (' + MAX_OCR_ROUNDS + ').') +
+      ' Нажмите «Продолжить распознавание», чтобы дочитать остаток.', true);
+    ocrBtn('↻ Продолжить распознавание', demo, demo ? 'Недоступно в демо-режиме'
+      : 'Дочитать остаток больших PDF — распознавание продолжится с той страницы, ' +
+        'на которой остановилось');
+    return;
+  }
+  ocrSay('Распознавание больших сканов: вложений ' + ocrDone + '/19, страниц ' + ocrPages +
+    '. Идёт авто-дораспознавание — проход ' + ocrRound + ' из ' + MAX_OCR_ROUNDS + '…', false);
+  setTimeout(ocrPass, 650);
 }
 
 /* ══════════ 7 · передать монтажникам ══════════
@@ -1600,9 +2077,11 @@ const INST = {
 };
 let instKind = null;
 function instText(kind){
-  const addr = document.getElementById('p-address').value.trim() || 'адрес не заполнен';
-  const who  = document.getElementById('p-contact').value.trim() || 'контакт не заполнен';
-  const tel  = document.getElementById('p-tel').value.trim() || '+7 846 000-00-00';
+  /* Не найденное в заявке поле не выдумываем и не прячем: ставим прочерк «____»,
+     а под текстом объясняем, что его дозаполняет человек. */
+  const addr = document.getElementById('p-address').value.trim() || '____';
+  const who  = document.getElementById('p-contact').value.trim() || '____';
+  const tel  = document.getElementById('p-tel').value.trim() || '____';
   const type = document.getElementById('det-type').textContent.trim();
   const o = OBJ[sel], e = eff(sel);
   const diff = Math.abs((+o.pl || 0) - (+o.fact || 0));
@@ -1622,9 +2101,11 @@ function instText(kind){
 }
 function instMake(kind){
   instKind = kind;
+  const txt = instText(kind);
   document.getElementById('inst-cap').textContent = INST[kind].cap;
   document.getElementById('inst-note').textContent = INST[kind].note;
-  document.getElementById('inst-text').textContent = instText(kind);
+  document.getElementById('inst-text').textContent = txt;
+  document.getElementById('inst-blanks').style.display = txt.includes('____') ? 'block' : 'none';
   document.getElementById('inst-out').style.display = 'block';
   const s = document.getElementById('sec-inst');
   if (s && s.open) setActiveSection(s);
@@ -1648,20 +2129,55 @@ function setActiveSection(sec){
 document.querySelectorAll('.sec').forEach(sec => {
   /* toggle — на раскрытие/сворачивание, mousedown — на клик внутрь уже раскрытой */
   sec.addEventListener('toggle', () => {
+    if (sec.id) saveSec(sec.id, sec.open);
+    /* Восстановление раскрытости — не выбор оператора: полосу не отдаём.
+       Событие toggle асинхронное, порядок с initActiveSection не гарантирован,
+       поэтому флаг на самом элементе, а не таймер: иначе полоса доставалась
+       последней восстановленной секции вместо «Разбора». */
+    if (sec._restored) { delete sec._restored; return; }
     if (sec.open) setActiveSection(sec);
     else if (sec.classList.contains('active')) sec.classList.remove('active');
   });
   sec.addEventListener('mousedown', () => { if (sec.open) setActiveSection(sec) });
 });
+
+/* ══════════ 9 · раскрытость секций между заявками ══════════
+   Одна запись в localStorage на ВСЕ секции (во фронте это ключ issueCardSections).
+   Смысл: оператор не должен сворачивать «Вложения» и разворачивать «Детали» заново
+   в каждой заявке — набор раскрытых переезжает вместе с ним. Высота меняется только
+   кликом по заголовку: программно секции не дёргаем, кроме разового раскрытия
+   «Деталей», когда у заявки нет типа. Активная секция здесь не при чём — полоса
+   считается заново при открытии заявки. */
+const SEC_KEY = 'issueCardSections';
+function readSec(){
+  try {
+    const o = JSON.parse(localStorage.getItem(SEC_KEY) || 'null');
+    return o && typeof o === 'object' ? o : {};
+  } catch(e){ return {}; }
+}
+function saveSec(id, open){
+  try {
+    const all = readSec(); all[id] = open;
+    localStorage.setItem(SEC_KEY, JSON.stringify(all));
+  } catch(e){ /* приватный режим — просто не помним */ }
+}
+function restoreSec(){
+  const all = readSec();
+  document.querySelectorAll('.sec[id]').forEach(s => {
+    if (typeof all[s.id] === 'boolean' && s.open !== all[s.id]) { s._restored = true; s.open = all[s.id]; }
+  });
+}
 function initActiveSection(){
   const razbor = document.getElementById('sec-razbor');
   if (razbor && razbor.open) return setActiveSection(razbor);
   setActiveSection([...document.querySelectorAll('.sec')].find(s => s.open));
 }
 
-setAI(false); renderTpls(); updGuard(); detCount();
+setDemo(false); setAI(false); renderTpls(); updGuard(); detCount(); ocrPaint();
+restoreSec();
 /* Инициализация — следующим тиком: событие toggle асинхронное, и секции, которые
-   другие init-функции раскрывают программно, иначе перехватывают полосу себе. */
+   другие init-функции раскрывают программно (и восстановление раскрытости выше),
+   иначе перехватывают полосу себе. */
 setTimeout(initActiveSection, 0);
 </script>
 </body>
