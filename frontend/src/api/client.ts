@@ -204,8 +204,31 @@ export const api = {
     return http.post(`/issues/${id}/batch/ai`).then(r => r.data)
   },
 
-  composeAnswer(id: number): Promise<{ answer: string }> {
-    return http.post(`/issues/${id}/compose_answer`).then(r => r.data)
+  // Ответ ПО ПРАВИЛАМ, без модели и без токенов. scope='all' — один текст по всем
+  // объектам (группировка по вердиктам делается в коде), scope='object' — текст по
+  // одной строке разбора из шаблона её категории.
+  composeAnswer(id: number, opts?: { scope?: 'all' | 'object'; index?: number; plate?: string | null; date?: string | null }): Promise<{ answer: string; scope: string; source: string }> {
+    const params: Record<string, string | number> = {}
+    if (opts?.scope) params.scope = opts.scope
+    if (opts?.index != null) params.index = opts.index
+    if (opts?.plate) params.plate = opts.plate
+    if (opts?.date) params.date = opts.date
+    return http.post(`/issues/${id}/compose_answer`, null, Object.keys(params).length ? { params } : undefined).then(r => r.data)
+  },
+
+  // Справочник приоритетов Okdesk (code/name/color) — чтобы не хардкодить коды.
+  listPriorities(): Promise<{ code: string; name: string; color?: string }[]> {
+    return http.get('/issues/meta/priorities').then(r => r.data)
+  },
+
+  // Быстрая правка полей заявки прямо из карточки. Уходит только то, что передали.
+  updateIssueFields(id: number, fields: {
+    title?: string
+    deadline_at?: string
+    priority?: string
+    planned_execution_in_hours?: number
+  }): Promise<{ ok: boolean; updated: string[] }> {
+    return http.patch(`/issues/${id}/fields`, fields).then(r => r.data)
   },
 
   getTrack(id: number, plate?: string | null, date?: string | null, dateFrom?: string | null, dateTo?: string | null): Promise<TrackData> {

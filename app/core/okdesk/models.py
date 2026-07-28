@@ -167,6 +167,8 @@ class Issue(BaseModel):
     without_answer: bool | None = None
     source: str | None = None
     spent_time_total: float | None = None
+    # Плановая продолжительность работ, часов — правится из карточки (PATCH заявки).
+    planned_execution_in_hours: float | None = None
     group_id: int | None = None
     parent_id: int | None = None
     child_ids: list[int] = []

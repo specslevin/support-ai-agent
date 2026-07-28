@@ -608,6 +608,41 @@ td.act{text-align:center;padding:3px}
             <span class="vv">Письмо (e-mail)</span>
           </div>
 
+          <!-- Поля Okdesk, правимые через API (PATCH /issues/{id}/fields). Раньше из
+               карточки правились только тип, ответственный и три кастом-параметра — за
+               темой, сроком и приоритетом оператор уходил в Okdesk. Правка тихая: поле
+               выглядит текстом, Enter сохраняет, Esc отменяет, уходит РОВНО одно поле. -->
+          <div class="cap" style="margin:10px 0 2px">Поля Okdesk</div>
+          <div class="kv">
+            <span class="cap" title="title — тема заявки в Okdesk">Тема заявки</span>
+            <input class="inl" data-demo value="Расхождение пробега по путевым листам за июль"
+                   title="Тема заявки в Okdesk. Клиенты часто присылают тему вида «Отправка: 28.07.26._М341УМ…» — здесь её можно переписать по-человечески">
+          </div>
+          <div class="kv">
+            <span class="cap" title="deadline_at — от него считается просрочка и сортировка списка">Срок выполнения</span>
+            <input class="fld" type="datetime-local" data-demo value="2026-07-26T18:00" style="flex:1"
+                   title="Срок выполнения по SLA — правится прямо здесь">
+          </div>
+          <div class="kv">
+            <span class="cap" title="priority — код из справочника GET /issues/priorities">Приоритет</span>
+            <span class="vv">Обычный</span>
+            <button class="btn btn-2 btn-sm" data-demo onclick="toggleBox('prio-opts')"
+                    title="Сменить приоритет — список приходит из справочника Okdesk, коды не хардкодим">Изменить</button>
+          </div>
+          <div class="flags" id="prio-opts" style="display:none">
+            <button class="opt" onclick="pickOne(this)" title="low">Низкий</button>
+            <button class="opt on" onclick="pickOne(this)" title="normal">Обычный</button>
+            <button class="opt" onclick="pickOne(this)" title="high">Высокий</button>
+          </div>
+          <div class="kv">
+            <span class="cap" title="planned_execution_in_hours — плановая продолжительность работ, часов">Плановая продолжительность</span>
+            <input class="inl" data-demo value="2" placeholder="часов"
+                   title="Плановая продолжительность работ в часах">
+          </div>
+          <div class="tbl-note">Наблюдатели, оборудование и объект обслуживания тоже правятся
+            через API, но требуют выбора из справочников Okdesk — сделаем отдельно. Компанию и
+            контакт менять не даём: подмену клиента у живой заявки не откатить.</div>
+
           <!-- Сроки: отдельная группа, как секция «Сроки» в OkdeskInfo -->
           <div class="cap" style="margin:10px 0 2px">Сроки</div>
           <div class="kv">
@@ -740,10 +775,10 @@ td.act{text-align:center;padding:3px}
               <button class="btn btn-2 btn-sm" id="ocr-btn" data-demo onclick="ocrRun()"
                       title="Дочитать остаток больших документов — распознавание продолжится с той страницы, на которой остановилось, и само повторится, пока растёт число прочитанных страниц">↻ Продолжить распознавание</button>
             </div>
+            <!-- Кнопок ответа здесь НЕТ намеренно: оба источника («по правилам» и
+                 «✦ ИИ») живут в липком баре, рядом с полем, куда текст и вставляется. -->
             <div class="wrow info" id="agg-note" style="display:none">ⓘ Агрегатная заявка (ОДКР)
-              — отвечаем одним ответом по всем объектам, без разбивки на дочерние.
-              <button class="btn btn-2 btn-sm" style="margin-left:auto" onclick="aggAnswer()"
-                title="Собрать ОДИН ответ по всем объектам: вердикты группируются по правилам, формулировки готовые. Модель не вызывается, шаг бесплатный">Один ответ по всем объектам (по правилам)</button></div>
+              — отвечаем одним ответом по всем объектам, без разбивки на дочерние.</div>
             <div class="tbl-sum" id="tbl-sum"><span class="meta">Всего 3:</span><span class="count">Глушение 1</span><span class="count">Данные верны 1</span><span class="count">Не было питания 1</span></div>
             <table>
               <colgroup>
@@ -1099,8 +1134,25 @@ td.act{text-align:center;padding:3px}
       </div>
       <div class="bar-more" id="bar-more">
         <div class="bar-icons">
-          <button class="chip" onclick="insertDraft()" id="draft-chip"
-                  title="Вставить черновик, подготовленный ИИ для выбранного объекта">✦ черновик ИИ для А123БВ96</button>
+          <!-- ДВА явных источника ответа. Раньше был один чип «✦ черновик ИИ», и он
+               отдавал то текст модели, то текст по правилам (compose_answer) — оператор
+               не понимал, что именно вставилось. Теперь цена и авторство видны сразу. -->
+          <div style="position:relative">
+            <button class="opt" onclick="toggleAnsMenu('ans-rules')"
+                    title="Ответ по правилам: формулировки готовые, модель не вызывается — бесплатно">▤ по правилам ▾</button>
+            <div class="pop" id="ans-rules" style="width:300px;left:0;right:auto">
+              <button class="mitem" onclick="ansRules('all')">По всем объектам (3)<em>группировка по вердиктам</em></button>
+              <button class="mitem" onclick="ansRules('one')">Только по выбранному ТС<em>шаблон категории</em></button>
+            </div>
+          </div>
+          <div style="position:relative">
+            <button class="chip" id="draft-chip" onclick="toggleAnsMenu('ans-ai')"
+                    title="Вставить текст, составленный ИИ. Пока «Ответ ИИ» в «Телеметрии» не нажали — пусто">✦ ИИ ▾</button>
+            <div class="pop" id="ans-ai" style="width:300px;left:0;right:auto">
+              <button class="mitem" onclick="ansAi('draft')">Черновик по выбранному ТС<em>по одной строке</em></button>
+              <button class="mitem" onclick="ansAi('summary')">Сводный по всей заявке<em>написан моделью</em></button>
+            </div>
+          </div>
           <div class="segs">
             <button class="seg on" onclick="pickSeg(this)" title="Публичный — виден клиенту">Публичный</button>
             <button class="seg" onclick="pickSeg(this)" title="Внутренний комментарий — не виден клиенту">Приватный</button>
@@ -1265,7 +1317,22 @@ td.act{text-align:center;padding:3px}
   21) Регион в подвале выводится из кода в гос.номере — отдельного поля в системе нет.
   22) Кто и когда переписал вердикт вручную — <code>verdict_edited_by</code> /
   <code>verdict_edited_at</code>; при ручной правке обоснование и черновик ИИ снимаются, иначе
-  текст спорит с пилюлей.
+  текст спорит с пилюлей. 23) <b>Два источника ответа, и оба видны в баре.</b> «По правилам» —
+  <code>POST /compose_answer?scope=all|object</code>: без модели и без токенов, для всей заявки
+  гос.номера группируются по вердикту В КОДЕ (модель на этом путалась, 64435), для одной строки
+  берётся шаблон её категории из <code>_CATEGORY_CATALOG</code> с подстановкой даты и реального
+  пробега. «✦ ИИ» ничего не запрашивает: тексты приносит единственный платный вызов
+  <code>/batch/ai</code> из «Телеметрии» — черновик по строке и сводный по заявке. До вызова чип
+  погашен и подсказывает, куда нажать. Раньше это был ОДИН чип «✦ черновик ИИ», который для
+  заявок с вложениями звал <code>compose_answer</code> — то есть отдавал ответ по правилам под
+  видом ответа модели. 24) Сводный текст от модели проверяется КОДОМ: если в нём оказался
+  гос.номер, которого в заявке нет, текст выбрасывается целиком (лучше без него, чем с чужой
+  машиной в письме клиенту), у оператора остаётся сводный ответ по правилам.
+  25) Правка полей Okdesk — <code>PATCH /issues/{id}/fields</code> с белым списком (тема,
+  <code>deadline_at</code>, <code>priority</code>, <code>planned_execution_in_hours</code>).
+  Справочник приоритетов — <code>GET /issues/meta/priorities</code>, коды не хардкодим. После
+  сохранения кэш заявки обновляется полным upsert'ом: иначе список слева и подсветка просрочки
+  остались бы на старых данных.
 </div>
 
 <script>
@@ -1593,9 +1660,14 @@ function renderTel(){
     ? 'демо-режим: анализ доступен один раз на заявку'
     : n + ' ' + plural(n) + ' за один вызов · платный шаг, отвечает ИИ';
   document.getElementById('demo-once').style.display = demo ? 'flex' : 'none';
+  /* Чип ИИ виден ВСЕГДА, но погашен до прогона: так оператор знает, что такой
+     источник есть, и подсказка объясняет, где его включить. Раньше чип просто
+     исчезал, и путь к текстам модели был неочевиден. */
   const chip = document.getElementById('draft-chip');
-  chip.style.display = aiRun ? 'inline-block' : 'none';
-  chip.textContent = '✦ черновик ИИ для ' + sel;
+  chip.classList.toggle('demo-off', !aiRun);
+  chip.title = aiRun
+    ? 'Вставить текст, составленный ИИ: черновик по выбранному ТС или сводный по заявке'
+    : 'ИИ по этой заявке не вызывали — нажмите «Ответ ИИ» в блоке «Телеметрия»';
 }
 
 /* Переключатель демо-состояния «до ИИ / после ИИ». */
@@ -2087,16 +2159,57 @@ function ocrBtn(label, dis, tip){
   b.textContent = label; b.disabled = !!dis; b.title = tip;
   if (!dis && !demo) b.dataset.t0 = tip;
 }
-/* Сводный ответ по агрегатной (ОДКР) заявке: группировка по вердиктам делается
-   детерминированно в коде, модель только формулирует. */
+/* ══════════ источники ответа: правила и ИИ ══════════
+   Правила — бесплатно и детерминированно (группировка по вердиктам в коде либо
+   шаблон категории на один ТС). ИИ — тексты из платного прогона, ничего не
+   запрашивают: их приносит кнопка «Ответ ИИ» в «Телеметрии». */
+function toggleAnsMenu(id){ togglePop(id); }
+function ansRules(scope){
+  document.querySelectorAll('.pop').forEach(p => p.classList.remove('on'));
+  const r = document.getElementById('reply');
+  r.value = scope === 'all' ? aggAnswer() : ruleAnswerOne(sel);
+  expandBar(true); r.focus();
+}
+/* Ответ по ОДНОМУ ТС — шаблон его категории с датой и реальным пробегом
+   (на бэкенде это _CATEGORY_CATALOG + rules_answer_for_object). */
+const RULE_TPL = {
+  'Глушение':'Добрый день! Расхождение пробега связано с проездом в зоне глушения GPS/ГЛОНАСС-сигнала (воздействие средств РЭБ). Оборудование исправно.',
+  'Данные верны':'Добрый день! Обрывов в треке и неисправностей терминала не обнаружено. Пробег за {date} по данным системы составил {km} км. Данным системы мониторинга можно верить.',
+  'Не было питания':'Здравствуйте! В указанную дату ({date}) отсутствовало питающее напряжение на входах терминала. Нет возможности восстановить трек за этот период.',
+  'Терминал подключился':'Добрый день! Терминал временно терял связь, данные из внутренней памяти выгрузились. Пробег за {date} составил {km} км.'
+};
+function ruleAnswerOne(p){
+  const o = OBJ[p], e = eff(p);
+  const tpl = RULE_TPL[e.v];
+  if (tpl) return tpl.replace('{date}', o.date).replace('{km}', o.fact);
+  return 'Здравствуйте! По ТС ' + p + ' за ' + o.date + ' требуется дополнительная проверка.';
+}
+/* Сводный текст МОДЕЛИ — отдельный от сводника по правилам: модель пишет связно,
+   а не «По ТС X — глушение». Гос.номера в нём бэкенд сверяет с составом заявки и
+   выбрасывает текст целиком, если модель приплела чужую машину (риск из 64435). */
+const AI_SUMMARY =
+  'Здравствуйте! Разобрали расхождения по трём единицам техники за июль.\n' +
+  'По А123БВ96 расхождение 24 км вызвано потерей спутников 22.07 с 03:10 до 06:20 — ' +
+  'в этот интервал трек не строился, оборудование исправно.\n' +
+  'По В456ГД96 расхождение 2 км укладывается в погрешность GPS-одометра, данные корректны.\n' +
+  'По Е789ЖЗ96 терминал не выходил на связь 24.07 с 09:00 до 12:30 (снятие на сервисе), ' +
+  'с 12:30 данные поступают штатно, пробег сошёлся с путевым листом.';
+function ansAi(kind){
+  document.querySelectorAll('.pop').forEach(p => p.classList.remove('on'));
+  if (!aiRun) return;
+  const r = document.getElementById('reply');
+  r.value = kind === 'draft' ? OBJ[sel].draft : AI_SUMMARY;
+  expandBar(true); r.focus();
+}
+/* Сводный ответ по правилам: группировка по вердиктам делается в коде. */
 function aggAnswer(){
   const list = plates();
   const by = {};
   list.forEach(p => { const v = eff(p).v; (by[v] = by[v] || []).push(p); });
-  const txt = 'Здравствуйте! По результатам сверки:\n' + Object.entries(by)
+  /* Возвращает текст, а не пишет в поле: один и тот же сводник нужен и кнопке
+     «по правилам → по всем объектам», и пункту «сводный» у чипа ИИ. */
+  return 'Здравствуйте! По результатам сверки:\n' + Object.entries(by)
     .map(([v, ps]) => 'По ТС ' + ps.join(', ') + ' — ' + v.toLowerCase() + '.').join('\n');
-  const r = document.getElementById('reply');
-  r.value = txt; expandBar(true); r.focus();
 }
 
 function ocrRun(){

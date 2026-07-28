@@ -613,9 +613,186 @@ function EditableParameters({ d, issueId }: { d: OkdeskDetail; issueId: number }
   )
 }
 
+/**
+ * Быстрая правка полей заявки, которые Okdesk разрешает менять через API:
+ * тема, срок выполнения, приоритет, плановая продолжительность. Раньше из
+ * карточки правились только тип, ответственный и три кастом-параметра — за
+ * сроком и приоритетом оператор уходил в Okdesk.
+ *
+ * Правка тихая (макет .inl): поле выглядит текстом, обводка появляется по клику,
+ * сохранение по Enter / потере фокуса, отмена по Escape. Уходит РОВНО одно поле —
+ * так ошибка в одном не откатывает остальные.
+ *
+ * Наблюдатели, оборудование и объект обслуживания тоже правятся через API, но
+ * требуют выбора сущностей Okdesk (свои справочники) — заведём отдельно.
+ * Компанию и контакт сознательно не даём менять: подмену клиента у живой заявки
+ * не откатить, а «быстрой правкой» это не бывает.
+ */
+function EditableOkdeskFields({ d, issueId, subject }: {
+  d: OkdeskDetail
+  issueId: number
+  subject: string | null
+}) {
+  const isDemo = useAuthStore(s => s.user?.role === 'demo')
+  const queryClient = useQueryClient()
+  const [saving, setSaving] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const cancelRef = useRef(false)
+
+  const { data: priorities = [] } = useQuery({
+    queryKey: ['priorities'],
+    queryFn: () => api.listPriorities(),
+    staleTime: 30 * 60_000,
+  })
+  const [priorityOpen, setPriorityOpen] = useState(false)
+
+  const save = useMutation({
+    mutationFn: (fields: Parameters<typeof api.updateIssueFields>[1]) =>
+      api.updateIssueFields(issueId, fields),
+    onSettled: () => setSaving(null),
+    onSuccess: () => {
+      setError(null)
+      queryClient.invalidateQueries({ queryKey: ['issue', issueId] })
+      queryClient.invalidateQueries({ queryKey: ['issues'] })
+    },
+    onError: (e) => {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      setError(detail || 'Не удалось сохранить поле в Okdesk')
+    },
+  })
+
+  const commit = (key: string, fields: Parameters<typeof api.updateIssueFields>[1]) => {
+    setSaving(key)
+    save.mutate(fields)
+  }
+
+  // Okdesk отдаёт срок как ISO с зоной; input[datetime-local] хочет YYYY-MM-DDTHH:MM.
+  const deadlineLocal = d.deadline_at ? d.deadline_at.slice(0, 16) : ''
+  const priorityName = priorities.find(p => p.code === d.priority_code)?.name ?? d.priority_code ?? '—'
+
+  const inlineClass = 'min-w-0 flex-1 -ml-2 rounded-pill border border-transparent bg-transparent px-2 py-[3px] text-xs leading-[18px] text-white outline-none transition-colors hover:border-line focus:border-accent focus:bg-frame disabled:cursor-not-allowed disabled:opacity-55'
+
+  return (
+    <Section title="Поля Okdesk" defaultOpen={false} storageKey="okdesk-fields">
+      <div>
+        <div className="flex items-center gap-2.5 border-b border-line py-[7px]">
+          <span className="w-[148px] shrink-0 text-[9px] font-medium uppercase leading-3 tracking-[0.4px] text-muted">
+            Тема заявки
+          </span>
+          <input
+            type="text"
+            defaultValue={subject ?? ''}
+            key={`subj-${subject ?? ''}`}
+            disabled={isDemo || saving === 'title'}
+            title={isDemo ? 'Недоступно в демо-режиме' : 'Тема заявки в Okdesk — Enter сохраняет, Esc отменяет'}
+            onKeyDown={e => {
+              if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+              else if (e.key === 'Escape') { cancelRef.current = true; (e.target as HTMLInputElement).blur() }
+            }}
+            onBlur={e => {
+              const val = e.target.value.trim()
+              if (cancelRef.current) { cancelRef.current = false; e.target.value = subject ?? ''; return }
+              if (!val || val === (subject ?? '')) return
+              commit('title', { title: val })
+            }}
+            className={inlineClass}
+          />
+          {saving === 'title' && <Loader2 size={12} className="shrink-0 animate-spin text-muted" />}
+        </div>
+
+        <div className="flex items-center gap-2.5 border-b border-line py-[7px]">
+          <span className="w-[148px] shrink-0 text-[9px] font-medium uppercase leading-3 tracking-[0.4px] text-muted">
+            Срок выполнения
+          </span>
+          <input
+            type="datetime-local"
+            defaultValue={deadlineLocal}
+            key={`dl-${deadlineLocal}`}
+            disabled={isDemo || saving === 'deadline_at'}
+            title={isDemo ? 'Недоступно в демо-режиме' : 'deadline_at — от него считается просрочка и сортировка списка'}
+            onChange={e => {
+              const val = e.target.value
+              if (!val || val === deadlineLocal) return
+              commit('deadline_at', { deadline_at: val })
+            }}
+            className={`${inlineClass} [color-scheme:dark]`}
+          />
+          {saving === 'deadline_at' && <Loader2 size={12} className="shrink-0 animate-spin text-muted" />}
+        </div>
+
+        <div className="relative flex items-center gap-2.5 border-b border-line py-[7px]">
+          <span className="w-[148px] shrink-0 text-[9px] font-medium uppercase leading-3 tracking-[0.4px] text-muted">
+            Приоритет
+          </span>
+          <span className="min-w-0 flex-1 text-xs leading-[18px] text-secondary">{priorityName}</span>
+          {saving === 'priority' && <Loader2 size={12} className="shrink-0 animate-spin text-muted" />}
+          <button
+            onClick={() => setPriorityOpen(v => !v)}
+            disabled={isDemo || priorities.length === 0}
+            title={isDemo ? 'Недоступно в демо-режиме' : 'Сменить приоритет заявки'}
+            className="shrink-0 rounded-pill border border-border bg-frame px-3 py-[3px] text-[11px] font-medium text-secondary transition-colors hover:border-accent hover:text-accent disabled:opacity-40"
+          >
+            Изменить
+          </button>
+          {priorityOpen && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setPriorityOpen(false)} />
+              <div className="absolute right-0 top-full z-50 mt-1 min-w-[180px] overflow-hidden rounded-md border border-border bg-card py-1 shadow-lg">
+                {priorities.map(p => (
+                  <button
+                    key={p.code}
+                    onClick={() => { setPriorityOpen(false); if (p.code !== d.priority_code) commit('priority', { priority: p.code }) }}
+                    className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-card-hover ${p.code === d.priority_code ? 'text-accent' : 'text-white'}`}
+                  >
+                    <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: p.color || '#7A8A7A' }} />
+                    {p.name}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className="flex items-center gap-2.5 border-b border-line py-[7px] last:border-b-0">
+          <span className="w-[148px] shrink-0 text-[9px] font-medium uppercase leading-3 tracking-[0.4px] text-muted">
+            Плановая продолжительность
+          </span>
+          <input
+            type="number"
+            min={0}
+            step={0.5}
+            defaultValue={d.planned_execution_in_hours ?? ''}
+            key={`peh-${d.planned_execution_in_hours ?? ''}`}
+            disabled={isDemo || saving === 'planned_execution_in_hours'}
+            placeholder="часов"
+            title={isDemo ? 'Недоступно в демо-режиме' : 'planned_execution_in_hours — плановая продолжительность работ, часов'}
+            onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+            onBlur={e => {
+              const raw = e.target.value.trim()
+              if (!raw) return
+              const val = Number(raw)
+              if (!Number.isFinite(val) || val === (d.planned_execution_in_hours ?? null)) return
+              commit('planned_execution_in_hours', { planned_execution_in_hours: val })
+            }}
+            className={inlineClass}
+          />
+          {saving === 'planned_execution_in_hours' && <Loader2 size={12} className="shrink-0 animate-spin text-muted" />}
+        </div>
+      </div>
+      {error && <p className="text-[11px] text-orange-400">{error}</p>}
+      <p className="text-[10px] leading-4 text-muted">
+        Правки уходят в Okdesk сразу по одному полю: Enter или уход из поля сохраняет, Esc отменяет.
+        Наблюдатели, оборудование и объект обслуживания тоже правятся через API, но требуют выбора
+        из справочников Okdesk — сделаем отдельно. Компанию и контакт менять не даём: подмену клиента
+        у живой заявки не откатить.
+      </p>
+    </Section>
+  )
+}
+
 // Связанные заявки отсюда вынесены в RelatedIssuesSection (блок рельса v3),
 // поэтому onOpenExternal этому компоненту больше не нужен.
-function OkdeskInfo({ d, issueId, assigneeName }: { d: OkdeskDetail; issueId: number; assigneeName: string | null }) {
+function OkdeskInfo({ d, issueId, assigneeName, subject }: { d: OkdeskDetail; issueId: number; assigneeName: string | null; subject: string | null }) {
   const deadline = formatDate(d.deadline_at)
   const overdue = isOverdue(d.deadline_at)
 
@@ -675,6 +852,9 @@ function OkdeskInfo({ d, issueId, assigneeName }: { d: OkdeskDetail; issueId: nu
           </MetaRow>
         </div>
       </Section>
+
+      {/* Поля Okdesk, правимые через API: тема, срок, приоритет, плановая длительность */}
+      <EditableOkdeskFields d={d} issueId={issueId} subject={subject} />
 
       {/* Параметры заявки (редактируемые custom fields) */}
       <EditableParameters d={d} issueId={issueId} />
@@ -1968,60 +2148,144 @@ const VERDICT_STYLE = VERDICT_TEXT_STYLE
  * у кнопки «Составить ответ» блока «③ Ответ»: с вложениями — ответ по таблице
  * разбора, без вложений — по одиночному автоанализу.
  */
-function DraftChip({ issueId, hasExtractable, plate, draft, onUseDraft }: {
-  issueId: number
-  hasExtractable: boolean
-  plate?: string | null
-  /** Готовый черновик выбранной строки — вставляем БЕЗ запроса и без токенов. */
-  draft?: string | null
-  onUseDraft: (text: string) => void
+/** Пункт меню чипа ответа: подпись + короткое пояснение справа. */
+function AnswerMenuItem({ label, hint, disabled, onClick }: {
+  label: string
+  hint: string
+  disabled?: boolean
+  onClick: () => void
 }) {
-  const isDemo = useAuthStore(s => s.user?.role === 'demo')
-  const composeMut = useMutation({
-    mutationFn: async () => {
-      // Есть извлекаемые вложения → ответ по таблице разбора.
-      // Нет вложений → ответ на основе одиночного автоанализа заявки.
-      if (hasExtractable) {
-        const data = await api.composeAnswer(issueId)
-        return data.answer
-      }
-      const data = await api.automateIssue(issueId)
-      return data.draft_answer
-    },
-    onSuccess: (answer) => { if (answer) onUseDraft(answer) },
-  })
-  // Черновик уже есть (прогон ИИ по объектам) — чип просто переносит его в поле
-  // ответа. Раньше он всегда стрелял платным запросом, даже когда текст был готов.
-  if (draft) {
-    return (
-      <button
-        onClick={() => onUseDraft(draft)}
-        title="Вставить черновик, подготовленный ИИ для выбранного объекта"
-        className="flex shrink-0 items-center gap-1 rounded-pill border border-accent bg-accent/15 px-2.5 py-[3px] text-[11px] font-medium text-accent transition-colors hover:bg-accent hover:text-black"
-      >
-        <Sparkles size={11} /> черновик ИИ{plate ? ` для ${plate}` : ''}
-      </button>
-    )
-  }
   return (
-    <>
-      <button
-        onClick={() => composeMut.mutate()}
-        disabled={composeMut.isPending || isDemo}
-        title={isDemo ? 'Недоступно в демо-режиме'
-          : 'Составить черновик ответа — платный вызов ИИ (быстрее получить его вместе с разбором кнопкой «Ответ ИИ» в «Телеметрии»)'}
-        className={`flex shrink-0 items-center gap-1 rounded-pill border border-accent bg-accent/15 px-2.5 py-[3px] text-[11px] font-medium text-accent hover:bg-accent hover:text-black transition-colors disabled:opacity-40 ${composeMut.isPending ? 'animate-pulse cursor-wait' : ''} ${isDemo ? 'cursor-not-allowed' : ''}`}
-      >
-        {composeMut.isPending
-          ? <Working label="Составляю…" />
-          : <><Sparkles size={11} /> составить черновик{plate ? ` для ${plate}` : ''}</>}
-      </button>
-      {composeMut.isError && <p className="text-[11px] text-orange-400">Ошибка составления ответа. Попробуйте снова.</p>}
-    </>
+    <button
+      disabled={disabled}
+      onClick={onClick}
+      title={hint}
+      className="flex w-full items-center justify-between gap-3 border-b border-line px-3 py-2 text-left text-xs last:border-b-0 hover:bg-card-hover disabled:opacity-40 disabled:hover:bg-transparent"
+    >
+      <span className="min-w-0 text-white">{label}</span>
+      <span className="shrink-0 text-[10px] leading-[14px] text-muted">{hint}</span>
+    </button>
   )
 }
 
-function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, selectedIdx, onSelectObject, onParse, onUseDraft }: {
+/**
+ * Чип «По правилам» — ответ БЕЗ модели и без токенов. Два охвата: один текст по
+ * всем объектам (гос.номера группируются по вердикту в коде) или текст по
+ * выбранной строке (шаблон её категории с датой и пробегом).
+ *
+ * Раньше этот путь прятался за чипом «✦ черновик ИИ», из-за чего оператор получал
+ * ответ по правилам, думая, что его написала модель.
+ */
+function RulesAnswerChip({ issueId, objectCount, selectedIdx, plate, date, onUseDraft }: {
+  issueId: number
+  objectCount: number
+  selectedIdx: number | null
+  plate?: string | null
+  date?: string | null
+  onUseDraft: (text: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const compose = useMutation({
+    mutationFn: (scope: 'all' | 'object') =>
+      api.composeAnswer(issueId, scope === 'all'
+        ? { scope: 'all' }
+        : { scope: 'object', index: selectedIdx ?? undefined, plate, date }),
+    onSuccess: (data) => { if (data.answer) onUseDraft(data.answer) },
+  })
+  const pick = (scope: 'all' | 'object') => { setOpen(false); compose.mutate(scope) }
+  // Один объект — выбирать нечего, вставляем сразу без меню.
+  const single = objectCount <= 1
+
+  return (
+    <div className="relative shrink-0">
+      <button
+        onClick={() => (single ? pick('object') : setOpen(v => !v))}
+        disabled={compose.isPending}
+        title="Ответ по правилам: формулировки готовые, модель не вызывается — бесплатно"
+        className={`flex shrink-0 items-center gap-1 rounded-pill border border-border bg-frame px-2.5 py-[3px] text-[11px] font-medium text-secondary transition-colors hover:border-accent hover:text-accent disabled:opacity-40 ${compose.isPending ? 'animate-pulse cursor-wait' : ''}`}
+      >
+        {compose.isPending
+          ? <Working label="Собираю…" />
+          : <><Layers size={11} /> по правилам{single ? '' : ' ▾'}</>}
+      </button>
+      {open && !single && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute bottom-full left-0 z-50 mb-1.5 w-[300px] overflow-hidden rounded-xl border border-border bg-darker shadow-lg">
+            <AnswerMenuItem
+              label={`По всем объектам (${objectCount})`}
+              hint="группировка по вердиктам"
+              onClick={() => pick('all')}
+            />
+            <AnswerMenuItem
+              label={plate ? `Только по ${plate}` : 'Только по выбранному ТС'}
+              hint={plate ? 'шаблон категории' : 'сначала выберите строку'}
+              disabled={!plate && selectedIdx == null}
+              onClick={() => pick('object')}
+            />
+          </div>
+        </>
+      )}
+      {compose.isError && <p className="text-[11px] text-orange-400">Не удалось собрать ответ. Попробуйте снова.</p>}
+    </div>
+  )
+}
+
+/**
+ * Чип «✦ ИИ» — вставка текстов, которые написала модель. Ничего не запрашивает:
+ * тексты приходят одним платным вызовом из «Телеметрии» («Ответ ИИ») и лежат в
+ * разборе. Пока вызова не было — чип погашен и объясняет, куда нажать.
+ */
+function AiAnswerChip({ draft, summary, plate, onUseDraft }: {
+  draft?: string | null
+  summary?: string | null
+  plate?: string | null
+  onUseDraft: (text: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const has = !!draft || !!summary
+  const single = !summary || !draft
+  const only = draft || summary || ''
+
+  return (
+    <div className="relative shrink-0">
+      <button
+        onClick={() => (single ? (has && onUseDraft(only)) : setOpen(v => !v))}
+        disabled={!has}
+        title={has
+          ? 'Вставить текст, составленный ИИ'
+          : 'ИИ по этой заявке не вызывали — нажмите «Ответ ИИ» в блоке «Телеметрия»'}
+        className={`flex shrink-0 items-center gap-1 rounded-pill border px-2.5 py-[3px] text-[11px] font-medium transition-colors ${
+          has ? 'border-accent bg-accent/15 text-accent hover:bg-accent hover:text-black'
+              : 'cursor-not-allowed border-border bg-frame text-muted opacity-60'
+        }`}
+      >
+        <Sparkles size={11} /> ИИ{has && !single ? ' ▾' : ''}
+      </button>
+      {open && has && !single && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute bottom-full left-0 z-50 mb-1.5 w-[300px] overflow-hidden rounded-xl border border-border bg-darker shadow-lg">
+            <AnswerMenuItem
+              label={plate ? `Черновик по ${plate}` : 'Черновик по выбранному ТС'}
+              hint="по одной строке"
+              disabled={!draft}
+              onClick={() => { setOpen(false); if (draft) onUseDraft(draft) }}
+            />
+            <AnswerMenuItem
+              label="Сводный по всей заявке"
+              hint="написан моделью"
+              disabled={!summary}
+              onClick={() => { setOpen(false); if (summary) onUseDraft(summary) }}
+            />
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, selectedIdx, onSelectObject, onParse }: {
   issueId: number
   issueTitle?: string | null
   issueDescription?: string | null
@@ -2034,9 +2298,7 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
    * Строки разбора наружу: карточке нужно знать их число (один вызов ИИ на все
    * объекты) и звали ли ИИ — от этого зависит платная кнопка в «Телеметрии».
    */
-  onParse?: (objects: import('../types').BatchObject[], aiNote?: string | null) => void
-  /** Вставить готовый текст в поле ответа липкого бара (сводный ответ по ОДКР). */
-  onUseDraft?: (text: string) => void
+  onParse?: (objects: import('../types').BatchObject[], meta?: { aiNote?: string | null; aiSummary?: string | null }) => void
 }) {
   const queryClient = useQueryClient()
   const isDemo = useAuthStore(s => s.user?.role === 'demo')
@@ -2132,10 +2394,11 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
   // ДО любых ранних выходов: хуки не могут вызываться условно.
   const reportRows = cached?.objects ?? null
   const reportNote = cached?.ai_note ?? null
+  const reportSummary = cached?.ai_summary_answer ?? null
   useEffect(() => {
-    if (reportRows) onParse?.(reportRows, reportNote)
+    if (reportRows) onParse?.(reportRows, { aiNote: reportNote, aiSummary: reportSummary })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reportRows, reportNote])
+  }, [reportRows, reportNote, reportSummary])
 
   const run = useMutation({
     mutationFn: () => api.automateBatch(issueId),
@@ -2166,13 +2429,6 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
 
   // Старт разбора по кнопке: сбрасываем счётчики авто-дораспознавания и статус
   // дочерних (повторный разбор не должен наследовать старые отметки).
-  // Сводный ответ по агрегатной (ОДКР) заявке: группировка по вердиктам делается
-  // детерминированно в коде, LLM только формулирует (см. compose_aggregate_answer).
-  const aggregate = useMutation({
-    mutationFn: () => api.composeAnswer(issueId),
-    onSuccess: (data) => { if (data.answer) onUseDraft?.(data.answer) },
-  })
-
   const startRun = () => {
     cancelOcrLoop()
     ocrRoundsRef.current = 0
@@ -2541,32 +2797,13 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
           <ParseDisagreeNote objects={res.objects} />
           <ParseTableNote />
           {isAggregate && (
-            <div className="space-y-1.5">
-              <p className="flex items-start gap-1.5 text-[11px] text-muted leading-relaxed">
-                <Info size={13} className="shrink-0 mt-0.5 text-info" />
-                <span>Агрегатная заявка (ОДКР) — отвечаем одним ответом по всем объектам, без разбивки на дочерние.</span>
-              </p>
-              {/* Сводный ответ живёт здесь, а не в чипе бара: он про ВСЮ заявку,
-                  а чип подставляет черновик выбранного объекта.
-                  ВАЖНО: текст собирается ДЕТЕРМИНИРОВАННО в коде — группировка по
-                  вердиктам + готовые формулировки (compose_aggregate_answer). Модель
-                  здесь не участвует: она путала, какой ТС в какой группе (64435).
-                  Поэтому кнопка нейтральная и без ✦ — это не вызов ИИ и он бесплатный. */}
-              <button
-                onClick={() => aggregate.mutate()}
-                disabled={aggregate.isPending || isDemo}
-                title={isDemo ? 'Недоступно в демо-режиме'
-                  : 'Собрать ОДИН ответ по всем объектам: вердикты группируются по правилам, формулировки готовые. Модель не вызывается, шаг бесплатный'}
-                className={`flex items-center gap-1.5 rounded-pill border border-border bg-frame px-3 py-[5px] text-[11px] font-medium text-secondary transition-colors hover:border-accent hover:text-accent disabled:opacity-40 ${aggregate.isPending ? 'animate-pulse cursor-wait' : ''}`}
-              >
-                {aggregate.isPending
-                  ? <Working label="Собираю сводный ответ…" />
-                  : <><Layers size={11} /> Один ответ по всем объектам (по правилам)</>}
-              </button>
-              {aggregate.isError && (
-                <p className="text-[11px] text-orange-400">Не удалось собрать сводный ответ. Попробуйте снова.</p>
-              )}
-            </div>
+            /* Кнопки сводного ответа здесь НЕТ намеренно: оба источника ответа
+               («по правилам» и «✦ ИИ») живут в липком баре, рядом с полем, куда
+               текст и вставляется. Здесь — только пояснение про агрегатность. */
+            <p className="flex items-start gap-1.5 text-[11px] text-muted leading-relaxed">
+              <Info size={13} className="shrink-0 mt-0.5 text-info" />
+              <span>Агрегатная заявка (ОДКР) — отвечаем одним ответом по всем объектам, без разбивки на дочерние.</span>
+            </p>
           )}
           {!isAggregate && (() => {
             const children = res.objects.filter((o, i) => o.plate && !rowCreated[rowKey(o, i)]?.ok && (o.verdict === 'Данные верны' || o.verdict === 'Нет данных'))
@@ -2788,21 +3025,6 @@ function countPlates(s?: string | null): number {
  * Переиспользует существующие компоненты (BatchAnalysis / AutoAnalysis /
  * ExtractedDataBlock / ComposeAnswerButton) без изменения их внутренностей.
  */
-/**
- * Пакетный разбор нужен, если есть извлекаемые вложения ИЛИ в теме/теле ≥2
- * гос.номеров. Тело важно для заявок вида 65649: тема = дата, а список из 20 ТС
- * лежит в письме. Вынесено из AnalysisWizard, потому что тот же признак нужен
- * блоку «Ответ» (шаг генерации живёт уже там).
- */
-function isBatchIssue(
-  issue: { subject?: string | null },
-  description: string | null | undefined,
-  extractableCount: number,
-): boolean {
-  if (extractableCount > 0) return true
-  return countPlates(`${issue.subject ?? ''}\n${stripHtml(description)}`) >= 2
-}
-
 const AI_ERROR_KINDS: { value: import('../types').AiFeedbackErrorKind; label: string }[] = [
   { value: 'wrong_verdict', label: 'Неверный вердикт' },
   { value: 'wrong_plate', label: 'Неверный гос.номер' },
@@ -3054,6 +3276,8 @@ export function IssueDetail() {
   // платная кнопка в «Телеметрии» — один вызов модели на ВСЕ объекты заявки.
   const [parseRows, setParseRows] = useState<BatchObject[]>([])
   const [batchAiNote, setBatchAiNote] = useState<string | null>(null)
+  // Сводный ответ по всей заявке, написанный моделью (приходит тем же вызовом ИИ).
+  const [aiSummary, setAiSummary] = useState<string | null>(null)
   const [pendingStatus, setPendingStatus] = useState<typeof ALL_STATUSES[number] | null>(null)
   const [resolveNotice, setResolveNotice] = useState<string | null>(null)
   const [toast, setToast] = useState<string | null>(null)
@@ -3116,6 +3340,7 @@ export function IssueDetail() {
     setBarExpanded(false)
     setParseRows([])
     setBatchAiNote(null)
+    setAiSummary(null)
     // Новая заявка — активную секцию считаем заново (см. эффект ниже); сама
     // раскрытость секций при этом сохраняется, она живёт в localStorage.
     sectionPickedRef.current = false
@@ -3148,7 +3373,6 @@ export function IssueDetail() {
     enabled: selectedIssueId != null,
     staleTime: 5 * 60_000,
   })
-  const extractableCount = issueAttachments.filter((a: import('../types').IssueAttachment) => a.extractable).length
 
   // Оценка разбора — в счётчик секции, чтобы видеть её не разворачивая блок.
   const { data: fbSummary } = useQuery({
@@ -3220,7 +3444,6 @@ export function IssueDetail() {
   // Телефон контакта живёт в кастом-параметрах Okdesk (та же тройка, что правится
   // в «Параметрах заявки») — отдельного поля в okdesk_detail нет.
   const contactPhone = od?.parameters.find(p => /телефон|тел\b|моб/i.test(p.name))?.value?.trim() || null
-  const useBatch = isBatchIssue(issue, od?.description, extractableCount)
   // Без типа Okdesk не пускает заявку ни в «В работе», ни в «Решена» (проверка в
   // кнопке «Ответить и решить» ниже). Тем же условием раскрываем «Детали заявки»:
   // тип правится там, и оператор видит блокер сразу, а не по тосту в конце.
@@ -3411,7 +3634,7 @@ export function IssueDetail() {
           </div>
 
           {/* Live Okdesk info */}
-          {od && <div className="mt-3"><OkdeskInfo d={od} issueId={issue.id} assigneeName={issue.assignee_name ?? null} /></div>}
+          {od && <div className="mt-3"><OkdeskInfo d={od} issueId={issue.id} assigneeName={issue.assignee_name ?? null} subject={issue.subject ?? null} /></div>}
 
           {/* Если okdesk_detail пустой — показываем только assignee picker */}
           {!od && (
@@ -3437,9 +3660,10 @@ export function IssueDetail() {
             onOpenExternal={openExternal}
             selectedIdx={selectedIdx}
             onSelectObject={(idx, objects) => { setSelectedIdx(idx); setSelectedObj(objects[idx] ?? null) }}
-            onParse={(objects, note) => {
+            onParse={(objects, meta) => {
               setParseRows(objects)
-              setBatchAiNote(note ?? null)
+              setBatchAiNote(meta?.aiNote ?? null)
+              setAiSummary(meta?.aiSummary ?? null)
               // Строки обновились (прогон ИИ, правка номера/даты) — выбранный объект
               // должен показывать НОВЫЕ данные, а не копию до правки.
               setSelectedObj(prev => {
@@ -3447,7 +3671,6 @@ export function IssueDetail() {
                 return prev
               })
             }}
-            onUseDraft={text => { setComment(text); setCommentPublic(true); setBarExpanded(true) }}
           />
           <SingleParseTable
             issueId={issue.id}
@@ -3707,11 +3930,20 @@ export function IssueDetail() {
           <>
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex min-w-0 flex-wrap items-center gap-2">
-                <DraftChip
+                {/* Два ЯВНЫХ источника ответа вместо одного чипа «черновик ИИ»,
+                    который отдавал то текст модели, то текст по правилам. */}
+                <RulesAnswerChip
                   issueId={issue.id}
-                  hasExtractable={useBatch}
+                  objectCount={parseRows.length}
+                  selectedIdx={selectedIdx}
                   plate={selectedObj?.plate ?? null}
+                  date={selectedObj?.date ?? null}
+                  onUseDraft={text => { setComment(text); setCommentPublic(true) }}
+                />
+                <AiAnswerChip
                   draft={aiAnswered ? rowDraft : null}
+                  summary={aiSummary}
+                  plate={selectedObj?.plate ?? null}
                   onUseDraft={text => { setComment(text); setCommentPublic(true) }}
                 />
                 {/* Сегмент видимости: публичный ответ уходит клиенту */}

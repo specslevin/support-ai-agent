@@ -392,6 +392,11 @@ async def get_issue_details(
                 "reacted_at": live.reacted_at,
                 "delayed_to": live.delayed_to,
                 "spent_time_total": live.spent_time_total,
+                # Правимые из карточки поля (PATCH /issues/{id}/fields): приоритет
+                # и плановая продолжительность. Имя приоритета берём из справочника
+                # на фронте, здесь только код.
+                "priority_code": live.priority.code if live.priority else None,
+                "planned_execution_in_hours": live.planned_execution_in_hours,
                 "type_name": live.type.name if live.type else None,
                 "type_code": live.type.code if live.type else None,
                 "author_name": live.author.name if live.author else None,
@@ -1295,8 +1300,15 @@ async def batch_ai_verdicts(
     # Метка «ИИ по этой заявке уже звали»: фронт по ней гасит платную кнопку и
     # показывает, когда именно был прогон.
     data["ai_called_at"] = _dt.datetime.now(_dt.UTC).isoformat(timespec="seconds")
-    if res.get("note"):
-        data["ai_note"] = res["note"]
+    # Сводный ответ по всей заявке, написанный моделью (гос.номера уже сверены с
+    # составом заявки в ai_batch_verdicts). Отдельно от per-object черновиков:
+    # оператор выбирает, что вставить в поле ответа.
+    data["ai_summary_answer"] = res.get("summary")
+    notes = [n for n in (res.get("note"), res.get("summary_note")) if n]
+    if notes:
+        data["ai_note"] = " ".join(notes)
+    else:
+        data.pop("ai_note", None)
     if kind == "parse" and len(objects) == 1:
         # Сводные поля одиночного разбора идут за единственной строкой.
         row = objects[0]
@@ -1572,14 +1584,25 @@ async def resolve_ai_feedback(
 @router.post("/{issue_id}/compose_answer")
 async def compose_answer(
     issue_id: int,
+    scope: str = Query("all", description="'all' — один текст по всем объектам, "
+                                         "'object' — только по выбранному ТС"),
+    index: int | None = Query(None, description="Индекс строки разбора для scope=object"),
+    plate: str | None = Query(None, description="Гос.номер строки для scope=object"),
+    date: str | None = Query(None, description="ISO-дата строки для scope=object"),
     cache: CacheService = Depends(get_cache_service),
     okdesk: OkdeskService = Depends(get_okdesk_service),
     automation: IssueAutomationService = Depends(get_issue_automation_service),
 ) -> dict[str, object]:
-    """Compose ONE comprehensive answer for an aggregate (ОДКР) issue.
+    """Ответ клиенту ПО ПРАВИЛАМ — без единого обращения к модели.
 
-    Loads the cached batch result (or runs analyze_batch if absent), then asks
-    the LLM to summarise all objects grouped by verdict into a single answer.
+    ``scope=all``    — один текст по всем объектам: гос.номера группируются по
+    вердикту в КОДЕ (модель на этом путалась, 64435), формулировки готовые.
+    ``scope=object`` — текст по одной строке разбора из шаблона её категории
+    (``_CATEGORY_CATALOG``) с подставленными датой и реальным пробегом.
+
+    Раньше метод жил только под агрегатные (ОДКР) заявки и звался из чипа
+    «черновик ИИ», хотя модель тут не участвует. Теперь доступен любой заявке и
+    подписан честно.
     """
     try:
         issue_data = await cache.get_issue_with_analysis(issue_id)
@@ -1588,15 +1611,37 @@ async def compose_answer(
         external_id = issue_data["issue"].external_id
         company_name = getattr(issue_data["issue"], "company_name", None)
 
-        cached = await cache.get_result_cache(external_id, "batch")
-        if cached and cached.get("data", {}).get("objects"):
-            objects = cached["data"]["objects"]
-        else:
+        # Разбор берём из того же документа, что и ручные правки оператора:
+        # сначала batch, затем детерминированный parse (одиночная заявка).
+        objects: list[dict] = []
+        for kind in ("batch", "parse"):
+            cached = await cache.get_result_cache(external_id, kind)
+            if cached and (cached.get("data") or {}).get("objects"):
+                objects = cached["data"]["objects"]
+                break
+        if not objects:
             live = await okdesk.get_issue(external_id)
             objects = await automation.analyze_batch(external_id, live.attachments,
                                                      issue_title=live.title,
                                                      issue_description=live.description,
                                                      ocr_cache=cache)
+        if not objects:
+            raise HTTPException(status_code=400,
+                                detail="Сначала выполните разбор — по чему составлять ответ")
+
+        if scope == "object":
+            row = None
+            if index is not None and 0 <= index < len(objects):
+                row = objects[index]
+            elif plate:
+                target = _norm_plate(plate)
+                row = next((o for o in objects
+                            if _norm_plate(o.get("plate")) == target
+                            and (not date or o.get("date") == date)), None)
+            if row is None:
+                raise HTTPException(status_code=404, detail="Строка разбора не найдена")
+            return {"answer": automation.rules_answer_for_object(row),
+                    "scope": "object", "source": "rules", "linked_count": 0}
 
         # Best-effort: surface prior resolved answers for the same vehicles so
         # the aggregate stays consistent with what the client was told before.
@@ -1610,7 +1655,8 @@ async def compose_answer(
             prior = {}
 
         answer = await automation.compose_aggregate_answer(objects, company_name, prior=prior)
-        return {"answer": answer, "linked_count": len(prior)}
+        return {"answer": answer, "scope": "all", "source": "rules",
+                "linked_count": len(prior)}
     except HTTPException:
         raise
     except Exception:
@@ -2126,6 +2172,73 @@ async def update_issue_parameters(
     except Exception:
         log.exception("update_issue_parameters_failed", issue_id=issue_id)
         raise HTTPException(status_code=500, detail="Failed to update issue parameters")
+
+
+class IssueFieldsUpdate(BaseModel):
+    """Поля заявки, правку которых мы разрешаем из карточки.
+
+    Белый список, а не «что придёт»: PATCH заявки в Okdesk принимает и company_id
+    с contact_id, но подмена клиента у живой заявки — это не «быстрая правка», и
+    ошибку там не откатить. Наблюдатели и оборудование требуют выбора сущностей
+    Okdesk (отдельные справочники) — заведём, когда понадобятся.
+    """
+    title: str | None = None
+    deadline_at: str | None = None          # ISO 'YYYY-MM-DDTHH:MM' (МСК-время заявки)
+    priority: str | None = None             # code из GET /issues/meta/priorities
+    planned_execution_in_hours: float | None = None
+
+
+@router.get("/meta/priorities")
+async def list_issue_priorities(
+    okdesk: OkdeskService = Depends(get_okdesk_service),
+) -> list[dict[str, object]]:
+    """Справочник приоритетов заявки — чтобы фронт не хардкодил коды Okdesk."""
+    try:
+        return await okdesk.list_issue_priorities()
+    except Exception:
+        log.exception("list_issue_priorities_failed")
+        raise HTTPException(status_code=502, detail="Не удалось получить список приоритетов")
+
+
+@router.patch("/{issue_id}/fields")
+async def update_issue_fields(
+    issue_id: int,
+    body: IssueFieldsUpdate,
+    cache: CacheService = Depends(get_cache_service),
+    okdesk: OkdeskService = Depends(get_okdesk_service),
+) -> dict[str, object]:
+    """Быстрая правка полей заявки прямо из карточки (тема, срок, приоритет,
+    плановая продолжительность).
+
+    Раньше из карточки правились только тип, ответственный и три кастом-параметра —
+    за сроком и приоритетом приходилось идти в Okdesk. Уходит РОВНО то, что
+    оператор изменил (переданные не-None поля), остальное не трогаем.
+    """
+    fields = {k: v for k, v in body.model_dump(exclude_none=True).items()}
+    if not fields:
+        raise HTTPException(status_code=400, detail="Нет полей для обновления")
+    if "title" in fields and not str(fields["title"]).strip():
+        raise HTTPException(status_code=400, detail="Тема не может быть пустой")
+    issue_data = await cache.get_issue_with_analysis(issue_id)
+    if not issue_data:
+        raise HTTPException(status_code=404, detail="Issue not found")
+    external_id = issue_data["issue"].external_id
+    try:
+        await okdesk.update_issue_fields(external_id, fields)
+    except OkdeskAPIError as e:
+        log.warning("update_issue_fields_rejected", issue_id=issue_id, detail=str(e)[:200])
+        raise HTTPException(status_code=400, detail=f"Okdesk отклонил правку: {e}")
+    except Exception:
+        log.exception("update_issue_fields_failed", issue_id=issue_id, fields=list(fields))
+        raise HTTPException(status_code=502, detail="Не удалось сохранить поля в Okdesk")
+    # Кэш заявки держит тему/срок/приоритет — обновляем полным upsert'ом
+    # (refresh_single_issue тянет только статус и ответственного), иначе список
+    # слева и подсветка просрочки останутся на старых данных до синхронизации.
+    try:
+        await cache.cache_single_issue(external_id)
+    except Exception:
+        log.warning("update_issue_fields_refresh_failed", issue_id=issue_id)
+    return {"ok": True, "updated": sorted(fields)}
 
 
 @router.patch("/{issue_id}/assignee")

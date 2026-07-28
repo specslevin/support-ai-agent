@@ -200,6 +200,25 @@ class OkdeskService:
         data = await self._client._request("POST", "issues", json={"issue": fields})
         return Issue.model_validate(data)
 
+    async def list_issue_priorities(self) -> list[dict[str, Any]]:
+        """Справочник приоритетов заявки (code/name/color) из Okdesk."""
+        data = await self._client._request("GET", "issues/priorities")
+        return _ensure_list(data)
+
+    async def update_issue_fields(self, issue_id: int, fields: dict[str, Any]) -> Issue:
+        """Редактирование полей заявки: ``PATCH /issues/{id}`` с ``{"issue": {...}}``.
+
+        Состав полей контролирует вызывающий эндпоинт (белый список) — здесь
+        сознательно нет фильтрации, чтобы метод не пришлось править при каждом
+        новом поле. Пустой ``fields`` не отправляем: Okdesk на пустом теле отдаёт
+        ошибку валидации.
+        """
+        if not fields:
+            raise ValueError("Нет полей для обновления")
+        data = await self._client._request(
+            "PATCH", f"issues/{issue_id}", json={"issue": fields})
+        return Issue.model_validate(data)
+
     async def update_issue_parameters(
         self,
         issue_id: int,

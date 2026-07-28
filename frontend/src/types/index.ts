@@ -59,6 +59,9 @@ export interface OkdeskDetail {
   reacted_at: string | null
   delayed_to: string | null
   spent_time_total: number | null
+  /** Правимые из карточки поля Okdesk (PATCH /issues/{id}/fields). */
+  priority_code?: string | null
+  planned_execution_in_hours?: number | null
   type_name: string | null
   type_code: string | null
   author_name: string | null
@@ -244,6 +247,12 @@ export interface BatchResult {
   ai_called_at?: string | null
   /** Пояснение прогона ИИ (например, «разобраны первые 25 объектов из 40»). */
   ai_note?: string | null
+  /**
+   * Сводный ответ по всей заявке, написанный моделью в том же вызове. null, если
+   * модель упомянула гос.номер, которого в заявке нет — такой текст отбрасывается
+   * (бэкенд сверяет номера с составом заявки).
+   */
+  ai_summary_answer?: string | null
 }
 
 /**
