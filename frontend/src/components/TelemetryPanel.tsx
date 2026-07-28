@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Sparkles } from 'lucide-react'
-import type { AutomationTelemetry } from '../types'
+import type { AutomationTelemetry, VerdictSource } from '../types'
 
 interface TelemetryPanelProps {
   telemetry: AutomationTelemetry | null
@@ -10,12 +10,106 @@ interface TelemetryPanelProps {
   autoEligible?: boolean            // можно отправлять авто-ответ
   subtitle?: string | null          // подпись справа в шапке, например «Е456КХ163 · 21.07.2026»
   reasoning?: string | null         // обоснование вердикта от ИИ — под метриками
+  /** Чем получен вердикт: правила (бесплатно) / ИИ / ручная правка оператора. */
+  verdictSource?: VerdictSource | null
+  /** Вердикт детерминированной эвристики — для строки расхождения «правила → ИИ». */
+  heuristicCategory?: string | null
 }
 
-const CATEGORY_PILL: Record<string, string> = {
-  'Глушение': 'bg-warning text-black',
-  'Данные верны': 'bg-success text-black',
-  'Не было питания': 'bg-orange text-black',
+/**
+ * Цвет ТЕКСТА вердикта — один источник для таблицы разбора и пилюли телеметрии.
+ * Заливка занята статусами Okdesk, дублировать её нельзя (см. VerdictPill).
+ */
+export const VERDICT_TEXT_STYLE: Record<string, string> = {
+  'Глушение': 'text-warning',
+  'Данные верны': 'text-success',
+  'Не было питания': 'text-orange',
+  'Терминал подключился': 'text-info',
+  'Объект не найден': 'text-red-400',
+  'Нет данных': 'text-muted',
+  'Нет номера/даты': 'text-muted',
+  'Номер не распознан': 'text-warning',
+  'Ошибка данных': 'text-orange',
+  'Проверить': 'text-info',
+}
+
+/** Старые кэши источника не несут — вердикт в них посчитан правилами. */
+export function normalizeVerdictSource(src?: VerdictSource | string | null): VerdictSource {
+  return src === 'ai' || src === 'operator' ? src : 'rules'
+}
+
+/** Подсказка «откуда вердикт» — одна формулировка на всё приложение. */
+export function verdictSourceHint(src: VerdictSource): string {
+  if (src === 'ai') return 'Вердикт ИИ (DeepSeek) — есть обоснование, уверенность и черновик ответа'
+  if (src === 'operator') return 'Вердикт исправлен вручную оператором. ИИ ручную правку не перезаписывает'
+  return 'Предварительный вердикт по правилам — посчитан бесплатно, DeepSeek ещё не вызывали'
+}
+
+/**
+ * Пилюля вердикта. Источник читается ФОРМОЙ РАМКИ и глифом (макет
+ * .figma-shots/card-v4-variants.html, класс .pill-src):
+ *   правила  — пунктирная нейтральная рамка + хвост-подпись «по правилам»;
+ *   ИИ       — сплошная рамка в цвет вердикта + ✦;
+ *   оператор — сплошная нейтральная рамка + ✎.
+ * Цвет самого вердикта во всех трёх случаях один и тот же (VERDICT_TEXT_STYLE),
+ * новых цветов не заводим — иначе пилюля спорит со статусами Okdesk.
+ */
+export function VerdictPill({ verdict, source, className = '', title }: {
+  verdict: string | null
+  source?: VerdictSource | null
+  className?: string
+  title?: string
+}) {
+  const src = normalizeVerdictSource(source)
+  const color = (verdict && VERDICT_TEXT_STYLE[verdict]) || 'text-white'
+  const border = src === 'rules'
+    ? 'border border-dashed border-border'
+    : src === 'ai'
+    ? 'border border-solid border-current'
+    : 'border border-solid border-border'
+  const glyph = src === 'ai' ? '✦ ' : src === 'operator' ? '✎ ' : ''
+  const tail = src === 'rules' ? 'по правилам' : src === 'ai' ? 'ИИ' : 'оператор'
+  return (
+    <span
+      title={title ?? verdictSourceHint(src)}
+      className={`inline-flex max-w-full min-w-0 items-center gap-[5px] rounded-pill bg-frame px-[9px] py-0.5 align-middle text-[11px] font-medium leading-4 ${border} ${color} ${className}`}
+    >
+      <span className="min-w-0 truncate">{glyph}{verdict ?? 'Без вердикта'}</span>
+      <span className="shrink-0 text-[9px] font-medium uppercase leading-3 tracking-[0.4px] text-muted">{tail}</span>
+    </span>
+  )
+}
+
+/**
+ * Правила и действующий вердикт разошлись — это надо показать, а не спрятать.
+ * У источника «правила» расхождения нет по определению: сравнивать не с чем.
+ */
+export function verdictDisagreement(
+  verdict: string | null | undefined,
+  heuristic: string | null | undefined,
+  source?: VerdictSource | null,
+): { from: string; to: string; by: string } | null {
+  const src = normalizeVerdictSource(source)
+  if (src === 'rules' || !heuristic || !verdict || heuristic === verdict) return null
+  return { from: heuristic, to: verdict, by: src === 'ai' ? 'ИИ' : 'оператор' }
+}
+
+/** Строка расхождения — печатается прямо, без наведения мыши. */
+export function VerdictDisagreeLine({ verdict, heuristic, source, className = '' }: {
+  verdict: string | null | undefined
+  heuristic: string | null | undefined
+  source?: VerdictSource | null
+  className?: string
+}) {
+  const d = verdictDisagreement(verdict, heuristic, source)
+  if (!d) return null
+  return (
+    <p className={`text-[11px] leading-4 text-muted ${className}`}>
+      ⇄ правила: <b className="font-medium text-secondary">{d.from}</b> → {d.by}:{' '}
+      <b className="font-medium text-secondary">{d.to}</b>
+      {d.by === 'ИИ' ? ' — машина переспорила правила' : ' — ручную правку ИИ не перезаписывает'}
+    </p>
+  )
 }
 
 /**
@@ -92,13 +186,21 @@ export function TelemetryPanel({
   autoEligible = false,
   subtitle = null,
   reasoning = null,
+  verdictSource = null,
+  heuristicCategory = null,
 }: TelemetryPanelProps) {
   const [reasoningOpen, setReasoningOpen] = useState(false)
-  const pillClass = (category && CATEGORY_PILL[category]) || 'bg-frame text-secondary'
-  const percent = confidence != null ? Math.round(confidence * 100) : null
+  const src = normalizeVerdictSource(verdictSource)
+  // Уверенность и полоса доверия существуют ТОЛЬКО у вердикта ИИ: у правил и у
+  // человека их просто нет, а чужая уверенность от прошлого прогона врала бы.
+  const percent = src === 'ai' && confidence != null ? Math.round(confidence * 100) : null
 
   let verdictNote = ''
-  if (percent != null) {
+  if (src === 'rules') {
+    verdictNote = 'предварительно — ИИ ещё не вызывался'
+  } else if (src === 'operator') {
+    verdictNote = 'исправлено вручную'
+  } else if (percent != null) {
     verdictNote = `Уверенность ${percent}%`
     if (autoEligible) verdictNote += ' — авто-ответ доступен'
     else if (needsReview) verdictNote += ' — нужна проверка'
@@ -111,9 +213,7 @@ export function TelemetryPanel({
     <div className="space-y-3">
       <div className="space-y-2">
         <div className="flex flex-wrap items-center gap-2">
-          <span className={`px-2.5 py-1 rounded-pill text-[13px] font-medium ${pillClass}`}>
-            {category ?? 'Без вердикта'}
-          </span>
+          <VerdictPill verdict={category} source={src} />
           {verdictNote && <span className="text-[13px] text-secondary">{verdictNote}</span>}
           {subtitle && <span className="ml-auto text-[13px] text-muted">{subtitle}</span>}
         </div>
@@ -122,6 +222,8 @@ export function TelemetryPanel({
             <div className="h-full rounded-pill bg-accent" style={{ width: `${percent}%` }} />
           </div>
         )}
+        {/* Расхождение правил с действующим вердиктом — прямым текстом, не в тултипе. */}
+        <VerdictDisagreeLine verdict={category} heuristic={heuristicCategory} source={src} />
       </div>
 
       {telemetry == null ? (

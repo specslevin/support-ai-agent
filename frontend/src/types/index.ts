@@ -116,6 +116,16 @@ export interface AutomationTelemetry {
   flags: string[]
 }
 
+/**
+ * Чем получен вердикт. Определяет ВИД пилюли в интерфейсе, а не только текст:
+ *   rules    — предварительный вердикт лестницы правил, бесплатный (DeepSeek не звали);
+ *   ai       — вердикт DeepSeek (есть уверенность, обоснование, черновик);
+ *   operator — ручная правка оператора (машина её не перезаписывает).
+ * Поле опциональное: разборы, сохранённые до его появления, источника не несут —
+ * такие считаем «rules» (ИИ бы записал себя явно).
+ */
+export type VerdictSource = 'rules' | 'ai' | 'operator'
+
 export interface AutomationResult {
   parsed: AutomationParsed
   telemetry: AutomationTelemetry
@@ -128,6 +138,10 @@ export interface AutomationResult {
   spec_vehicle?: boolean
   auto_eligible?: boolean
   error: string | null
+  // Чем получена category и что сказала детерминированная эвристика — нужно,
+  // чтобы показать расхождение «правила → ИИ» без наведения мыши.
+  verdict_source?: VerdictSource
+  heuristic_category?: string | null
 }
 
 export interface TrackPoint {
@@ -178,6 +192,10 @@ export interface BatchObject {
   verdict_edited?: boolean
   plate_edited?: boolean
   spec_vehicle?: boolean
+  // Чем получен вердикт строки (см. VerdictSource) и что сказала вторая,
+  // более простая эвристика. Опциональны: старые кэши разбора их не содержат.
+  verdict_source?: VerdictSource
+  heuristic_category?: string | null
 }
 
 // Прогресс возобновляемого OCR: complete=false → распознаны не все страницы
@@ -195,6 +213,32 @@ export interface BatchResult {
   ok_count: number
   is_aggregate?: boolean
   objects: BatchObject[]
+  ocr_progress?: OcrProgress
+}
+
+/**
+ * Ответ `/issues/{id}/parse` — ДЕТЕРМИНИРОВАННЫЙ разбор без DeepSeek: факты
+ * (номер, дата, пробеги, телеметрия) + предварительный вердикт по правилам.
+ * Форма строк та же, что у пакетного разбора (`objects`), поэтому таблица одна
+ * и та же и для 1 объекта, и для 20. Сводные поля дублируют единственную строку.
+ * Токены не тратятся никогда; OCR — только при `attachments=true`.
+ */
+export interface ParseResult {
+  parsed: AutomationParsed
+  objects: BatchObject[]
+  total: number
+  jamming_count: number
+  ok_count: number
+  telemetry?: AutomationTelemetry | null
+  verdict?: string | null
+  heuristic_category?: string | null
+  verdict_source?: VerdictSource | null
+  spec_vehicle?: boolean
+  needs_remote_diagnostics?: boolean
+  is_aggregate?: boolean
+  /** Пояснение, почему разбор пуст (номер не найден по теме/тексту). */
+  note?: string
+  /** Есть только у разбора с вложениями (`attachments=true`). */
   ocr_progress?: OcrProgress
 }
 

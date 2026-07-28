@@ -16,10 +16,13 @@ import { useUserStore } from '../store/userStore'
 import { useAuthStore } from '../store/authStore'
 import { StatusBadge } from './StatusBadge'
 import { EmployeeMenu, TypeMenu } from './pickers'
-import type { OkdeskDetail, Template, AutomationResult, BatchResult } from '../types'
+import type { OkdeskDetail, Template, AutomationResult, BatchResult, BatchObject, ParseResult, VerdictSource } from '../types'
 import { extractPlaceholders, hasPlaceholders, renderTemplate, computedPlaceholderValue } from '../lib/templates'
 import { STATUS_COLOR, statusPillStyle } from '../lib/status'
-import { TelemetryPanel } from './TelemetryPanel'
+import {
+  TelemetryPanel, VerdictPill, VERDICT_TEXT_STYLE,
+  normalizeVerdictSource, verdictSourceHint, verdictDisagreement,
+} from './TelemetryPanel'
 
 function formatDate(iso: string | null | undefined) {
   if (!iso) return null
@@ -1062,6 +1065,139 @@ function StatusActionModal({
 
 // Расшифровка флагов телеметрии и вывод метрик переехали в TelemetryPanel.
 
+/**
+ * Мультиобъектная («общая») заявка или одиночная. Один расчёт на карточку:
+ * одиночный анализ и одиночная таблица разбора обязаны прятаться там, где
+ * заявку ведёт пакетный разбор, иначе оператор увидит первый ТС из двадцати.
+ * Оба запроса — те же ключи, что у остальных блоков: сети это не добавляет.
+ */
+function useBatchMode(issueId: number, issueTitle?: string | null, companyName?: string | null) {
+  const attachQ = useQuery({
+    queryKey: ['attachments', issueId],
+    queryFn: () => api.listAttachments(issueId),
+    staleTime: 5 * 60_000,
+  })
+  const extractCount = (attachQ.data ?? []).filter(a => a.extractable).length
+  const cachedBatchQ = useQuery({
+    queryKey: ['batch-cached', issueId],
+    queryFn: () => api.getCachedBatch(issueId),
+    enabled: extractCount >= 1,
+    staleTime: 5 * 60_000,
+  })
+  const looksAggregate = /одкр/i.test(companyName ?? '') || /общ|одкр/i.test(issueTitle ?? '')
+  const cachedBatch = cachedBatchQ.data?.cached ? cachedBatchQ.data : null
+  const cachedBatchObjects = cachedBatch?.objects?.length ?? 0
+  const isBatch = extractCount >= 2
+    || (extractCount >= 1 && looksAggregate)
+    || !!(cachedBatch && cachedBatch.is_aggregate)
+    || cachedBatchObjects >= 2
+  // Признак «данные для решения уже собраны»: пока запросы летят, режим неизвестен
+  // и стрелять разбором нельзя (для пакетной заявки он взял бы не те данные).
+  const ready = attachQ.isSuccess && (extractCount < 1 || cachedBatchQ.isSuccess)
+  return { isBatch, ready, extractCount, cachedBatch, cachedBatchObjects }
+}
+
+/**
+ * БЕСПЛАТНЫЙ разбор фактов для карточки: сначала кэш (GET — мгновенно), и только
+ * если его нет — детерминированный пересчёт (POST без `attachments`, то есть без
+ * OCR и без единого токена DeepSeek). Именно он наполняет таблицу до того, как
+ * оператор нажмёт платную кнопку ИИ. Ни `automate`, ни `compose_answer` здесь нет.
+ */
+function useFreeParse(issueId: number, enabled = true) {
+  return useQuery<ParseResult & { cached?: boolean; created_at?: string }>({
+    queryKey: ['parse-free', issueId],
+    queryFn: async () => {
+      const cached = await api.getCachedParse(issueId)
+      if (cached.cached) return cached
+      return api.parseIssue(issueId)
+    },
+    enabled,
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
+    retry: false,
+  })
+}
+
+/** Бейдж-капслок сводки (макет .badge): «ИИ не вызывался» и подобные пометки. */
+function SumBadge({ children, title }: { children: React.ReactNode; title?: string }) {
+  return (
+    <span
+      title={title}
+      className="inline-flex shrink-0 items-center rounded-[4px] bg-white/[0.08] px-1.5 py-0.5 text-[9px] font-medium uppercase leading-3 tracking-[0.4px] text-muted"
+    >
+      {children}
+    </span>
+  )
+}
+
+/**
+ * Источник вердикта строки разбора. Кэши, сделанные до появления `verdict_source`,
+ * ручную правку помечали только флагом `verdict_edited` — учитываем и его, иначе
+ * правка оператора выглядела бы как вердикт правил.
+ */
+function rowVerdictSource(o: BatchObject): VerdictSource {
+  return normalizeVerdictSource(o.verdict_source ?? (o.verdict_edited ? 'operator' : undefined))
+}
+
+/** Тултип ячейки вердикта: откуда он взялся + что даст ручная правка. */
+function verdictCellHint(o: BatchObject): string {
+  return `${verdictSourceHint(rowVerdictSource(o))}. Изменить вручную — источник станет «оператор»`
+}
+
+const VERDICT_ORDER = [
+  'Глушение', 'Данные верны', 'Не было питания', 'Терминал подключился',
+  'Изменили настройки', 'Проверить', 'Нет данных', 'Объект не найден',
+  'Номер не распознан', 'Нет номера/даты', 'Ошибка данных',
+]
+
+/**
+ * Сводка разбора: «Всего N: вердикт × k» + бейдж «ИИ не вызывался», пока ни один
+ * вердикт в таблице не получен от DeepSeek. Одна реализация на обе таблицы.
+ */
+function ParseSummary({ objects, total }: { objects: BatchObject[]; total?: number }) {
+  const counts: Record<string, number> = {}
+  for (const o of objects) counts[o.verdict] = (counts[o.verdict] ?? 0) + 1
+  const keys = Object.keys(counts).sort((a, b) => VERDICT_ORDER.indexOf(a) - VERDICT_ORDER.indexOf(b))
+  const aiCalled = objects.some(o => rowVerdictSource(o) === 'ai')
+  return (
+    <div className="text-[11px] text-muted flex flex-wrap items-center gap-x-2 gap-y-0.5">
+      <span>Всего {total ?? objects.length}:</span>
+      {keys.map(v => (
+        <span key={v} className={VERDICT_STYLE[v] ?? 'text-white'}>{v} {counts[v]}</span>
+      ))}
+      {!aiCalled && (
+        <SumBadge title="Вердикты посчитаны правилами бесплатно. DeepSeek по этим объектам не вызывался — обоснования, уверенности и черновика ответа пока нет">
+          ИИ не вызывался
+        </SumBadge>
+      )}
+    </div>
+  )
+}
+
+/**
+ * «Кто с кем не согласен» под таблицей — спокойной строкой, без наведения мыши.
+ * Показываем только там, где вердикт переписали ИИ или оператор: у чистых правил
+ * сравнивать не с чем.
+ */
+function ParseDisagreeNote({ objects }: { objects: BatchObject[] }) {
+  const rows = objects
+    .map(o => ({ plate: o.plate, d: verdictDisagreement(o.verdict, o.heuristic_category, rowVerdictSource(o)) }))
+    .filter((r): r is { plate: string | null; d: NonNullable<ReturnType<typeof verdictDisagreement>> } => !!r.d)
+  if (rows.length === 0) return null
+  return (
+    <p className="mt-1.5 text-[10px] leading-4 text-muted">
+      ⇄ Расхождение с правилами:{' '}
+      {rows.map((r, i) => (
+        <span key={`${r.plate}-${i}`}>
+          {i > 0 && '; '}
+          {r.plate && <b className="font-medium text-secondary">{r.plate}</b>}
+          {r.plate && ' — '}правила: {r.d.from} → {r.d.by}: {r.d.to}
+        </span>
+      ))}.
+    </p>
+  )
+}
+
 // Управление одиночным анализом: запуск, уточнение номера/даты, предупреждения.
 // Данные (таблица разбора, метрики, вердикт) рисуют блоки «① Разбор» и
 // «② Телеметрия и вердикт» — они читают тот же кэш `automate-cached`.
@@ -1076,33 +1212,10 @@ function AutoAnalysis({ issueId, issueTitle, companyName }: { issueId: number; i
 
   // Multi-attachment («общая») issue → single-object analysis is misleading
   // (it picks just the first plate). Defer to «Разбор по объектам» below.
-  const attachQ = useQuery({
-    queryKey: ['attachments', issueId],
-    queryFn: () => api.listAttachments(issueId),
-    staleTime: 5 * 60_000,
-  })
-  const attachments = attachQ.data ?? []
-  const extractCount = attachments.filter(a => a.extractable).length
-  // Сохранённый разбор по объектам: если заявка уже помечена агрегатной (ОДКР),
-  // одиночный автоанализ ввёл бы в заблуждение — отдаём её «Разбору по объектам».
-  const cachedBatchQ = useQuery({
-    queryKey: ['batch-cached', issueId],
-    queryFn: () => api.getCachedBatch(issueId),
-    enabled: extractCount >= 1,
-    staleTime: 5 * 60_000,
-  })
-  const looksAggregate = /одкр/i.test(companyName ?? '') || /общ|одкр/i.test(issueTitle ?? '')
-  // Сохранённый разбор по объектам (дешёвый GET; данные есть только если он уже делался).
-  const cachedBatch = cachedBatchQ.data?.cached ? cachedBatchQ.data : null
-  const cachedBatchObjects = cachedBatch?.objects?.length ?? 0
   // Batch = несколько вложений; ИЛИ одно вложение агрегатной/«общей» заявки;
-  // ИЛИ сохранённый разбор пометил заявку как агрегатную;
-  // ИЛИ сохранённый разбор вернул >=2 объекта — мультиобъектная заявка даже с 1 вложением
-  // (напр. 63317: один файл, ~40 ТС). Тогда одиночный автоанализ вводит в заблуждение.
-  const isBatch = extractCount >= 2
-    || (extractCount >= 1 && looksAggregate)
-    || !!(cachedBatch && cachedBatch.is_aggregate)
-    || cachedBatchObjects >= 2
+  // ИЛИ сохранённый разбор пометил заявку как агрегатную; ИЛИ в нём >=2 объекта
+  // (напр. 63317: один файл, ~40 ТС) — см. useBatchMode.
+  const { isBatch } = useBatchMode(issueId, issueTitle, companyName)
 
   // Cached result — show last analysis without re-running the AI (saves tokens).
   const cachedQ = useQuery({
@@ -1156,7 +1269,9 @@ function AutoAnalysis({ issueId, issueTitle, companyName }: { issueId: number; i
         <button
           onClick={() => run.mutate()}
           disabled={run.isPending || demoAlreadyAnalyzed}
-          title={demoAlreadyAnalyzed ? 'Демо: анализ доступен один раз' : compact ? 'Обновить анализ' : undefined}
+          title={demoAlreadyAnalyzed ? 'Демо: анализ доступен один раз'
+            : compact ? 'Обновить анализ'
+            : 'Платный шаг: отвечает ИИ (DeepSeek)'}
           className={`flex items-center justify-center gap-2 bg-frame border border-accent/40 text-accent hover:bg-accent/10 text-xs font-semibold rounded-md transition-colors disabled:opacity-40 ${compact ? (run.isPending ? 'px-2.5 py-1.5' : 'p-1.5') : 'w-full py-2'} ${run.isPending ? 'animate-pulse cursor-wait' : ''} ${demoAlreadyAnalyzed ? 'cursor-not-allowed' : ''}`}
         >
           {run.isPending ? (
@@ -1168,6 +1283,16 @@ function AutoAnalysis({ issueId, issueTitle, companyName }: { issueId: number; i
           )}
         </button>
       </div>
+
+      {/* Честная подпись у платной кнопки: факты и предварительный вердикт в
+          таблице выше бесплатны, ИИ добавляет обоснование, уверенность и черновик.
+          Никаких «≈N токенов / ≈N секунд» — такого расчёта в проекте нет. */}
+      {!compact && !run.isPending && (
+        <p className="text-[10px] leading-4 text-muted">
+          Платный шаг, отвечает ИИ: обоснование вердикта, уверенность и черновик ответа.
+          Факты и предварительный вердикт по правилам уже посчитаны бесплатно.
+        </p>
+      )}
 
       {isCached && (
         <p className="flex items-center gap-1 text-[10px] text-muted/70"><Database size={11} /> показан сохранённый анализ{cachedQ.data?.created_at ? ` от ${new Date(cachedQ.data.created_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}` : ''}</p>
@@ -1273,13 +1398,40 @@ function ParseTableNote() {
   )
 }
 
+/** Полный ИИ-прогон → строка таблицы разбора того же формата, что у пакетной. */
+function rowFromAutomate(res: AutomationResult): BatchObject {
+  const t = res.telemetry
+  return {
+    file: '', plate: res.parsed?.plate ?? null, date: res.parsed?.date ?? null,
+    sheet_mileage_km: res.parsed?.sheet_mileage_km ?? null,
+    declared_system_km: res.parsed?.declared_system_km ?? null,
+    system_mileage_km: t?.system_mileage_km ?? null,
+    flags: t?.flags ?? [], teleport_jumps: t?.teleport_jumps ?? 0,
+    telemetry: t ?? null,
+    verdict: res.category,
+    spec_vehicle: res.spec_vehicle,
+    // `automate` без DeepSeek не бывает — у кэшей без поля источник всё равно ИИ.
+    verdict_source: res.verdict_source ?? 'ai',
+    heuristic_category: res.heuristic_category ?? null,
+  }
+}
+
 /**
  * Разбор одиночной заявки — та же таблица, что и у пакетной, но из одной строки.
  * Оператор видит разбор одинаково независимо от того, один в заявке объект или
- * двадцать. Данные берём из кэша автоанализа: он уже содержит и распознанные
- * поля, и телеметрию.
+ * двадцать.
+ *
+ * Приоритет данных: кэш `automate` (богаче — уверенность, обоснование, черновик)
+ * выше бесплатного разбора фактов `parse`. `parse` — то, что показываем, ПОКА ИИ
+ * не звали: он и наполняет таблицу при открытии карточки (GET кэша, при промахе —
+ * POST без вложений, ноль токенов). Мультиобъектную заявку ведёт BatchAnalysis.
  */
-function SingleParseTable({ issueId, onSelect }: { issueId: number; onSelect?: (obj: import('../types').BatchObject) => void }) {
+function SingleParseTable({ issueId, issueTitle, companyName, onSelect }: {
+  issueId: number
+  issueTitle?: string | null
+  companyName?: string | null
+  onSelect?: (obj: BatchObject) => void
+}) {
   const queryClient = useQueryClient()
   const isDemo = useAuthStore(s => s.user?.role === 'demo')
   // Какое поле сейчас правится / сохраняется. Правка только по клику на карандаш —
@@ -1288,21 +1440,36 @@ function SingleParseTable({ issueId, onSelect }: { issueId: number; onSelect?: (
   const [savingField, setSavingField] = useState<'plate' | 'date' | null>(null)
   const cancelEditRef = useRef(false)
 
-  const { data } = useQuery({
+  const { isBatch, ready, cachedBatchObjects } = useBatchMode(issueId, issueTitle, companyName)
+
+  const automateQ = useQuery({
     queryKey: ['automate-cached', issueId],
     queryFn: () => api.getCachedAutomate(issueId),
     staleTime: 5 * 60_000,
   })
-  const res = data?.cached ? (data as unknown as AutomationResult) : null
-  const p = res?.parsed
-  const t = res?.telemetry
+  const automate = automateQ.data?.cached ? (automateQ.data as unknown as AutomationResult) : null
 
-  // Уточнение номера/даты = переанализ заявки по исправленным данным.
-  const refine = useMutation({
-    mutationFn: (override: { plate?: string; date?: string }) => api.automateIssue(issueId, override),
+  // Бесплатный разбор зовём только там, где он реально нужен: заявка одиночная,
+  // режим уже известен, а полного ИИ-прогона в кэше нет (он богаче и главнее).
+  const freeQ = useFreeParse(issueId, ready && !isBatch && automateQ.isSuccess && !automate)
+  const free = freeQ.data
+
+  // Строка таблицы: сначала ИИ-прогон, иначе единственная строка бесплатного
+  // разбора. Две и более строк — территория пакетной таблицы, не наша.
+  const row: BatchObject | null = automate
+    ? rowFromAutomate(automate)
+    : (free?.objects?.length === 1 ? free.objects[0] : null)
+  const p = row
+
+  // Уточнение номера/даты = перепроверка ТС в гео по исправленным данным. Пока ИИ
+  // не звали, правка идёт бесплатным `parse` — незачем платить за опечатку клиента.
+  const refine = useMutation<AutomationResult | ParseResult, unknown, { plate?: string; date?: string }>({
+    mutationFn: (override) =>
+      automate ? api.automateIssue(issueId, override) : api.parseIssue(issueId, override),
     onSettled: () => setSavingField(null),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['automate-cached', issueId] })
+      queryClient.invalidateQueries({ queryKey: ['parse-free', issueId] })
       queryClient.invalidateQueries({ queryKey: ['issue', issueId] })
       // Трек мог быть закэширован с ошибкой «номер не найден» до правки — сбрасываем.
       queryClient.invalidateQueries({ queryKey: ['track', issueId] })
@@ -1317,25 +1484,39 @@ function SingleParseTable({ issueId, onSelect }: { issueId: number; onSelect?: (
     refine.mutate({ [field]: val })
   }
 
-  // Строку отдаём наверх, чтобы блок телеметрии показывал этот же объект.
+  // Строку отдаём наверх, чтобы блок телеметрии показывал этот же объект
+  // (вместе с источником вердикта — от него зависит вид пилюли и полоса доверия).
   useEffect(() => {
-    if (!res || !onSelect) return
-    onSelect({
-      file: '', plate: p?.plate ?? null, date: p?.date ?? null,
-      sheet_mileage_km: p?.sheet_mileage_km ?? null,
-      declared_system_km: p?.declared_system_km ?? null,
-      system_mileage_km: t?.system_mileage_km ?? null,
-      flags: t?.flags ?? [], teleport_jumps: t?.teleport_jumps ?? 0,
-      verdict: res.category, telemetry: t ?? null,
-      spec_vehicle: res.spec_vehicle,
-    })
+    if (!row || !onSelect) return
+    // Таблицу ведёт пакетный разбор — тогда и объект выбирает он, иначе телеметрия
+    // показала бы строку, которой на экране нет.
+    if (isBatch || cachedBatchObjects >= 1) return
+    onSelect(row)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [res])
+  }, [automate, free, isBatch, cachedBatchObjects])
 
-  if (!res) return null
+  // Пакетная заявка (в т.ч. когда пакетный разбор уже дал строки) рисует таблицу
+  // сама — двух таблиц об одном и том же в карточке быть не должно.
+  if (isBatch || cachedBatchObjects >= 1) return null
+
+  if (!row) {
+    // Разбор состоялся, но номер не нашёлся — объясняем причину вместо пустоты.
+    if (free?.note) return <p className="text-[11px] leading-4 text-muted">{free.note}</p>
+    if (freeQ.isFetching) {
+      return (
+        <p className="flex items-center gap-1.5 text-[11px] text-muted">
+          <Loader2 size={12} className="animate-spin shrink-0" /> Разбираю факты заявки…
+        </p>
+      )
+    }
+    return null
+  }
+
+  const t = row.telemetry
 
   return (
     <>
+    <ParseSummary objects={[row]} total={1} />
     <div className="overflow-x-auto">
       <table className="w-full text-[11px]">
         <ParseTableHead actions={1} />
@@ -1408,24 +1589,25 @@ function SingleParseTable({ issueId, onSelect }: { issueId: number; onSelect?: (
                 </span>
               )}
             </td>
-            <td className="pr-2">{p?.sheet_mileage_km ?? '—'}</td>
-            <td className="pr-2">{p?.declared_system_km ?? '—'}</td>
-            <td className="pr-2 text-white font-medium">{t?.system_mileage_km ?? '—'}</td>
+            <td className="pr-2">{row.sheet_mileage_km ?? '—'}</td>
+            <td className="pr-2">{row.declared_system_km ?? '—'}</td>
+            <td className="pr-2 text-white font-medium">{row.system_mileage_km ?? t?.system_mileage_km ?? '—'}</td>
             <td className="pr-2">
-              <span className={VERDICT_STYLE[res.category] ?? 'text-white'}>{res.category}</span>
-              {res.spec_vehicle && (
+              <VerdictPill verdict={row.verdict} source={row.verdict_source} />
+              {row.spec_vehicle && (
                 <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-pill bg-warning/15 text-warning text-[9px] font-medium align-middle">
                   спецтехника
                 </span>
               )}
             </td>
             <td className="text-center">
-              <TrackLink plate={p?.plate ?? null} date={p?.date ?? null} />
+              <TrackLink plate={row.plate ?? null} date={row.date ?? null} />
             </td>
           </tr>
         </tbody>
       </table>
     </div>
+    <ParseDisagreeNote objects={[row]} />
     <ParseTableNote />
     </>
   )
@@ -1443,16 +1625,9 @@ function TrackLink({ plate, date }: { plate: string | null; date: string | null 
   )
 }
 
-const VERDICT_STYLE: Record<string, string> = {
-  'Глушение': 'text-warning',
-  'Данные верны': 'text-green-400',
-  'Не было питания': 'text-orange-400',
-  'Объект не найден': 'text-red-400',
-  'Нет данных': 'text-muted',
-  'Нет номера/даты': 'text-muted',
-  'Номер не распознан': 'text-warning',
-  'Проверить': 'text-cyan-400',
-}
+// Цвет вердикта живёт рядом с пилюлей (TelemetryPanel) — один источник для
+// таблицы разбора и блока телеметрии, иначе они расходятся по оттенкам.
+const VERDICT_STYLE = VERDICT_TEXT_STYLE
 
 
 /**
@@ -1759,18 +1934,7 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
 
       {res && (
         <div className="space-y-2 text-xs">
-          <div className="text-[11px] text-muted flex flex-wrap items-center gap-x-2 gap-y-0.5">
-            <span>Всего {res.total}:</span>
-            {(() => {
-              const counts: Record<string, number> = {}
-              for (const o of res.objects) counts[o.verdict] = (counts[o.verdict] ?? 0) + 1
-              const order = ['Глушение', 'Данные верны', 'Не было питания', 'Терминал подключился', 'Изменили настройки', 'Проверить', 'Нет данных', 'Объект не найден', 'Номер не распознан', 'Нет номера/даты', 'Ошибка данных']
-              const keys = Object.keys(counts).sort((a, b) => order.indexOf(a) - order.indexOf(b))
-              return keys.map(v => (
-                <span key={v} className={VERDICT_STYLE[v] ?? 'text-white'}>{v} {counts[v]}</span>
-              ))
-            })()}
-          </div>
+          <ParseSummary objects={res.objects} total={res.total} />
           <div className="overflow-x-auto">
             <table className="w-full text-[11px]">
               <ParseTableHead actions={2} />
@@ -1834,28 +1998,47 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
                       <td className="pr-2">{o.system_mileage_km ?? '—'}</td>
                       <td className="pr-2">
                         {isDemo ? (
-                          <span className={VERDICT_STYLE[o.verdict] ?? 'text-white'}>{o.verdict}</span>
+                          <VerdictPill verdict={o.verdict} source={rowVerdictSource(o)} />
                         ) : (
-                          <span className="inline-flex items-center gap-1">
-                            <select
-                              value={o.verdict}
-                              disabled={isVerdictLoading}
-                              onChange={e => handleVerdictChange(o, e.target.value, idx)}
-                              title={o.verdict_edited ? 'Изменено оператором' : undefined}
-                              className={`bg-transparent border-0 outline-none cursor-pointer text-[11px] font-medium appearance-none pr-1 disabled:opacity-50 disabled:cursor-wait ${VERDICT_STYLE[o.verdict] ?? 'text-white'}`}
-                            >
-                              {ALLOWED_VERDICTS.map(v => (
-                                <option key={v} value={v} className="bg-card text-primary">{v}</option>
-                              ))}
-                              {!ALLOWED_VERDICTS.includes(o.verdict as typeof ALLOWED_VERDICTS[number]) && (
-                                <option value={o.verdict} className="bg-card text-primary">{o.verdict}</option>
-                              )}
-                            </select>
-                            {o.verdict_edited && (
-                              <span title="Изменено оператором" className="text-info shrink-0">●</span>
-                            )}
+                          <span className="inline-flex min-w-0 items-center">
+                            {/* Пилюля показывает ИСТОЧНИК вердикта (правила / ИИ / оператор),
+                                а нативный select лежит прозрачным слоем поверх — так остаётся
+                                штатный выпадающий список без своей вёрстки. */}
+                            <span className="relative inline-flex min-w-0 items-center rounded-pill focus-within:ring-1 focus-within:ring-accent">
+                              <VerdictPill
+                                verdict={o.verdict}
+                                source={rowVerdictSource(o)}
+                                className={isVerdictLoading ? 'opacity-50' : ''}
+                                title={verdictCellHint(o)}
+                              />
+                              <span className="ml-1.5 shrink-0 text-[11px] text-muted">▾</span>
+                              <select
+                                value={o.verdict}
+                                disabled={isVerdictLoading}
+                                onChange={e => handleVerdictChange(o, e.target.value, idx)}
+                                title={verdictCellHint(o)}
+                                aria-label="Вердикт по объекту"
+                                className="absolute inset-0 h-full w-full cursor-pointer appearance-none border-0 bg-transparent text-transparent opacity-0 outline-none disabled:cursor-wait"
+                              >
+                                {ALLOWED_VERDICTS.map(v => (
+                                  <option key={v} value={v} className="bg-card text-primary">{v}</option>
+                                ))}
+                                {!ALLOWED_VERDICTS.includes(o.verdict as typeof ALLOWED_VERDICTS[number]) && (
+                                  <option value={o.verdict} className="bg-card text-primary">{o.verdict}</option>
+                                )}
+                              </select>
+                            </span>
+                            {(() => {
+                              const d = verdictDisagreement(o.verdict, o.heuristic_category, rowVerdictSource(o))
+                              return d ? (
+                                <span
+                                  title={`Правила: ${d.from} → ${d.by}: ${d.to}`}
+                                  className="ml-1.5 shrink-0 text-[11px] text-muted"
+                                >⇄</span>
+                              ) : null
+                            })()}
                             {isVerdictLoading && (
-                              <span className="animate-spin text-muted shrink-0">↻</span>
+                              <span className="ml-1.5 animate-spin text-muted shrink-0">↻</span>
                             )}
                           </span>
                         )}
@@ -1905,6 +2088,7 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
               </tbody>
             </table>
           </div>
+          <ParseDisagreeNote objects={res.objects} />
           <ParseTableNote />
           {isAggregate && (
             <p className="flex items-start gap-1.5 text-[11px] text-muted leading-relaxed">
@@ -2385,6 +2569,9 @@ export function IssueDetail() {
   // Уверенность и признак «можно авто» есть только у одиночного анализа: в пакетном
   // разборе бэкенд отдаёт по объекту вердикт и метрики, но не оценку уверенности.
   const singleAnalysis = automateCached?.cached ? (automateCached as unknown as AutomationResult) : null
+  // Источник вердикта ВЫБРАННОЙ строки: от него зависит вид пилюли, полоса доверия
+  // и наличие обоснования в блоке телеметрии (см. VerdictPill).
+  const selectedSource: VerdictSource | null = selectedObj ? rowVerdictSource(selectedObj) : null
 
   return (
     <ActiveSectionContext.Provider value={activeSectionValue}>
@@ -2551,7 +2738,12 @@ export function IssueDetail() {
             selectedIdx={selectedIdx}
             onSelectObject={(idx, objects) => { setSelectedIdx(idx); setSelectedObj(objects[idx] ?? null) }}
           />
-          <SingleParseTable issueId={issue.id} onSelect={obj => { setSelectedIdx(0); setSelectedObj(obj) }} />
+          <SingleParseTable
+            issueId={issue.id}
+            issueTitle={issue.subject}
+            companyName={issue.company_name}
+            onSelect={obj => { setSelectedIdx(0); setSelectedObj(obj) }}
+          />
           <AutoAnalysis
             issueId={issue.id}
             issueTitle={issue.subject}
@@ -2573,7 +2765,11 @@ export function IssueDetail() {
             needsReview={singleAnalysis?.needs_review ?? false}
             autoEligible={singleAnalysis?.auto_eligible}
             subtitle={selectedObj?.plate ?? null}
-            reasoning={singleAnalysis?.reasoning ?? null}
+            // Обоснование — только у вердикта ИИ: у правил и у ручной правки его нет,
+            // а чужой текст от прошлого прогона объяснял бы не тот вердикт.
+            reasoning={selectedSource === 'ai' ? singleAnalysis?.reasoning ?? null : null}
+            verdictSource={selectedSource}
+            heuristicCategory={selectedObj?.heuristic_category ?? null}
           />
           {!selectedObj && (
             <p className="text-[13px] text-muted">

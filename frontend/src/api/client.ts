@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { IssuesListResponse, IssueDetail, Comment, Analysis, Template, TemplateCategory, TemplateCreate, TemplateUpdate, AutomationResult, TrackData, IssueAttachment, BatchResult, TemplateValues, ChatResponse, AiFeedback, AiFeedbackBody, AiFeedbackListItem, AiFeedbackRating, InstallerExport, SavedFilter, SavedFilterCreate, SavedFilterUpdate } from '../types'
+import type { IssuesListResponse, IssueDetail, Comment, Analysis, Template, TemplateCategory, TemplateCreate, TemplateUpdate, AutomationResult, TrackData, IssueAttachment, BatchResult, ParseResult, TemplateValues, ChatResponse, AiFeedback, AiFeedbackBody, AiFeedbackListItem, AiFeedbackRating, InstallerExport, SavedFilter, SavedFilterCreate, SavedFilterUpdate } from '../types'
 import type { UserRole } from '../store/authStore'
 
 const http = axios.create({
@@ -134,6 +134,24 @@ export const api = {
 
   getCachedAutomate(id: number): Promise<(AutomationResult & { cached: boolean; created_at?: string })> {
     return http.get(`/issues/${id}/automate`).then(r => r.data)
+  },
+
+  // Детерминированный разбор БЕЗ DeepSeek: факты + предварительный вердикт по
+  // правилам. Токены не тратит. attachments=true запускает OCR (дорого по CPU) —
+  // по умолчанию вложения не читаются, поэтому вызов безопасен при открытии карточки.
+  // plate/date — ручное уточнение оператора (перепроверка ТС в гео по верным данным).
+  parseIssue(id: number, opts?: { plate?: string; date?: string; attachments?: boolean }): Promise<ParseResult> {
+    const params: Record<string, string | boolean> = {}
+    if (opts?.plate) params.plate = opts.plate
+    if (opts?.date) params.date = opts.date
+    if (opts?.attachments) params.attachments = true
+    return http.post(`/issues/${id}/parse`, null, Object.keys(params).length ? { params } : undefined).then(r => r.data)
+  },
+
+  // Последний детерминированный разбор из кэша, без пересчёта (kind `parse`
+  // отдельный от `automate` — переживает ИИ-прогон). cached=false, если его нет.
+  getCachedParse(id: number): Promise<(ParseResult & { cached: boolean; created_at?: string })> {
+    return http.get(`/issues/${id}/parse`).then(r => r.data)
   },
 
   automateBatch(id: number): Promise<BatchResult> {
