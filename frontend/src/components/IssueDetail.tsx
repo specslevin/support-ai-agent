@@ -82,13 +82,14 @@ function readSectionState(): Record<string, boolean> {
  */
 const BODY_SECTIONS: { key: string; defaultOpen: boolean; optional?: boolean }[] = [
   { key: 'question', defaultOpen: true },
+  { key: 'details', defaultOpen: false },
   { key: 'attachments', defaultOpen: false, optional: true },
   { key: 'parse', defaultOpen: true },
   { key: 'telemetry', defaultOpen: true },
+  { key: 'feedback', defaultOpen: false },
   { key: 'comments', defaultOpen: true },
   { key: 'related', defaultOpen: true, optional: true },
-  { key: 'details', defaultOpen: false },
-  { key: 'feedback', defaultOpen: false },
+  { key: 'installer', defaultOpen: false },
 ]
 
 /**
@@ -125,7 +126,7 @@ const ActiveSectionContext = createContext<{
   clear: (id: string) => void
 }>({ active: null, activate: () => {}, clear: () => {} })
 
-function useSectionOpen(storageKey: string | undefined, defaultOpen: boolean) {
+function useSectionOpen(storageKey: string | undefined, defaultOpen: boolean, forceOpen?: string | number | null) {
   // Секции без storageKey всё равно должны различаться в контексте активной.
   const fallbackId = useId()
   const id = storageKey ?? fallbackId
@@ -135,6 +136,16 @@ function useSectionOpen(storageKey: string | undefined, defaultOpen: boolean) {
     const saved = readSectionState()[storageKey]
     return typeof saved === 'boolean' ? saved : defaultOpen
   })
+  // Разовое навязанное раскрытие (см. проп forceOpen у Block): срабатывает один
+  // раз на значение-ключ — свернул оператор руками, значит больше не навязываем;
+  // сменилась заявка (ключ другой) — навязываем заново. В localStorage не пишем:
+  // сохранённый выбор оператора этим раскрытием не затирается.
+  const forcedRef = useRef<string | number | null>(null)
+  useEffect(() => {
+    if (forceOpen == null || forcedRef.current === forceOpen) return
+    forcedRef.current = forceOpen
+    setOpen(true)
+  }, [forceOpen])
   const toggle = () => {
     const next = !open
     setOpen(next)
@@ -219,7 +230,7 @@ function Section({ title, children, defaultOpen = true, storageKey }: {
  * с которой работал оператор) помечена лаймовой полосой 2px слева, остальные —
  * прозрачной полосой той же ширины, чтобы текст не дёргался по горизонтали.
  */
-function Block({ title, count, right, children, defaultOpen = true, storageKey }: {
+function Block({ title, count, right, children, defaultOpen = true, storageKey, forceOpen }: {
   title: string
   count?: number | string | null
   right?: React.ReactNode
@@ -227,8 +238,14 @@ function Block({ title, count, right, children, defaultOpen = true, storageKey }
   defaultOpen?: boolean
   /** Ключ для запоминания раскрытия в localStorage (не сбрасывается между заявками). */
   storageKey?: string
+  /**
+   * Разово раскрыть секцию, когда в ней ждёт обязательное действие (напр. не
+   * указан тип заявки). Значение — ключ навязывания: своё на заявку, чтобы
+   * повтор случился у другой заявки, но не после ручного сворачивания.
+   */
+  forceOpen?: string | number | null
 }) {
-  const { open, toggle, focus, isActive } = useSectionOpen(storageKey, defaultOpen)
+  const { open, toggle, focus, isActive } = useSectionOpen(storageKey, defaultOpen, forceOpen)
   return (
     <section
       onMouseDownCapture={focus}
@@ -261,13 +278,15 @@ function fallbackCopyText(text: string) {
 }
 
 /**
- * «Передать монтажнику»: два формата (КАЛЕНДАРЬ / МЕССЕНДЖЕР) в один клик.
- * В v4 отдельной секции больше нет — эти действия живут двумя иконками в липком
- * баре, поэтому логика вынесена в хук и переиспользуется как есть.
+ * «Передать монтажникам»: два формата (КАЛЕНДАРЬ / МЕССЕНДЖЕР) в один клик.
+ * Живёт последней секцией карточки (см. InstallerSection); логика в хуке, чтобы
+ * текст собирался ТОЛЬКО по клику на формат — ни монтаж, ни раскрытие секции
+ * запросов не делают (принцип проекта: ИИ и сборка данных работают по кнопке).
  */
 function useInstallerExport(issueId: number) {
   const [copied, setCopied] = useState<'calendar' | 'messenger' | null>(null)
-  const [showPreview, setShowPreview] = useState(false)
+  // Формат, запрошенный последним: его текст показываем инлайн внутри секции.
+  const [shown, setShown] = useState<'calendar' | 'messenger' | null>(null)
 
   // isFetching, а НЕ isPending: у query с enabled:false статус всегда 'pending'
   // (данных ещё нет), из-за чего спиннер «Собираю…» висел вечно. isFetching=true
@@ -288,53 +307,76 @@ function useInstallerExport(issueId: number) {
     const d = await ensure()
     if (!d) return
     await copyToClipboard(kind === 'calendar' ? d.calendar : d.messenger)
-    setShowPreview(true)
+    setShown(kind)
     setCopied(kind)
     setTimeout(() => setCopied(null), 1800)
   }
 
-  return { data, isFetching, isError, copied, showPreview, setShowPreview, handleCopy }
+  return { data, isFetching, isError, copied, shown, handleCopy }
 }
 
-/** Предпросмотр обоих форматов монтажнику — всплывает над липким баром. */
-function InstallerPreview({ data, onCopy, onHide }: {
-  data: { calendar: string; messenger: string }
-  onCopy: (kind: 'calendar' | 'messenger') => void
-  onHide: () => void
-}) {
+const INSTALLER_FORMATS = [
+  { kind: 'calendar', label: 'Календарь', icon: Calendar, hint: 'формат для карточки в календаре' },
+  { kind: 'messenger', label: 'Мессенджер', icon: MessageSquare, hint: 'формат для сообщения в мессенджере' },
+] as const
+
+/**
+ * «Передать монтажникам» — последняя секция карточки (v4). Текст собирается по
+ * клику на формат: сразу уходит в буфер и остаётся инлайн, чтобы оператор видел,
+ * что именно скопировал, и мог скопировать повторно.
+ */
+function InstallerSection({ issueId }: { issueId: number }) {
+  const { data, isFetching, isError, copied, shown, handleCopy } = useInstallerExport(issueId)
+  const text = shown && data ? (shown === 'calendar' ? data.calendar : data.messenger) : null
+  const shownLabel = INSTALLER_FORMATS.find(f => f.kind === shown)?.label ?? ''
+
   return (
-    <div className="space-y-2 border-b border-line pb-2.5">
-      <div className="flex items-center gap-2">
-        <span className="text-[9px] font-medium uppercase tracking-[0.4px] text-muted">Передать монтажнику</span>
-        <button onClick={onHide} title="Скрыть предпросмотр" className="ml-auto text-muted hover:text-accent transition-colors">
-          <X size={13} />
-        </button>
-      </div>
-      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-        <PreviewCard icon={Calendar} title="Календарь" text={data.calendar} onCopy={() => onCopy('calendar')} />
-        <PreviewCard icon={Send} title="Мессенджер" text={data.messenger} onCopy={() => onCopy('messenger')} />
-      </div>
-      <p className="text-[10px] text-muted/70">
-        Прочерки «____» — поля не найдены в заявке, дозаполните вручную перед отправкой.
+    <Block title="Передать монтажникам" storageKey="installer" defaultOpen={false}>
+      <p className="text-[11px] leading-4 text-secondary">
+        Готовый текст с адресом, техникой и контактом. Собирается по кнопке формата и сразу копируется в буфер.
       </p>
-    </div>
-  )
-}
-
-function PreviewCard({ icon: Icon, title, text, onCopy }: {
-  icon: LucideIcon; title: string; text: string; onCopy: () => void
-}) {
-  return (
-    <div className="rounded-md border border-border bg-frame p-2.5 space-y-1.5">
-      <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-muted">
-        <Icon size={11} className="text-accent" />
-        <span>{title}</span>
-        <button onClick={onCopy} title="Копировать" className="ml-auto text-muted hover:text-accent transition-colors">
-          <Copy size={12} />
-        </button>
+      <div className="flex flex-wrap items-center gap-2">
+        {INSTALLER_FORMATS.map(f => (
+          <button
+            key={f.kind}
+            onClick={() => handleCopy(f.kind)}
+            disabled={isFetching}
+            title={copied === f.kind ? 'Скопировано' : `Собрать и скопировать текст монтажнику — ${f.hint}`}
+            className="flex items-center justify-center gap-1.5 bg-frame border border-border hover:border-accent rounded-md px-3 py-1.5 text-xs font-semibold text-muted hover:text-accent transition-colors disabled:opacity-40"
+          >
+            {copied === f.kind
+              ? <Check size={13} className="text-success" />
+              : isFetching
+              ? <Loader2 size={13} className="animate-spin" />
+              : <f.icon size={13} />}
+            {f.label}
+          </button>
+        ))}
       </div>
-      <pre className="whitespace-pre-wrap break-words text-[11px] leading-relaxed text-white/80 font-sans">{text}</pre>
-    </div>
+      {isError && (
+        <p className="text-[11px] text-orange-400">Не удалось собрать данные для монтажника. Попробуйте ещё раз.</p>
+      )}
+      {text && (
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-2">
+            <span className="text-[9px] font-medium uppercase tracking-[0.4px] text-muted">{shownLabel}</span>
+            <button
+              onClick={() => copyToClipboard(text)}
+              title="Скопировать текст ещё раз"
+              className="ml-auto flex items-center gap-1 text-[11px] text-muted hover:text-accent transition-colors"
+            >
+              <Copy size={12} /> Скопировать
+            </button>
+          </div>
+          <p className="text-[11px] text-white whitespace-pre-wrap break-words bg-frame border border-border rounded-md px-3 py-2 leading-relaxed">{text}</p>
+          {text.includes('____') && (
+            <p className="text-[10px] text-muted/70">
+              Прочерки «____» — поля не найдены в заявке, дозаполните вручную перед отправкой.
+            </p>
+          )}
+        </div>
+      )}
+    </Block>
   )
 }
 
@@ -2198,8 +2240,6 @@ export function IssueDetail() {
   // Галочки «скопировано» в шапке (номер заявки и телефон контакта).
   const [numCopied, setNumCopied] = useState(false)
   const [phoneCopied, setPhoneCopied] = useState(false)
-  // Копирование для монтажника — те же два формата, теперь иконками в баре.
-  const installer = useInstallerExport(selectedIssueId ?? 0)
   // Секция, с которой оператор работает прямо сейчас: только она носит лаймовую
   // полосу и акцентный заголовок. Раскрыто при этом может быть сколько угодно.
   const [activeSection, setActiveSection] = useState<string | null>(null)
@@ -2338,6 +2378,10 @@ export function IssueDetail() {
   // в «Параметрах заявки») — отдельного поля в okdesk_detail нет.
   const contactPhone = od?.parameters.find(p => /телефон|тел\b|моб/i.test(p.name))?.value?.trim() || null
   const useBatch = isBatchIssue(issue, od?.description, extractableCount)
+  // Без типа Okdesk не пускает заявку ни в «В работе», ни в «Решена» (проверка в
+  // кнопке «Ответить и решить» ниже). Тем же условием раскрываем «Детали заявки»:
+  // тип правится там, и оператор видит блокер сразу, а не по тосту в конце.
+  const typeMissing = !od?.type_code || od.type_code === 'inner'
   // Уверенность и признак «можно авто» есть только у одиночного анализа: в пакетном
   // разборе бэкенд отдаёт по объекту вердикт и метрики, но не оценку уверенности.
   const singleAnalysis = automateCached?.cached ? (automateCached as unknown as AutomationResult) : null
@@ -2467,7 +2511,28 @@ export function IssueDetail() {
         {/* Вопрос клиента — исходный материал, до разбора ИИ */}
         <ClientQuestionBlock description={od?.description} source={od?.source} createdAt={issue.created_at} />
 
-        {/* Вложения — сразу после письма: это его файлы */}
+        {/* Детали заявки — свойства, участники, сроки, параметры. Второй сверху:
+            без типа заявку не решить, а тип правится именно здесь (см. forceOpen). */}
+        <Block title="Детали заявки" storageKey="details" defaultOpen={false} forceOpen={od && typeMissing ? issue.id : null}>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
+            <span className="text-muted">Компания</span>
+            <span>{issue.company_name ?? '—'}</span>
+            <span className="text-muted">Контакт</span>
+            <span>{issue.contact_name ?? '—'}</span>
+            <span className="text-muted">Создана</span>
+            <span>{formatDate(issue.created_at) ?? '—'}</span>
+          </div>
+
+          {/* Live Okdesk info */}
+          {od && <div className="mt-3"><OkdeskInfo d={od} issueId={issue.id} assigneeName={issue.assignee_name ?? null} /></div>}
+
+          {/* Если okdesk_detail пустой — показываем только assignee picker */}
+          {!od && (
+            <div className="mt-3"><AssigneeSection issueId={issue.id} assigneeName={issue.assignee_name ?? null} /></div>
+          )}
+        </Block>
+
+        {/* Вложения — файлы письма клиента */}
         <AttachmentsSection issueId={issue.id} />
 
         {/* Разбор — таблица объектов: одинаково для одного ТС и для двадцати */}
@@ -2525,8 +2590,18 @@ export function IssueDetail() {
           )}
         </Block>
 
-        {/* Комментарии — только лента: составление ответа живёт в липком баре.
-            «Передать монтажнику» тоже переехало в бар (две иконки слева). */}
+        {/* Оценка разбора — петля обратной связи для обучения ИИ. Сразу после
+            телеметрии: оценивают свежий разбор, а не переписку с клиентом. */}
+        <Block
+          title="Оценка разбора"
+          storageKey="feedback"
+          defaultOpen={false}
+          right={<span>влияет на обучение ИИ</span>}
+        >
+          <AiFeedbackPanel issueId={issue.id} />
+        </Block>
+
+        {/* Комментарии — только лента: составление ответа живёт в липком баре. */}
         <Block
           title="Комментарии"
           storageKey="comments"
@@ -2608,35 +2683,8 @@ export function IssueDetail() {
         {/* Связанные заявки — навигация по родителю/дочерним */}
         {od && <RelatedIssuesSection d={od} onOpenExternal={openExternal} />}
 
-        {/* Детали заявки — свойства, участники, сроки, параметры */}
-        <Block title="Детали заявки" storageKey="details" defaultOpen={false}>
-          <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
-            <span className="text-muted">Компания</span>
-            <span>{issue.company_name ?? '—'}</span>
-            <span className="text-muted">Контакт</span>
-            <span>{issue.contact_name ?? '—'}</span>
-            <span className="text-muted">Создана</span>
-            <span>{formatDate(issue.created_at) ?? '—'}</span>
-          </div>
-
-          {/* Live Okdesk info */}
-          {od && <div className="mt-3"><OkdeskInfo d={od} issueId={issue.id} assigneeName={issue.assignee_name ?? null} /></div>}
-
-          {/* Если okdesk_detail пустой — показываем только assignee picker */}
-          {!od && (
-            <div className="mt-3"><AssigneeSection issueId={issue.id} assigneeName={issue.assignee_name ?? null} /></div>
-          )}
-        </Block>
-
-        {/* Оценка разбора — петля обратной связи для обучения ИИ */}
-        <Block
-          title="Оценка разбора"
-          storageKey="feedback"
-          defaultOpen={false}
-          right={<span>влияет на обучение ИИ</span>}
-        >
-          <AiFeedbackPanel issueId={issue.id} />
-        </Block>
+        {/* Передать монтажникам — последняя секция: текст собирается по кнопке */}
+        <InstallerSection key={issue.id} issueId={issue.id} />
 
         {/* Подвал с мета-данными: то, что нужно редко и не требует действий */}
         <div className="px-4 py-2.5 pb-4 text-[11px] leading-4 text-muted">
@@ -2652,46 +2700,11 @@ export function IssueDetail() {
       </div>
 
       {/* ── Липкий бар = БЫСТРЫЙ ОТВЕТ: единственная точка отправки ──
-          Свёрнутый: две иконки монтажнику → поле «Ответить клиенту…» → «Шаблон ▾»
-          → «Ответить и решить». По фокусу на поле раскрывается второй ряд. */}
+          Свёрнутый: поле «Ответить клиенту…» → «Шаблон ▾» → «Ответить и решить».
+          По фокусу на поле раскрывается второй ряд. «Передать монтажникам» из
+          бара убрано — это отдельная секция в конце карточки. */}
       <div className="shrink-0 border-t border-border bg-darker px-4 py-2.5 flex flex-col gap-2">
-        {installer.showPreview && installer.data && (
-          <InstallerPreview
-            data={installer.data}
-            onCopy={installer.handleCopy}
-            onHide={() => installer.setShowPreview(false)}
-          />
-        )}
-        {installer.isError && (
-          <p className="text-[11px] text-orange-400">Не удалось собрать данные для монтажника. Попробуйте ещё раз.</p>
-        )}
-
         <div className="flex items-center gap-2">
-          <button
-            onClick={() => installer.handleCopy('calendar')}
-            disabled={installer.isFetching}
-            title={installer.copied === 'calendar' ? 'Скопировано' : 'Скопировать для монтажника — формат для календаря'}
-            className="flex h-[27px] w-[27px] shrink-0 items-center justify-center rounded-pill border border-border bg-frame text-secondary hover:border-accent hover:text-accent transition-colors disabled:opacity-50"
-          >
-            {installer.copied === 'calendar'
-              ? <Check size={13} className="text-success" />
-              : installer.isFetching
-              ? <Loader2 size={13} className="animate-spin" />
-              : <Calendar size={13} />}
-          </button>
-          <button
-            onClick={() => installer.handleCopy('messenger')}
-            disabled={installer.isFetching}
-            title={installer.copied === 'messenger' ? 'Скопировано' : 'Скопировать для монтажника — формат для мессенджера'}
-            className="flex h-[27px] w-[27px] shrink-0 items-center justify-center rounded-pill border border-border bg-frame text-secondary hover:border-accent hover:text-accent transition-colors disabled:opacity-50"
-          >
-            {installer.copied === 'messenger'
-              ? <Check size={13} className="text-success" />
-              : installer.isFetching
-              ? <Loader2 size={13} className="animate-spin" />
-              : <MessageSquare size={13} />}
-          </button>
-
           <textarea
             value={comment}
             onChange={e => setComment(e.target.value)}
@@ -2710,7 +2723,7 @@ export function IssueDetail() {
           <button
             disabled={!comment || quickResolve.isPending || isDemo}
             onClick={() => {
-              if (!od?.type_code || od.type_code === 'inner') {
+              if (typeMissing) {
                 setToast('Сначала укажите тип заявки')
                 return
               }
