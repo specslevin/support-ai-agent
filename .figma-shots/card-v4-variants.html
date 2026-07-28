@@ -1,0 +1,1668 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Карточка заявки v4 — плоские строки</title>
+<style>
+:root{
+  --accent:#99D52A; --base:#0A0A0A; --darker:#171717; --frame:#171717;
+  --hover:#161616; --text:#FFFFFF; --secondary:#ACC3A7; --muted:#7A8A7A;
+  --border:#404040; --line:#262626;
+  --warning:#F3BA2F; --success:#22C55E; --info:#60A5FA; --orange:#FB923C;
+  --wait:#2B6684; --wait-fg:#7EC8E3;
+  --accent-10:rgba(153,213,42,.10); --accent-15:rgba(153,213,42,.15);
+  --warning-15:rgba(243,186,47,.15); --warning-5:rgba(243,186,47,.05);
+  --white-8:rgba(255,255,255,.08);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--base);color:var(--text);
+  font:400 13px/20px Inter,"Segoe UI",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased;padding:20px}
+
+/* ── демо-обвязка (не часть интерфейса) ─────────────────────────── */
+.demo{max-width:1600px;margin:0 auto 14px}
+.demo h1{font:700 18px/24px inherit;margin-bottom:4px}
+.demo p{color:var(--muted);font-size:12px;line-height:18px;max-width:960px}
+.demo-ctl{margin-top:10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.demo-ctl b{font:500 11px/16px inherit;color:var(--muted);text-transform:uppercase;
+  letter-spacing:.4px}
+.dbtn{background:var(--frame);border:1px solid var(--border);color:var(--secondary);
+  border-radius:999px;padding:5px 12px;font:500 12px/16px inherit;cursor:pointer}
+.dbtn.on{background:var(--accent-15);border-color:var(--accent);color:var(--accent)}
+
+/* ── сцена: трек-панель + рельса ─────────────────────────────────── */
+.stage{display:flex;gap:16px;align-items:flex-start;max-width:1600px;margin:0 auto}
+.track-panel{flex:1;min-width:0;height:980px;background:var(--darker);
+  border:1px solid var(--line);border-radius:14px;display:none;
+  flex-direction:column;overflow:hidden}
+.track-panel.open{display:flex}
+.tp-hd{padding:12px 14px;border-bottom:1px solid var(--line);display:flex;
+  align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.tp-hd .t{font:500 13px/20px inherit}
+.tp-map{flex:1;margin:12px;border-radius:12px;background:
+  repeating-linear-gradient(45deg,#101510 0 12px,#0d120d 12px 24px);
+  border:1px solid var(--line);display:grid;place-items:center;color:var(--muted);
+  font-size:12px;text-align:center;padding:20px}
+.tp-charts{height:220px;margin:0 12px 12px;border-radius:12px;background:#101010;
+  border:1px solid var(--line);display:grid;place-items:center;color:var(--muted);
+  font-size:12px}
+
+/* ── рельса 680 ──────────────────────────────────────────────────── */
+.rail{flex:0 0 680px;width:680px;height:980px;display:flex;flex-direction:column;
+  background:var(--base);border:1px solid var(--line);border-radius:14px;overflow:hidden;
+  position:relative}
+.rail-body{flex:1;overflow-y:auto;overscroll-behavior:contain}
+.rail-body::-webkit-scrollbar{width:8px}
+.rail-body::-webkit-scrollbar-thumb{background:#2c2c2c;border-radius:999px}
+.hr{height:1px;background:var(--line);flex-shrink:0}
+
+/* ── шапка ───────────────────────────────────────────────────────── */
+.hd{padding:14px 16px 12px;display:flex;flex-direction:column;gap:7px;flex-shrink:0}
+.hd-r1{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.hd-num{display:flex;align-items:center;gap:6px;min-width:0}
+.hd-num b{font:700 15px/20px inherit;font-feature-settings:"tnum"}
+.hd-theme{font:500 13px/20px inherit;color:var(--text)}
+.hd-who{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:12px;
+  line-height:18px}
+.hd-who .cl{color:var(--secondary)}
+.hd-who .sep{color:var(--muted)}
+.hd-who .ct{color:var(--text);font-weight:500}
+.icons{display:flex;gap:6px;flex-shrink:0}
+.ico{width:27px;height:27px;border-radius:999px;background:var(--frame);
+  border:1px solid var(--border);color:var(--secondary);display:grid;place-items:center;
+  font-size:12px;cursor:pointer;flex-shrink:0}
+.ico:hover{border-color:var(--accent);color:var(--accent)}
+.ico.mini{width:22px;height:22px;font-size:10px}
+.ico.flash{background:var(--accent);border-color:var(--accent);color:#000}
+.chips{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.pill{border-radius:999px;padding:2px 9px;font:500 11px/16px inherit;white-space:nowrap}
+.pill-wait{background:var(--frame);border:1px solid var(--wait);color:var(--wait-fg)}
+.pill-warn{background:var(--warning-15);color:var(--warning)}
+.pill-warn-o{background:var(--frame);border:1px solid var(--warning);color:var(--warning)}
+.pill-acc{background:var(--accent-15);color:var(--accent)}
+.pill-info{background:var(--frame);border:1px solid var(--info);color:var(--info)}
+.badge{border-radius:4px;padding:2px 6px;background:var(--white-8);color:var(--muted);
+  font:500 9px/12px inherit;letter-spacing:.4px;text-transform:uppercase;white-space:nowrap}
+.count{border-radius:999px;padding:1px 7px;background:var(--white-8);color:var(--muted);
+  font:500 11px/16px inherit}
+.meta{font-size:11px;line-height:16px;color:var(--muted)}
+
+/* ── кнопки ──────────────────────────────────────────────────────── */
+.btn{border-radius:999px;font:500 13px/20px inherit;cursor:pointer;
+  border:1px solid transparent;padding:7px 14px;white-space:nowrap}
+.btn-2{background:var(--frame);border-color:var(--border);color:var(--secondary)}
+.btn-2:hover{border-color:var(--muted);color:var(--text)}
+.btn-1{background:var(--accent);color:#000;padding:7px 16px}
+.btn-1:hover{background:#8bc426}
+.btn-sm{padding:5px 12px;font-size:12px}
+
+/* ── секции: плоские строки, активная с лаймовой полосой ──────────
+   Полоса горит РОВНО У ОДНОЙ секции — последней, которую раскрыли или
+   в которую кликнули. Раньше правило висело на [open]: раскрытых бывает
+   пять-шесть разом, и приём «ты сейчас здесь» терял смысл. */
+.sec{border-left:2px solid transparent;padding:10px 16px 10px 14px}
+.sec.active{border-left-color:var(--accent)}
+.sec>summary{list-style:none;cursor:pointer;display:flex;align-items:center;
+  justify-content:space-between;gap:8px}
+.sec>summary::-webkit-details-marker{display:none}
+.sum-l{display:flex;align-items:center;gap:8px;min-width:0}
+.sec .t{font:500 9px/12px inherit;letter-spacing:.4px;text-transform:uppercase;
+  color:var(--muted)}
+.sec.active .t{color:var(--accent)}
+.chev{color:var(--muted);font-size:11px;transition:transform .15s}
+.sec[open]>summary .chev{transform:rotate(180deg)}
+.sbody{padding-top:10px}
+
+/* ── таблица разбора ─────────────────────────────────────────────── */
+table{width:100%;table-layout:fixed;border-collapse:separate;border-spacing:1px;
+  background:var(--line);border-radius:8px;overflow:hidden}
+th{background:#131313;padding:6px;text-align:left;font:500 10px/14px inherit;
+  color:var(--muted);white-space:nowrap;letter-spacing:.2px}
+td{background:var(--frame);padding:6px;font-size:11px;line-height:16px;
+  color:var(--secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+tbody tr{cursor:pointer}
+tbody tr:hover td{background:var(--hover)}
+tr.sel td{background:var(--accent-10)}
+tr.sel td:first-child{box-shadow:inset 2px 0 0 var(--accent)}
+td.plate{font-weight:500;color:var(--text);font-family:ui-monospace,Consolas,monospace}
+td.num{font-feature-settings:"tnum"}
+td.act{text-align:center;padding:3px}
+.v-jam{color:var(--orange);font-weight:500}
+.v-ok{color:var(--success);font-weight:500}
+.v-pwr{color:var(--warning);font-weight:500}
+.v-chk{color:var(--info);font-weight:500}
+.tbl-sum{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+.tbl-note{margin-top:8px;color:var(--muted);font-size:11px;line-height:16px}
+.tmark{color:var(--accent);font-size:9px;vertical-align:middle}
+.tico{display:inline-grid;place-items:center;width:20px;height:20px;border-radius:999px;
+  border:1px solid var(--border);background:#111;color:var(--muted);font-size:10px;
+  cursor:pointer}
+.tico:hover{border-color:var(--accent);color:var(--accent)}
+.tico.on{background:var(--accent);border-color:var(--accent);color:#000}
+
+/* ── телеметрия ──────────────────────────────────────────────────── */
+.tel-hd{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+.conf{height:4px;border-radius:999px;background:var(--frame);overflow:hidden;
+  margin-bottom:10px}
+.conf i{display:block;height:4px;background:var(--accent);border-radius:999px}
+.tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.tile{background:var(--frame);border-radius:10px;padding:8px 10px;min-width:0}
+.tile em{font-style:normal;display:block;color:var(--muted);font-size:10px;line-height:14px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tile b{font:500 13px/20px inherit;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  display:block}
+.tile.warn b{color:var(--warning)}
+.tile.bad b{color:var(--orange)}
+.flags{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.why{margin-top:10px;background:var(--frame);border-radius:10px;padding:10px 12px;
+  border-left:2px solid var(--accent)}
+.why .wt{display:flex;align-items:center;gap:6px;font:500 11px/16px inherit;
+  color:var(--accent);margin-bottom:4px}
+.why p{color:var(--secondary);font-size:12px;line-height:18px}
+.why .alts{margin-top:6px;display:flex;flex-direction:column;gap:2px}
+.why .alt{display:flex;justify-content:space-between;gap:8px;font-size:11px;
+  line-height:16px;color:var(--muted)}
+.why .alt b{font-weight:500;color:var(--secondary)}
+.why .more{margin-top:6px;background:none;border:0;color:var(--accent);
+  font:500 11px/16px inherit;cursor:pointer;padding:0}
+
+/* ── источник вердикта: правила / ИИ / оператор ────────────────────
+   Заливка занята статусами Okdesk, дублировать её нельзя, поэтому
+   источник читается формой рамки и глифом:
+     пунктир, без глифа        — предварительный вердикт правил (бесплатно);
+     сплошная в цвет вердикта + ✦ — вердикт ИИ, рядом полоса доверия;
+     сплошная нейтральная + ✎  — ручная правка оператора (машина не трогает).
+   Цвет самого вердикта во всех трёх случаях один и тот же — v-jam/v-ok/
+   v-pwr/v-chk, новых цветов не заводим. */
+.pill-src{display:inline-flex;align-items:center;gap:5px;background:var(--frame);
+  vertical-align:middle;min-width:0;max-width:100%}
+/* в узкой ячейке таблицы длинный вердикт сжимается многоточием,
+   а хвост источника, полоса доверия и ▾ остаются видимыми */
+.vwrap{display:flex;align-items:center;min-width:0}
+.pill-src .vn{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.pill-src .st,.conf.mini,.vdis{flex:0 0 auto}
+.src-rules{border:1px dashed var(--border)}
+.src-ai{border:1px solid currentColor}
+.src-op{border:1px solid var(--border)}
+.pill-src .st{font:500 9px/12px inherit;letter-spacing:.4px;text-transform:uppercase;
+  color:var(--muted)}
+.conf.mini{display:inline-block;width:34px;margin:0 0 0 6px;vertical-align:middle}
+.vdis{color:var(--muted);font-size:11px;margin-left:6px}
+.tbl-note b{color:var(--secondary);font-weight:500}
+/* блок «зови ИИ» — тот же .why, но лайм слева гасим: акцент здесь у кнопки */
+.why.ask{border-left-color:var(--border)}
+.why.ask .wt{color:var(--secondary)}
+@keyframes aiwait{0%{margin-left:0}50%{margin-left:78%}100%{margin-left:0}}
+.conf.wait i{width:22%;animation:aiwait 1.15s ease-in-out infinite}
+
+/* ── ответ ───────────────────────────────────────────────────────── */
+.draft{background:var(--frame);border:1px solid var(--border);border-radius:10px;
+  padding:10px 12px;color:var(--secondary);font-size:13px;line-height:20px}
+.drow{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:8px}
+.drow-l{display:flex;gap:6px;flex-wrap:wrap}
+
+/* ── вложения (как на скриншоте) ─────────────────────────────────── */
+.att-top{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.att-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(74px,1fr));gap:6px}
+.att{background:var(--frame);border:1px solid var(--line);border-radius:10px;
+  padding:10px 6px 7px;text-align:center;cursor:pointer;min-width:0}
+.att:hover{border-color:var(--accent)}
+.att .fi{width:26px;height:26px;border-radius:5px;margin:0 auto 6px;display:grid;
+  place-items:center;font:700 9px/1 inherit;color:#fff}
+.fi-w{background:#2B579A}.fi-x{background:#217346}.fi-p{background:#C1341A}
+.fi-i{background:#5B5BD6}
+.att .fn{font-size:10px;line-height:14px;color:var(--muted);white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.att .fs{font-size:9px;line-height:12px;color:#5f6b5f}
+.att-more{margin-top:8px;background:none;border:0;color:var(--accent);
+  font:500 12px/16px inherit;cursor:pointer;padding:0;display:flex;align-items:center;gap:4px}
+
+/* ── комментарии ─────────────────────────────────────────────────── */
+.cmt{padding:9px 11px;border-radius:10px;background:#0F0F0F;margin-bottom:6px;
+  border-left:2px solid var(--border)}
+.cmt.client{border-left-color:var(--info)}
+.cmt.staff{border-left-color:var(--accent)}
+.cmt.notice{border-left-color:#3a3a3a}
+.cmt.notice .ctxt{color:var(--muted)}
+.cmt.priv{border:1px dashed rgba(243,186,47,.5);border-left:1px dashed rgba(243,186,47,.5);
+  background:var(--warning-5)}
+.cmt-hd{display:flex;align-items:center;justify-content:space-between;gap:8px;
+  margin-bottom:4px;flex-wrap:wrap}
+.cmt-l{display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0}
+.cmt-au{font:500 12px/18px inherit}
+.ctxt{font-size:12px;line-height:18px;color:var(--secondary)}
+.cmt-all{margin-top:2px;background:none;border:0;color:var(--accent);
+  font:500 12px/16px inherit;cursor:pointer;padding:0}
+
+/* ── липкий бар ──────────────────────────────────────────────────── */
+.bar{flex-shrink:0;border-top:1px solid var(--border);background:var(--darker);
+  padding:10px 16px;display:flex;flex-direction:column;gap:8px;position:relative}
+.bar-row{display:flex;align-items:center;gap:8px}
+.bar-icons{display:flex;align-items:center;gap:6px;min-width:0}
+.reply{flex:1;min-width:0;background:var(--frame);border:1px solid var(--border);
+  border-radius:999px;color:var(--text);padding:7px 14px;font:inherit;resize:none;
+  height:36px;line-height:20px;outline:none;transition:height .12s,border-radius .12s}
+.reply::placeholder{color:var(--muted)}
+.reply:focus{border-color:var(--accent)}
+.reply.exp{height:84px;border-radius:12px}
+.bar-more{display:none;align-items:center;justify-content:space-between;gap:8px;
+  flex-wrap:wrap}
+.bar-more.on{display:flex}
+.chip{background:var(--accent-15);border:1px solid var(--accent);color:var(--accent);
+  border-radius:999px;padding:3px 10px;font:500 11px/16px inherit;cursor:pointer;
+  white-space:nowrap}
+.chip:hover{background:var(--accent);color:#000}
+.segs{display:flex;background:var(--frame);border:1px solid var(--border);
+  border-radius:999px;padding:2px}
+.seg{background:none;border:0;color:var(--muted);border-radius:999px;padding:3px 10px;
+  font:500 11px/16px inherit;cursor:pointer}
+.seg.on{background:var(--accent-15);color:var(--accent)}
+.foot{padding:10px 16px 14px;color:var(--muted);font-size:11px;line-height:16px}
+.hint{padding:8px 16px;background:var(--accent-10);color:var(--accent);
+  font-size:11px;line-height:16px;display:none}
+.hint.on{display:block}
+
+/* ── общие мелочи, добавленные для новых блоков ───────────────────── */
+.cap{font:500 9px/12px inherit;letter-spacing:.4px;text-transform:uppercase;
+  color:var(--muted)}
+.fgroup{margin-bottom:10px}
+.fgroup>.cap{display:block;margin-bottom:4px}
+.btn:disabled,.opt:disabled{opacity:.45;cursor:not-allowed}
+.ico.on{background:var(--white-8);border-color:var(--muted);color:var(--text)}
+
+/* гард-подсказка (нельзя менять статус без типа заявки) */
+.guard{display:none;align-items:center;gap:6px;background:var(--warning-15);
+  color:var(--warning);border-radius:10px;padding:6px 10px;font-size:11px;line-height:16px}
+.guard.on{display:flex}
+
+/* кнопки-варианты: тип заявки, ответственный, тип ошибки, вердикт */
+.opt{background:var(--frame);border:1px solid var(--border);color:var(--secondary);
+  border-radius:999px;padding:4px 11px;font:500 11px/16px inherit;cursor:pointer;
+  white-space:nowrap}
+.opt:hover{border-color:var(--muted);color:var(--text)}
+.opt.on{background:var(--accent-15);border-color:var(--accent);color:var(--accent)}
+
+/* поля ввода в модалке и панелях */
+.fld{width:100%;background:var(--frame);border:1px solid var(--border);color:var(--text);
+  border-radius:999px;padding:6px 12px;font:400 12px/18px inherit;outline:none;
+  color-scheme:dark}
+.fld:focus{border-color:var(--accent)}
+.fld::placeholder{color:var(--muted)}
+.fld.ta{border-radius:12px;resize:none;height:64px}
+
+/* выпадающие панели над липким баром («Ещё», «Шаблон») */
+.pop{display:none;position:absolute;right:16px;bottom:calc(100% + 8px);z-index:50;
+  background:var(--darker);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.pop.on{display:block}
+.pop-hd{padding:9px 12px;border-bottom:1px solid var(--line);font:500 12px/18px inherit;
+  display:flex;align-items:center;justify-content:space-between;gap:8px}
+.pop-bd{padding:10px 12px}
+.pop-list{max-height:232px;overflow-y:auto}
+.pop-list::-webkit-scrollbar{width:8px}
+.pop-list::-webkit-scrollbar-thumb{background:#2c2c2c;border-radius:999px}
+.mitem{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;
+  background:none;border:0;border-bottom:1px solid var(--line);color:var(--secondary);
+  font:400 12px/18px inherit;text-align:left;padding:8px 12px;cursor:pointer}
+.mitem:last-child{border-bottom:0}
+.mitem:hover{background:var(--hover);color:var(--text)}
+.mitem em{font-style:normal;color:var(--muted);font-size:10px;line-height:14px}
+
+/* строка шаблона в списке */
+.tpl{display:flex;align-items:center;gap:8px;width:100%;background:none;border:0;
+  border-bottom:1px solid var(--line);padding:7px 12px;cursor:pointer;text-align:left}
+.tpl:last-child{border-bottom:0}
+.tpl:hover{background:var(--hover)}
+.tpl.on{background:var(--accent-10)}
+.tpl .tn{flex:1;min-width:0;font:500 12px/18px inherit;color:var(--text);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* модалка смены статуса */
+.modal{display:none;position:absolute;inset:0;z-index:40;background:rgba(10,10,10,.82);
+  padding:20px;align-items:center;justify-content:center}
+.modal.on{display:flex}
+.mbox{width:100%;max-width:440px;background:var(--base);border:1px solid var(--border);
+  border-radius:12px;overflow:hidden}
+.mbox-hd{padding:11px 14px;border-bottom:1px solid var(--line);font:500 13px/20px inherit;
+  display:flex;align-items:center;justify-content:space-between;gap:8px}
+.mbox-bd{padding:12px 14px}
+.mbox-ft{padding:10px 14px;border-top:1px solid var(--line);display:flex;
+  align-items:center;justify-content:flex-end;gap:8px}
+.req{color:var(--warning)}
+
+/* детали заявки: пары ключ/значение и тихий inline-edit */
+.kv{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--line)}
+.kv:last-of-type{border-bottom:0}
+.kv>.cap{flex:0 0 148px}
+.kv>.vv{flex:1;min-width:0;font-size:12px;line-height:18px;color:var(--secondary);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kv>.vv b{font-weight:500;color:var(--text)}
+.inl{flex:1;min-width:0;background:none;border:1px solid transparent;border-radius:999px;
+  color:var(--text);font:400 12px/18px inherit;padding:3px 9px;margin-left:-9px;outline:none}
+.inl:hover{border-color:var(--line)}
+.inl:focus{background:var(--frame);border-color:var(--accent)}
+.inl::placeholder{color:var(--warning)}
+
+/* связанные заявки */
+.rel{display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--line)}
+.rel:last-child{border-bottom:0}
+.rel .rn{background:none;border:0;padding:0;color:var(--text);cursor:pointer;
+  font:500 12px/18px inherit;font-feature-settings:"tnum";white-space:nowrap}
+.rel .rn:hover{text-decoration:underline}
+.rel .th{flex:1;min-width:0;font-size:12px;line-height:18px;color:var(--muted);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pill-ok{background:var(--frame);border:1px solid var(--success);color:var(--success)}
+
+/* прогресс OCR у вложений */
+.att .fo{font-size:9px;line-height:12px;color:var(--muted);white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.att .fo.w{color:var(--warning)}
+.note{max-width:1600px;margin:14px auto 0;color:var(--muted);font-size:11px;line-height:18px}
+.note b{color:var(--secondary);font-weight:500}
+</style>
+</head>
+<body>
+
+<div class="demo">
+  <h1>Карточка заявки v4 · плоские строки</h1>
+  <p>Рельса 680px, ноль подложек, всё на 1px-разделителях. Порядок: шапка → вопрос клиента →
+     детали заявки (тип, ответственный, тихий inline-edit параметров) → вложения →
+     разбор (таблица всегда, даже для одного объекта) → телеметрия выбранного объекта →
+     оценка разбора → комментарии → связанные заявки → передать монтажникам.
+     Ответ живёт в липком баре снизу: щёлкните поле «Ответить клиенту…» —
+     оно раскроется, появятся шаблон, публичный/приватный и чип «черновик ИИ» для выбранного
+     объекта. Копирование для монтажника переехало из бара в секцию «Передать монтажникам»:
+     два формата — календарь и мессенджер — и текст появляется только по кнопке.
+     Активная секция помечена лаймовой полосой слева. Клик по строке таблицы выбирает объект
+     и обновляет телеметрию; иконка ▤ в строке открывает и закрывает трек-панель.
+     Если тип заявки «Не указан», «Детали заявки» раскрываются сами — чинить нужно там.
+     В баре работают «Шаблон ▾» (поиск, категории, плейсхолдеры,
+     предпросмотр) и «Ещё ▾» → модалка смены статуса. У вложений виден прогресс OCR.
+     У всех кнопок есть подсказки — наведите.
+     Разбор разделён по стоимости: факты и предварительный вердикт считаются правилами
+     бесплатно при открытии заявки, DeepSeek зовётся отдельно кнопкой «Ответ ИИ» в телеметрии.
+     Источник вердикта виден по пилюле: пунктир — правила, сплошная в цвет вердикта с ✦ — ИИ,
+     нейтральная с ✎ — ручная правка оператора. Переключатель «вердикт» показывает оба состояния.</p>
+  <div class="demo-ctl">
+    <b>демо-состояние:</b>
+    <button class="dbtn" onclick="setMode('one')" id="m-one">1 объект</button>
+    <button class="dbtn on" onclick="setMode('many')" id="m-many">3 объекта · разобрано</button>
+    <button class="dbtn" onclick="setMode('raw')" id="m-raw">3 объекта · до разбора</button>
+  </div>
+  <div class="demo-ctl">
+    <b>вердикт:</b>
+    <button class="dbtn on" onclick="setAI(false)" id="a-rules"
+            title="Как заявка выглядит сразу после открытия: факты и вердикт посчитаны правилами, ИИ не вызывался">до ИИ · по правилам</button>
+    <button class="dbtn" onclick="setAI(true)" id="a-ai"
+            title="Как заявка выглядит после нажатия «Ответ ИИ»: обоснование, доверие, черновик">после ИИ</button>
+  </div>
+</div>
+
+<div class="stage">
+
+  <!-- ══ трек-панель (существующая, открывается из строки таблицы) ══ -->
+  <div class="track-panel" id="tp">
+    <div class="tp-hd">
+      <div>
+        <div class="t" id="tp-title">А123БВ96 · КАМАЗ 65115</div>
+        <div class="meta">IMEI 8681•••4412 · +7 987 ••• 44 12</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span class="pill pill-acc" id="tp-online">на связи</span>
+        <button class="btn btn-2 btn-sm" title="Период отображения трека">23.07 — 24.07 ▾</button>
+        <div class="ico" title="Свернуть трек-панель" onclick="toggleTrack(null)">✕</div>
+      </div>
+    </div>
+    <div class="tp-map">карта Leaflet — трек, стоянки, точки потери спутников<br>
+      <span style="font-size:11px">(существующий TrackPanel.tsx)</span></div>
+    <div class="tp-charts">графики uPlot — скорость, спутники, напряжение питания</div>
+  </div>
+
+  <!-- ══════════════════ РЕЛЬСА ══════════════════ -->
+  <div class="rail">
+
+    <div class="hd">
+      <div class="hd-r1">
+        <div class="hd-num">
+          <b>#64281</b>
+          <div class="ico mini" id="copy-btn" title="Скопировать номер заявки"
+               onclick="copyNum()">⧉</div>
+          <span class="pill pill-wait" title="Статус в Okdesk">В работе</span>
+          <span class="pill pill-warn" title="Дедлайн 26.07 18:00 — просрочено">⚠ 2 д</span>
+        </div>
+        <div class="icons">
+          <div class="ico" title="Переразобрать заявку заново — повторный платный вызов ИИ">↻</div>
+          <div class="ico" title="Открыть заявку в Okdesk">→</div>
+          <div class="ico" title="Закрыть карточку">✕</div>
+        </div>
+      </div>
+      <div class="hd-theme">Расхождение пробега по путевым листам за июль</div>
+      <div class="hd-who">
+        <span class="cl">ПАО «Россети Волга» Самарские РС Жигулевское ПО</span>
+        <span class="sep">·</span>
+        <span class="ct">Трофимов Н. В.</span>
+        <div class="ico mini" title="Скопировать телефон контакта: +7 846 000-00-00">☎</div>
+      </div>
+    </div>
+    <div class="hr"></div>
+
+    <div class="hint" id="track-hint">Трек-панель открыта для <b id="hint-plate">А123БВ96</b> —
+      нажмите ту же иконку в строке, чтобы закрыть</div>
+
+    <div class="rail-body">
+
+      <!-- ── вопрос клиента ── -->
+      <details class="sec" open>
+        <summary><span class="sum-l"><span class="t">Вопрос клиента</span>
+          <span class="count">письмо · 23.07 09:40</span></span><span class="chev">▾</span></summary>
+        <div class="sbody ctxt">
+          Добрый день! Направляем путевые листы за июль по трём единицам техники.
+          В отчётах системы пробег не совпадает с путевыми листами — просим разобраться
+          и дать пояснение по каждой машине. Файлы во вложении.
+        </div>
+      </details>
+      <div class="hr"></div>
+
+      <!-- ── детали заявки: правки на месте ── -->
+      <details class="sec" id="sec-det">
+        <summary><span class="sum-l"><span class="t">Детали заявки</span>
+          <span class="count" id="det-count">тип · ответственный · 3 параметра</span></span>
+          <span class="chev">▾</span></summary>
+        <div class="sbody">
+
+          <div class="kv">
+            <span class="cap">Тип заявки</span>
+            <span class="vv"><b id="det-type">Расхождение пробега</b></span>
+            <button class="btn btn-2 btn-sm" onclick="toggleBox('type-opts')"
+                    title="Сменить тип заявки — от типа зависят доступные статусы и шаблоны">Изменить</button>
+          </div>
+          <div class="flags" id="type-opts" style="display:none">
+            <button class="opt on" onclick="setType(this,'mileage','Расхождение пробега')" title="Тип mileage — расхождение пробега по путевым листам">Расхождение пробега</button>
+            <button class="opt" onclick="setType(this,'refuel','Заправка')" title="Тип refuel">Заправка</button>
+            <button class="opt" onclick="setType(this,'drain','Слив топлива')" title="Тип drain">Слив топлива</button>
+            <button class="opt" onclick="setType(this,'settings','Изменить настройки')" title="Тип settings">Изменить настройки</button>
+            <button class="opt" onclick="setType(this,'subscribe','Подписка')" title="Тип subscribe">Подписка</button>
+            <button class="opt" onclick="setType(this,'agro','Агро')" title="Тип agro">Агро</button>
+            <button class="opt" onclick="setType(this,'service','Обслуживание')" title="Тип service">Обслуживание</button>
+            <button class="opt" onclick="setType(this,'departure','Выезд')" title="Тип departure — только для него и «Выезда с заправкой» открыт статус «В работе»">Выезд</button>
+            <button class="opt" onclick="setType(this,'departure_fuel','Выезд с заправкой')" title="Тип departure_fuel — открывает статус «В работе»">Выезд с заправкой</button>
+            <button class="opt" onclick="setType(this,'new_mount','Новый монтаж')" title="Тип new_mount">Новый монтаж</button>
+            <button class="opt" onclick="setType(this,'geo_galaxy','Гео/Галактика')" title="Тип geo_galaxy">Гео/Галактика</button>
+            <button class="opt" onclick="setType(this,'call','Звонок')" title="Тип call">Звонок</button>
+            <button class="opt" onclick="setType(this,'spam','Спам')" title="Тип spam">Спам</button>
+            <button class="opt" onclick="setType(this,'inner','Не указан')" title="Тип не выбран — Okdesk не пустит заявку в рабочие и финальные статусы">Не указан</button>
+          </div>
+
+          <div class="kv">
+            <span class="cap">Ответственный</span>
+            <span class="vv" id="det-ass"><b>Свириденко А.</b> · Первая линия</span>
+            <button class="btn btn-2 btn-sm" onclick="takeSelf()"
+                    title="Назначить заявку на себя (Иванов С.) и перейти к ответу">Взять себе</button>
+            <button class="btn btn-2 btn-sm" onclick="toggleBox('ass-opts')"
+                    title="Выбрать другого ответственного из первой или второй линии">Изменить</button>
+          </div>
+          <div id="ass-opts" style="display:none">
+            <div class="cap" style="margin-top:8px">Первая линия</div>
+            <div class="flags" style="margin-top:6px">
+              <button class="opt on" onclick="setAss(this,'Свириденко А.','Первая линия')" title="Свириденко А. — первая линия (id 21)">Свириденко А.</button>
+              <button class="opt" onclick="setAss(this,'Рогозин Д.','Первая линия')" title="Рогозин Д. — первая линия (id 22)">Рогозин Д.</button>
+            </div>
+            <div class="cap" style="margin-top:10px">Вторая линия</div>
+            <div class="flags" style="margin-top:6px">
+              <button class="opt" onclick="setAss(this,'Лебедь В.','Вторая линия')" title="Лебедь В. — вторая линия (id 2)">Лебедь В.</button>
+              <button class="opt" onclick="setAss(this,'Игнашкин П.','Вторая линия')" title="Игнашкин П. — вторая линия (id 3)">Игнашкин П.</button>
+            </div>
+          </div>
+
+          <div class="kv">
+            <span class="cap" title="Кастомный параметр Okdesk: address">Местоположение техники</span>
+            <input class="inl" id="p-address" oninput="prmDirty()"
+                   value="г. Жигулёвск, ул. Промышленная, 4 — база Жигулевского ПО"
+                   title="Параметр Okdesk «Местоположение техники» (address). Поле выглядит текстом — обводка появляется по клику">
+          </div>
+          <div class="kv">
+            <span class="cap" title="Кастомный параметр Okdesk: contact_person">Контактное лицо</span>
+            <input class="inl" id="p-contact" oninput="prmDirty()"
+                   value="Трофимов Николай Владимирович"
+                   title="Параметр Okdesk «Контактное лицо» (contact_person)">
+          </div>
+          <div class="kv">
+            <span class="cap" title="Кастомный параметр Okdesk: tel_person">Номер телефона</span>
+            <input class="inl" id="p-tel" oninput="prmDirty()" value=""
+                   placeholder="не заполнено — Okdesk не пустит в «В работе»"
+                   title="Параметр Okdesk «Номер телефона» (tel_person). Пустое поле блокирует перевод заявки в статус «В работе»">
+          </div>
+
+          <div class="drow">
+            <div class="drow-l"><span class="meta" id="prm-msg">параметры не изменялись</span></div>
+            <button class="btn btn-1 btn-sm" id="prm-save" disabled onclick="prmSave()"
+                    title="Сохранить параметры в Okdesk">Сохранить параметры</button>
+          </div>
+          <div class="tbl-note">Пустые «Местоположение техники», «Контактное лицо» или
+            «Номер телефона» блокируют перевод заявки в статус «В работе» — Okdesk отдаёт
+            ошибку валидации (баг 64197). Правки уходят в Okdesk, а не только в кэш.</div>
+        </div>
+      </details>
+      <div class="hr"></div>
+
+      <!-- ── вложения ── -->
+      <details class="sec">
+        <summary><span class="sum-l"><span class="t">Вложения</span>
+          <span class="count">19</span></span><span class="chev">▾</span></summary>
+        <div class="sbody">
+          <div class="att-top"><span class="ctxt" id="ocr-sum">ИИ прочитал <b>14 из 19</b> файлов</span>
+            <span class="badge" title="Распознано страниц во всех вложениях">страниц 122</span>
+            <span class="badge" title="Растровый скан — текстового слоя нет, OCR недоступен">скан 1</span></div>
+          <div class="conf" id="ocr-bar"
+               title="Прогресс распознавания вложений: 14 из 19"><i style="width:74%"></i></div>
+          <div class="att-grid" id="att-grid">
+            <div class="att" title="Открыть / скачать вложение · текст извлечён полностью"><div class="fi fi-w">W</div><div class="fn">23.07.26_ПЛ_1.docx</div><div class="fs">148 КБ</div><div class="fo">✓ распознан</div></div>
+            <div class="att" title="Открыть / скачать вложение · текст извлечён полностью"><div class="fi fi-w">W</div><div class="fn">23.07.26_ПЛ_2.docx</div><div class="fs">151 КБ</div><div class="fo">✓ распознан</div></div>
+            <div class="att" title="Открыть / скачать вложение · текст извлечён полностью"><div class="fi fi-w">W</div><div class="fn">23.07.26_ПЛ_3.docx</div><div class="fs">146 КБ</div><div class="fo">✓ распознан</div></div>
+            <div class="att" title="Открыть / скачать вложение · текст извлечён полностью"><div class="fi fi-w">W</div><div class="fn">23.07.26_ПЛ_4.docx</div><div class="fs">149 КБ</div><div class="fo">✓ распознан</div></div>
+            <div class="att" title="Открыть / скачать вложение · текст извлечён полностью"><div class="fi fi-w">W</div><div class="fn">23.07.26_ПЛ_5.docx</div><div class="fs">152 КБ</div><div class="fo">✓ распознан</div></div>
+            <div class="att" title="Открыть / скачать вложение · текст извлечён полностью"><div class="fi fi-w">W</div><div class="fn">23.07.26_ПЛ_6.docx</div><div class="fs">147 КБ</div><div class="fo">✓ распознан</div></div>
+            <div class="att" title="Открыть / скачать вложение · текст извлечён полностью"><div class="fi fi-w">W</div><div class="fn">23.07.26_ПЛ_7.docx</div><div class="fs">150 КБ</div><div class="fo">✓ распознан</div></div>
+            <div class="att" title="Открыть / скачать вложение · текст извлечён полностью"><div class="fi fi-x">X</div><div class="fn">Сводная_июль.xlsx</div><div class="fs">64 КБ</div><div class="fo">✓ распознан</div></div>
+            <div class="att" title="Большой PDF распознаётся порциями — прочитаны 4 страницы из 6"><div class="fi fi-p">P</div><div class="fn">Акт_сверки.pdf</div><div class="fs">320 КБ</div><div class="fo w">4 из 6 стр.</div></div>
+            <div class="att" title="Растровый скан без текстового слоя — OCR не смог его прочитать"><div class="fi fi-i">IMG</div><div class="fn">скан_ПЛ_8.jpg</div><div class="fs">1,2 МБ</div><div class="fo w">скан, OCR недоступен</div></div>
+            <div class="att" title="Открыть / скачать вложение · текст извлечён полностью"><div class="fi fi-w">W</div><div class="fn">23.07.26_ПЛ_9.docx</div><div class="fs">145 КБ</div><div class="fo">✓ распознан</div></div>
+            <div class="att" title="Ещё не читался — распознавание остановилось на лимите прохода"><div class="fi fi-w">W</div><div class="fn">23.07.26_ПЛ_10.docx</div><div class="fs">148 КБ</div><div class="fo">в очереди</div></div>
+            <div class="att" title="Ещё не читался — распознавание остановилось на лимите прохода"><div class="fi fi-w">W</div><div class="fn">23.07.26_ПЛ_11.docx</div><div class="fs">153 КБ</div><div class="fo">в очереди</div></div>
+          </div>
+          <div class="drow">
+            <div class="drow-l">
+              <button class="btn btn-2 btn-sm" id="ocr-btn" onclick="ocrStep()"
+                      title="Дочитать остаток больших PDF — распознавание продолжится с той страницы, на которой остановилось">↻ Продолжить распознавание</button>
+              <button class="att-more" title="Показать все 19 вложений">Развернуть ⌄</button>
+            </div>
+          </div>
+          <div class="tbl-note">Большие PDF читаются порциями, чтобы не блокировать сервис:
+            за один проход — ограниченное число страниц. Скан без текстового слоя ИИ пропускает
+            и говорит об этом в разборе.</div>
+        </div>
+      </details>
+      <div class="hr"></div>
+
+      <!-- ── разбор ── -->
+      <details class="sec" open id="sec-razbor">
+        <summary><span class="sum-l"><span class="t">Разбор</span>
+          <span class="count" id="raz-count">3 объекта</span></span><span class="chev">▾</span></summary>
+        <div class="sbody">
+
+          <div id="raw-state" style="display:none">
+            <div class="ctxt" style="margin-bottom:10px">В заявке 19 вложений и несколько
+              единиц техники — нужно распознать файлы и сопоставить с объектами в гео.</div>
+            <button class="btn btn-1 btn-sm" title="Распознать 19 вложений (OCR) и сопоставить с объектами в гео"
+                    onclick="setMode('many')">Разобрать 19 вложений</button>
+          </div>
+
+          <div id="tbl-state">
+            <div class="tbl-sum" id="tbl-sum"><span class="meta">Всего 3:</span><span class="count">Глушение 1</span><span class="count">Данные верны 1</span><span class="count">Не было питания 1</span></div>
+            <table>
+              <colgroup>
+                <col style="width:78px"><col style="width:68px"><col style="width:34px">
+                <col style="width:72px"><col style="width:42px"><col>
+                <col style="width:30px"><col style="width:30px">
+              </colgroup>
+              <thead><tr>
+                <th title="Гос.номер">Номер</th>
+                <th title="Дата неисправности">Дата</th>
+                <th title="Пробег по путевому листу, км">ПЛ</th>
+                <th title="ГЛОНАСС заявл. — заявленный пробег по системе, км">ГЛОНАСС</th>
+                <th title="По факту — пробег по треку, км">Факт</th>
+                <th title="Вердикт и его источник: правила / ИИ / оператор — можно изменить">Вердикт</th>
+                <th></th><th></th>
+              </tr></thead>
+              <tbody id="tbody">
+                <tr class="sel" onclick="pick('А123БВ96')" title="Показать телеметрию этого ТС">
+                  <td class="plate">А123БВ96 <span class="tmark" title="Номер изменён оператором, перепроверено в гео">●</span></td>
+                  <td class="num" title="Изменить дату неисправности и перепроверить в гео">23.07.26 ✎</td>
+                  <td class="num">412</td><td class="num">412</td><td class="num">388</td>
+                  <td class="v-jam"><span class="vwrap"><span class="pill pill-src src-rules v-jam" title="Предварительный вердикт по правилам — DeepSeek ещё не вызывали"><span class="vn">Глушение</span><span class="st">по правилам</span></span><span class="vdis" title="Изменить вердикт вручную">▾</span></span></td>
+                  <td class="act"><span class="tico" title="Карта и графики этого ТС" onclick="event.stopPropagation();toggleTrack('А123БВ96')">▤</span></td>
+                  <td class="act"><span class="tico" title="Открыть заявку #64512" onclick="event.stopPropagation()">↗</span></td></tr>
+                <tr onclick="pick('В456ГД96')" title="Показать телеметрию этого ТС">
+                  <td class="plate">В456ГД96</td>
+                  <td class="num" title="Изменить дату неисправности и перепроверить в гео">23.07.26 ✎</td>
+                  <td class="num">205</td><td class="num">205</td><td class="num">203</td>
+                  <td class="v-ok"><span class="vwrap"><span class="pill pill-src src-op v-ok" title="Вердикт исправлен вручную: Иванов С. · 26.07 11:02"><span class="vn">✎ Данные верны</span><span class="st">оператор</span></span><span class="vdis" title="Правила: Проверить → оператор: Данные верны">⇄</span><span class="vdis" title="Изменить вердикт вручную">▾</span></span></td>
+                  <td class="act"><span class="tico" title="Карта и графики этого ТС" onclick="event.stopPropagation();toggleTrack('В456ГД96')">▤</span></td>
+                  <td class="act"><span class="tico" title="Создать дочернюю заявку" onclick="event.stopPropagation()">+</span></td></tr>
+                <tr onclick="pick('Е789ЖЗ96')" title="Показать телеметрию этого ТС">
+                  <td class="plate">Е789ЖЗ96</td>
+                  <td class="num" title="Изменить дату неисправности и перепроверить в гео">22.07.26 ✎</td>
+                  <td class="num">640</td><td class="num">—</td><td class="num">640</td>
+                  <td class="v-pwr"><span class="vwrap"><span class="pill pill-src src-rules v-pwr" title="Предварительный вердикт по правилам — DeepSeek ещё не вызывали"><span class="vn">Не было питания</span><span class="st">по правилам</span></span><span class="vdis" title="Изменить вердикт вручную">▾</span></span></td>
+                  <td class="act"><span class="tico" title="Карта и графики этого ТС" onclick="event.stopPropagation();toggleTrack('Е789ЖЗ96')">▤</span></td>
+                  <td class="act"><span class="tico" title="Создать дочернюю заявку" onclick="event.stopPropagation()">+</span></td></tr>
+              </tbody>
+            </table>
+            <div class="tbl-note" id="dis-note" style="display:none"></div>
+            <div class="tbl-note">Строка — объект. Клик выбирает объект и подставляет его
+              телеметрию ниже. Карандаши у номера, даты и вердикта — правка с перепроверкой в гео.
+              Пилюля вердикта показывает, кто его поставил: пунктир — правила, ✦ и обводка
+              в цвет вердикта — ИИ, ✎ — оператор. Ручную правку ИИ не перезаписывает.</div>
+          </div>
+        </div>
+      </details>
+      <div class="hr"></div>
+
+      <!-- ── телеметрия ── -->
+      <details class="sec" open id="sec-tel">
+        <summary><span class="sum-l"><span class="t">Телеметрия</span>
+          <span class="count" id="tel-plate">А123БВ96</span></span><span class="chev">▾</span></summary>
+        <div class="sbody">
+          <div class="tel-hd" id="tel-hd">
+            <span class="pill pill-src src-rules v-jam"><span class="vn">Глушение</span><span class="st">по правилам</span></span>
+            <span class="meta">предварительно — ИИ ещё не вызывался</span></div>
+          <div class="conf" id="tel-conf-wrap" style="display:none"><i id="tel-conf" style="width:92%"></i></div>
+          <div class="tbl-note" id="tel-dis" style="display:none;margin-top:0"></div>
+          <div class="tiles" id="tel-tiles">
+            <div class="tile bad"><em>Обрыв трека</em><b>3 участка</b></div>
+            <div class="tile warn"><em>Телепорты</em><b>1</b></div>
+            <div class="tile bad"><em>Спутников &lt; 4</em><b>3 ч 10 мин</b></div>
+            <div class="tile"><em>Питание</em><b>12,4 В — норма</b></div>
+            <div class="tile"><em>Пакетов</em><b>8 412</b></div>
+            <div class="tile"><em>Макс. скорость</em><b>78 км/ч</b></div>
+            <div class="tile"><em>В движении</em><b>6 ч 40 мин</b></div>
+            <div class="tile warn"><em>Выбросы скорости</em><b>2</b></div>
+            <div class="tile"><em>Расчётная скорость</em><b>58 км/ч</b></div></div>
+          <div class="flags" id="tel-flags">
+            <span class="pill pill-warn-o">подозрение на глушение</span>
+            <span class="pill pill-warn-o">мало спутников</span>
+            <span class="pill pill-warn-o">обрыв трека</span></div>
+          <!-- до прогона ИИ: обоснования, доверия и черновика физически нет -->
+          <div class="why ask" id="ai-cta">
+            <div class="wt">✦ Ответ ИИ ещё не запрашивали</div>
+            <p>Метрики, флаги и предварительный вердикт выше посчитаны правилами при открытии
+              заявки — это бесплатно. Обоснование «почему такой вердикт», доверие к вердикту и
+              черновик ответа клиенту даёт DeepSeek: это отдельный платный вызов модели,
+              поэтому он только по кнопке.</p>
+            <div class="drow">
+              <div class="drow-l"><span class="meta" id="ai-cost">3 объекта · ~6 тыс. токенов · ≈ 8 с</span></div>
+              <button class="btn btn-1 btn-sm" id="ai-btn" onclick="runAI()"
+                title="Отправить разбор в DeepSeek — вернёт обоснование, доверие и черновик ответа. Платный вызов модели, считается по токенам">✦ Ответ ИИ</button>
+            </div>
+            <div class="conf wait" id="ai-wait" style="display:none;margin:10px 0 0"
+                 title="DeepSeek разбирает заявку"><i></i></div>
+          </div>
+
+          <!-- после прогона ИИ -->
+          <div class="why" id="tel-why" style="display:none">
+            <div class="wt">✦ Почему такой вердикт</div>
+            <p id="why-text">22.07 с 03:10 до 06:20 число спутников держалось ниже 4 при
+              включённом питании и ненулевой скорости по акселерометру — трек в этот интервал
+              не строился, поэтому 24 км пробега не попали в расчёт. Стоянка на территории базы
+              подтверждена клиентом.</p>
+            <div class="alts" id="why-alts">
+              <div class="alt"><span>ещё версия: <b>одометр считает на стоянке</b></span><span>5%</span></div>
+              <div class="alt"><span>ещё версия: <b>ручная правка путевого листа</b></span><span>3%</span></div></div>
+            <button class="more" title="Показать полную цепочку обоснования">Подробнее</button>
+          </div>
+          <div id="tel-draft" style="display:none;margin-top:10px">
+            <span class="cap" style="display:block;margin-bottom:4px">Черновик ответа клиенту</span>
+            <div class="draft" id="draft-text" title="Черновик составлен ИИ для выбранного объекта"></div>
+            <div class="drow">
+              <div class="drow-l"><span class="meta">Составлен ИИ — прочитайте перед отправкой</span></div>
+              <button class="btn btn-2 btn-sm" onclick="insertDraft()"
+                      title="Перенести черновик в поле ответа в нижнем баре">Вставить в ответ</button>
+            </div>
+          </div>
+        </div>
+      </details>
+      <div class="hr"></div>
+
+      <!-- ── оценка разбора ИИ ── -->
+      <details class="sec" id="sec-fb">
+        <summary><span class="sum-l"><span class="t">Оценка разбора</span>
+          <span class="count" id="fb-count">не оценён</span></span><span class="chev">▾</span></summary>
+        <div class="sbody">
+
+          <div class="drow" id="fb-ask" style="margin-top:0">
+            <div class="drow-l"><span class="ctxt" id="fb-q">ИИ разобрал 3 объекта — разбор верный?</span></div>
+            <div class="icons" id="fb-icons">
+              <div class="ico" id="fb-up" onclick="fbVote('up')"
+                   title="Разобрано верно — заявка уйдёт в тренировочные образцы как удачный пример">👍</div>
+              <div class="ico" id="fb-down" onclick="fbVote('down')"
+                   title="Ошибка разбора — указать, что именно ИИ понял неправильно">👎</div>
+            </div>
+          </div>
+
+          <div id="fb-form" style="display:none">
+            <div class="fgroup" style="margin-top:10px">
+              <span class="cap">Тип ошибки</span>
+              <div class="flags" style="margin-top:0">
+                <button class="opt on" onclick="pickOne(this,'fb-kind')" title="wrong_verdict — ИИ выбрал не тот вердикт">Неверный вердикт</button>
+                <button class="opt" onclick="pickOne(this,'fb-kind')" title="wrong_plate — гос.номер распознан неправильно">Неверный гос.номер</button>
+                <button class="opt" onclick="pickOne(this,'fb-kind')" title="wrong_date — дата неисправности определена неверно">Неверная дата</button>
+                <button class="opt" onclick="pickOne(this,'fb-kind')" title="wrong_mileage — пробег из путевого листа считан неверно">Неверный пробег</button>
+                <button class="opt" onclick="pickOne(this,'fb-kind')" title="other — другая ошибка, опишите в комментарии">Другое</button>
+              </div>
+            </div>
+            <div class="fgroup">
+              <span class="cap">Комментарий</span>
+              <textarea class="fld ta" id="fb-cmt" placeholder="Что именно не так…"
+                        title="Свободный комментарий — попадёт в раздел «Оценки ИИ» и в дообучение">По Е789ЖЗ96 это не «Не было питания»: терминал сняли на сервисе 24.07, заявка #64119.</textarea>
+            </div>
+            <div class="fgroup">
+              <span class="cap">Правильная категория (необязательно)</span>
+              <div class="flags" style="margin-top:0">
+                <button class="opt" onclick="pickOne(this,'fb-cat')" title="Вердикт «Глушение»">Глушение</button>
+                <button class="opt" onclick="pickOne(this,'fb-cat')" title="Вердикт «Данные верны»">Данные верны</button>
+                <button class="opt" onclick="pickOne(this,'fb-cat')" title="Вердикт «Не было питания»">Не было питания</button>
+                <button class="opt" onclick="pickOne(this,'fb-cat')" title="Вердикт «Нет данных»">Нет данных</button>
+                <button class="opt on" onclick="pickOne(this,'fb-cat')" title="Вердикт «Терминал подключился»">Терминал подключился</button>
+                <button class="opt" onclick="pickOne(this,'fb-cat')" title="Вердикт «Проверить»">Проверить</button>
+              </div>
+            </div>
+            <div class="drow">
+              <div class="drow-l"><span class="meta">Оценка видна в разделе «Оценки ИИ» и идёт в few-shot</span></div>
+              <div class="drow-l">
+                <button class="btn btn-2 btn-sm" onclick="fbVote(null)" title="Отменить оценку">Отмена</button>
+                <button class="btn btn-1 btn-sm" onclick="fbSend()" title="Сохранить оценку разбора">Сохранить</button>
+              </div>
+            </div>
+          </div>
+
+          <div id="fb-sent" style="display:none">
+            <div class="drow" style="margin-top:0">
+              <div class="drow-l">
+                <span class="pill pill-acc" id="fb-chip" title="Оценка сохранена">✓ оценка отправлена</span>
+                <span class="meta" id="fb-when">Иванов С. · 28.07 14:02</span>
+              </div>
+              <button class="btn btn-2 btn-sm" onclick="fbVote(null)"
+                      title="Изменить ранее отправленную оценку">Изменить оценку</button>
+            </div>
+            <div class="ctxt" id="fb-what" style="margin-top:6px"></div>
+          </div>
+        </div>
+      </details>
+      <div class="hr"></div>
+
+      <!-- ── комментарии ── -->
+      <details class="sec" open>
+        <summary><span class="sum-l"><span class="t">Комментарии</span>
+          <span class="count">3 из 12</span></span><span class="chev">▾</span></summary>
+        <div class="sbody">
+          <div class="cmt priv">
+            <div class="cmt-hd"><div class="cmt-l">
+              <span class="badge" title="Внутренний комментарий — не виден клиенту">🔒 внутренний</span>
+              <span class="cmt-au">Иванов С. (оператор)</span></div>
+              <span class="meta" title="Дата и время комментария">26.07 11:02</span></div>
+            <div class="ctxt">По Е789ЖЗ96 питание отключалось на сервисе — подтверждено
+              заявкой #64119, в ответе клиенту не упоминаем номер заявки.</div>
+          </div>
+          <div class="cmt client">
+            <div class="cmt-hd"><div class="cmt-l">
+              <span class="badge" title="Клиент">клиент</span>
+              <span class="cmt-au">Трофимов Н. В.</span></div>
+              <span class="meta">25.07 14:20</span></div>
+            <div class="ctxt">Уточнил у водителя: стоянка 22.07 была на территории базы,
+              машина не выезжала.</div>
+          </div>
+          <div class="cmt staff">
+            <div class="cmt-hd"><div class="cmt-l">
+              <span class="badge" title="Сотрудник">сотрудник</span>
+              <span class="cmt-au">Петров А.</span></div>
+              <span class="meta">25.07 10:15</span></div>
+            <div class="ctxt">Запросил у клиента уточнение по стоянке 22.07.</div>
+          </div>
+          <button class="cmt-all" title="Показать все 12 комментариев">Показать все 12 комментариев</button>
+        </div>
+      </details>
+      <div class="hr"></div>
+
+      <!-- ── связанные заявки ── -->
+      <details class="sec" open id="sec-rel">
+        <summary><span class="sum-l"><span class="t">Связанные заявки</span>
+          <span class="count" id="rel-count">3</span></span><span class="chev">▾</span></summary>
+        <div class="sbody">
+          <div id="rel-full">
+            <div class="cap" style="margin-bottom:2px">Родительская</div>
+            <div class="rel">
+              <button class="rn" title="Открыть заявку №64119 в карточке">№64119</button>
+              <span class="pill pill-ok" title="Статус связанной заявки в Okdesk">Решена</span>
+              <span class="th" title="Массовая проверка пробега по Жигулевскому ПО за июль">Массовая проверка пробега по Жигулевскому ПО за июль</span>
+              <span class="tico" title="Открыть заявку №64119 в Okdesk">↗</span>
+            </div>
+            <div class="cap" style="margin:10px 0 2px">Дочерние (2)</div>
+            <div class="rel">
+              <button class="rn" title="Открыть заявку №64512 в карточке">№64512</button>
+              <span class="pill pill-wait" title="Статус связанной заявки в Okdesk">В работе</span>
+              <span class="th" title="А123БВ96 — глушение сигнала, выезд монтажника">А123БВ96 — глушение сигнала, выезд монтажника</span>
+              <span class="tico" title="Открыть заявку №64512 в Okdesk">↗</span>
+            </div>
+            <div class="rel">
+              <button class="rn" title="Открыть заявку №64513 в карточке">№64513</button>
+              <span class="pill pill-warn-o" title="Статус связанной заявки в Okdesk">Ожидание ответа</span>
+              <span class="th" title="Е789ЖЗ96 — просадка питания терминала, проверить подключение">Е789ЖЗ96 — просадка питания терминала, проверить</span>
+              <span class="tico" title="Открыть заявку №64513 в Okdesk">↗</span>
+            </div>
+          </div>
+          <div id="rel-empty" style="display:none">
+            <div class="ctxt">Связанных заявок нет.</div>
+            <div class="tbl-note">Дочерняя заявка создаётся иконкой <b>+</b> в строке разбора —
+              по одной на каждую единицу техники, которой нужен выезд.</div>
+          </div>
+          <button class="cmt-all" onclick="relToggle()" id="rel-sw"
+                  title="Показать, как выглядит блок, когда связей нет">Показать пустое состояние</button>
+        </div>
+      </details>
+      <div class="hr"></div>
+
+      <!-- ── передать монтажникам ── -->
+      <details class="sec" id="sec-inst">
+        <summary><span class="sum-l"><span class="t">Передать монтажникам</span>
+          <span class="count">формат для календаря или мессенджера</span></span><span class="chev">▾</span></summary>
+        <div class="sbody">
+          <div class="drow" style="margin-top:0">
+            <div class="drow-l"><span class="ctxt">Текст с адресом, контактом и сутью — готовится по кнопке</span></div>
+            <div class="drow-l">
+              <button class="btn btn-2 btn-sm" id="inst-cal" onclick="instMake('cal')"
+                      title="Собрать текст для календаря: короткая тема и строки «Адрес / Контакт / Суть»">Календарь</button>
+              <button class="btn btn-2 btn-sm" id="inst-msg" onclick="instMake('msg')"
+                      title="Собрать связный текст одним сообщением для мессенджера">Мессенджер</button>
+            </div>
+          </div>
+          <div id="inst-out" style="display:none;margin-top:10px">
+            <span class="cap" style="display:block;margin-bottom:4px" id="inst-cap">Формат для календаря</span>
+            <div class="draft" id="inst-text" style="white-space:pre-line"
+                 title="Текст для передачи монтажнику — проверьте перед отправкой"></div>
+            <div class="drow">
+              <div class="drow-l"><span class="meta" id="inst-note">Собрано из данных заявки — проверьте адрес и время</span></div>
+              <button class="btn btn-2 btn-sm" id="inst-copy" onclick="instCopy()"
+                      title="Скопировать текст в буфер обмена">Скопировать</button>
+            </div>
+          </div>
+          <div class="tbl-note">Адрес, контакт и телефон берутся из параметров заявки —
+            правьте их в «Деталях заявки». Календарный формат вставляется в событие,
+            текст для мессенджера уходит одним сообщением.</div>
+        </div>
+      </details>
+      <div class="hr"></div>
+
+      <div class="foot">создана 23.07.2026 09:40 · Трофимов Н. В. · дедлайн 26.07 18:00 ·
+        тип «Расхождение пробега» · регион 63 (Самара)</div>
+    </div>
+
+    <div class="bar">
+      <div class="guard" id="guard" title="Okdesk не примет смену статуса, пока у заявки тип «Не указан» — выберите тип в разделе «Детали заявки»">⚠ Сначала укажите тип заявки — без типа Okdesk не пустит заявку ни в «В работе», ни в «Решена»</div>
+      <div class="bar-row">
+        <textarea id="reply" class="reply" rows="1" placeholder="Ответить клиенту…"
+                  title="Текст ответа. Ctrl+Enter — отправить комментарий без смены статуса"
+                  onfocus="expandBar(true)"></textarea>
+        <button class="btn btn-2 btn-sm" onclick="togglePop('tpl-pop')"
+                title="Выбрать шаблон ответа — шаблон с плейсхолдерами запросит значения">Шаблон ▾</button>
+        <button class="btn btn-1" id="resolve-btn" onclick="openStatus('completed')"
+                title="Отправить ответ клиенту и перевести заявку в «Решена»">Ответить и решить</button>
+      </div>
+      <div class="bar-more" id="bar-more">
+        <div class="bar-icons">
+          <button class="chip" onclick="insertDraft()" id="draft-chip"
+                  title="Вставить черновик, подготовленный ИИ для выбранного объекта">✦ черновик ИИ для А123БВ96</button>
+          <div class="segs">
+            <button class="seg on" onclick="pickSeg(this)" title="Публичный — виден клиенту">Публичный</button>
+            <button class="seg" onclick="pickSeg(this)" title="Внутренний комментарий — не виден клиенту">Приватный</button>
+          </div>
+        </div>
+        <div class="bar-icons">
+          <button class="btn btn-2 btn-sm" onclick="togglePop('more-menu')"
+                  title="Другие действия: В работе, Ожидание ответа, отправить комментарий без смены статуса">Ещё ▾</button>
+          <button class="btn btn-2 btn-sm" onclick="expandBar(false)" title="Свернуть поле ответа">Свернуть</button>
+        </div>
+      </div>
+
+      <!-- меню «Ещё» -->
+      <div class="pop" id="more-menu" style="width:288px">
+        <button class="mitem" onclick="openStatus('wait')"
+                title="Перевести в «В работе». Okdesk открывает этот статус только для типов «Выезд» и «Выезд с заправкой»">
+          В работе<em>только для выездных типов</em></button>
+        <button class="mitem" onclick="openStatus('delayed')"
+                title="Перевести в «Ожидание ответа» — обязателен комментарий и дата, до которой ждём клиента">
+          Ожидание ответа<em>комментарий + отложить до</em></button>
+        <button class="mitem" onclick="openStatus('no_time')"
+                title="Перевести в «Нет времени» (отложена) — обязателен комментарий и дата возврата">
+          Нет времени<em>комментарий + отложить до</em></button>
+        <button class="mitem" onclick="openStatus('comment')"
+                title="Отправить комментарий, не меняя статус заявки (Ctrl+Enter)">
+          Отправить комментарий<em>без смены статуса</em></button>
+      </div>
+
+      <!-- панель шаблонов -->
+      <div class="pop" id="tpl-pop" style="width:452px">
+        <div class="pop-hd"><span id="tpl-hd">Шаблоны ответов</span>
+          <span class="ico mini" onclick="togglePop('tpl-pop')" title="Закрыть панель шаблонов">✕</span></div>
+
+        <div id="tpl-step-list">
+          <div class="pop-bd" style="padding-bottom:0;display:flex;gap:6px">
+            <input class="fld" id="tpl-q" oninput="renderTpls()" placeholder="Поиск по названию или тексту…"
+                   title="Поиск по названию и тексту шаблона">
+            <button class="btn btn-2 btn-sm" id="tpl-cat" onclick="cycleCat()"
+                    title="Фильтр по категории шаблона">Все категории ▾</button>
+          </div>
+          <div class="pop-list" id="tpl-list" style="margin-top:10px"></div>
+        </div>
+
+        <div id="tpl-step-fill" style="display:none">
+          <div class="pop-bd">
+            <div id="tpl-ph"></div>
+            <div class="fgroup" style="margin-bottom:0">
+              <span class="cap">Предпросмотр</span>
+              <div class="draft" id="tpl-prev" title="Итоговый текст — уйдёт в поле ответа"></div>
+            </div>
+          </div>
+          <div class="mbox-ft">
+            <span class="meta" style="margin-right:auto" title="[сегодня], [вчера], [завтра] подставляются автоматически по МСК">[сегодня] / [вчера] / [завтра] — автоподстановка</span>
+            <button class="btn btn-2 btn-sm" onclick="tplBack()" title="Вернуться к списку шаблонов">Назад</button>
+            <button class="btn btn-1 btn-sm" onclick="tplInsert()" title="Вставить готовый текст в поле ответа">Вставить</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── модалка смены статуса ── -->
+    <div class="modal" id="st-modal">
+      <div class="mbox">
+        <div class="mbox-hd"><span id="mb-title">Ожидание ответа — #64281</span>
+          <span class="ico mini" onclick="closeStatus()" title="Закрыть без изменений">✕</span></div>
+        <div class="mbox-bd">
+          <div class="guard" id="mb-guard" style="margin-bottom:10px"
+               title="Тип заявки «Не указан» — Okdesk отклонит смену статуса">⚠ Сначала укажите тип заявки</div>
+
+          <div class="fgroup" id="mb-delay-row">
+            <span class="cap">Отложить до <span class="req" title="Обязательное поле">*</span></span>
+            <input class="fld" type="datetime-local" id="mb-delay" value="2026-07-31T18:00"
+                   onchange="mbCheck()" title="Дата и время, до которых заявка уходит из работы — Okdesk вернёт её в список сам">
+          </div>
+
+          <div class="fgroup">
+            <span class="cap">Комментарий <span class="req" id="mb-req" title="Обязательное поле">*</span></span>
+            <textarea class="fld ta" id="mb-cmt" oninput="mbCheck()"
+                      title="Текст комментария к смене статуса — уйдёт в Okdesk"></textarea>
+          </div>
+
+          <div class="drow" style="margin-top:0">
+            <div class="segs">
+              <button class="seg on" onclick="pickSeg(this)" title="Публичный комментарий — виден клиенту в портале и уходит письмом">Публичный</button>
+              <button class="seg" onclick="pickSeg(this)" title="Внутренний комментарий — виден только сотрудникам">Внутренний</button>
+            </div>
+            <button class="btn btn-2 btn-sm" onclick="togglePop('tpl-pop')"
+                    title="Подставить текст из шаблона">Шаблон ▾</button>
+          </div>
+        </div>
+        <div class="mbox-ft">
+          <span class="meta" style="margin-right:auto" id="mb-note">Заявка уйдёт из работы до указанной даты</span>
+          <button class="btn btn-2 btn-sm" onclick="closeStatus()" title="Закрыть без изменений">Отмена</button>
+          <button class="btn btn-1 btn-sm" id="mb-ok" onclick="closeStatus()"
+                  title="Применить смену статуса в Okdesk">Подтвердить</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="note">
+  <b>Заметки для реализации.</b> 1) Все 8 колонок разбора влезают в 648px без скролла за счёт
+  коротких заголовков — полные подписи («ГЛОНАСС заявл.», «По факту») ушли в тултипы.
+  2) Статус «В работе» приходит цветом <code>#2B6684</code> — текст им нечитаем, поэтому обводка
+  цветом статуса, а текст осветлён до <code>#7EC8E3</code>; правило «цвет статуса → осветлённый
+  текст» нужно заложить в <code>src/lib/status.ts</code>. 3) Блок «Почему такой вердикт» — это
+  существующий reasoning из <code>TelemetryPanel.tsx</code>, которому раньше не хватало подписи.
+  4) Гард «Сначала укажите тип заявки» завязан на тип: выберите в «Деталях» тип «Не указан» —
+  предупреждение появится в баре, «Ответить и решить» и «Подтвердить» в модалке заблокируются
+  (Okdesk отклоняет смену статуса при <code>type_code = inner</code>). 5) Статус «В работе»
+  Okdesk открывает только для типов <code>departure</code> / <code>departure_fuel</code> —
+  в меню «Ещё» это написано подписью пункта. 6) Плейсхолдеры шаблонов — русские
+  <code>[квадратные скобки]</code>, <code>[сегодня]/[вчера]/[завтра]</code> считаются автоматически
+  по МСК и в форме заблокированы, остальные предзаполняются из разбора выбранного объекта.
+  7) Пустые «Местоположение техники» / «Контактное лицо» / «Номер телефона» блокируют перевод
+  в «В работе» (баг 64197) — поэтому пустой параметр подсвечен предупреждающим плейсхолдером.
+  8) Источник вердикта — поле <code>verdict_source</code>: <code>rules</code> (пунктирная пилюля,
+  хвост «по правилам») / <code>ai</code> (сплошная обводка в цвет вердикта, глиф ✦ и полоса
+  доверия из <code>confidence</code>) / <code>operator</code> (нейтральная обводка и глиф ✎,
+  ручная правка сильнее машины). Заливку не трогаем — она занята статусами Okdesk.
+  <code>heuristic_category</code> остаётся в модели после прогона: если он разошёлся с
+  <code>verdict</code>, под таблицей и в телеметрии печатается «правила: X → ИИ: Y».
+  9) <code>reasoning</code>, <code>confidence</code> и <code>draft_answer</code> приходят только
+  от DeepSeek, поэтому до нажатия «Ответ ИИ» этих блоков нет физически — на их месте кнопка
+  с честной ценой вызова. Кнопка одна на заявку: модель разбирает все объекты за один вызов.
+</div>
+
+<script>
+/* Вердикт у объекта живёт в трёх слоях — ровно как отдаёт бэкенд:
+     heur — heuristic_category, посчитан правилами бесплатно при открытии заявки;
+     ai   — verdict + confidence + reasoning + draft_answer, появляется только
+            после платного вызова DeepSeek;
+     op   — ручная правка оператора, перебивает и правила, и ИИ.
+   verdict_source вычисляется из них функцией eff(). */
+const OBJ = {
+  'А123БВ96':{model:'КАМАЗ 65115',date:'23.07.26',pl:'412',gl:'412',fact:'388',
+    heur:{v:'Глушение',cls:'v-jam'},
+    ai:{v:'Глушение',cls:'v-jam',conf:92,auto:true},
+    op:null,child:'#64512',
+    metrics:[['Обрыв трека','3 участка','bad'],['Телепорты','1','warn'],
+      ['Спутников < 4','3 ч 10 мин','bad'],['Питание','12,4 В — норма',''],
+      ['Пакетов','8 412',''],['Макс. скорость','78 км/ч',''],
+      ['В движении','6 ч 40 мин',''],['Выбросы скорости','2','warn'],
+      ['Расчётная скорость','58 км/ч','']],
+    flags:[['подозрение на глушение','pill-warn-o'],['мало спутников','pill-warn-o'],
+      ['обрыв трека','pill-warn-o']],
+    why:'22.07 с 03:10 до 06:20 число спутников держалось ниже 4 при включённом питании и '+
+      'ненулевой скорости по акселерометру — трек в этот интервал не строился, поэтому '+
+      '24 км пробега не попали в расчёт. Стоянка на территории базы подтверждена клиентом.',
+    alts:[['одометр считает на стоянке','5%'],['ручная правка путевого листа','3%']],
+    draft:'Добрый день! Проверили трек по А123БВ96 за 01.07–24.07. Расхождение 24 км (5,8%) '+
+      'объясняется потерей спутников 22.07 с 03:10 до 06:20 — в этот период пробег не '+
+      'фиксировался. Данные путевого листа корректны, к системе замечаний нет.'},
+  'В456ГД96':{model:'КАМАЗ 43118',date:'23.07.26',pl:'205',gl:'205',fact:'203',
+    heur:{v:'Проверить',cls:'v-chk'},
+    ai:{v:'Данные верны',cls:'v-ok',conf:96,auto:true},
+    op:{v:'Данные верны',cls:'v-ok',who:'Иванов С.',when:'26.07 11:02'},child:'—',
+    metrics:[['Обрыв трека','нет',''],['Спутников < 4','12 мин',''],
+      ['Питание','12,6 В — норма',''],['Пакетов','9 980',''],
+      ['Макс. скорость','82 км/ч',''],['В движении','4 ч 05 мин','']],
+    flags:[],
+    why:'Расхождение 2 км (1,0%) в пределах погрешности GPS-одометра. Трек непрерывный, '+
+      'питание стабильное, потерь спутников значимой длительности нет.',
+    alts:[['погрешность округления в путевом листе','3%']],
+    draft:'Добрый день! По В456ГД96 расхождение 2 км (1,0%) — это штатная погрешность '+
+      'GPS-одометра. Данные системы и путевого листа считаем совпадающими.'},
+  'Е789ЖЗ96':{model:'ГАЗ 3309',date:'22.07.26',pl:'640',gl:'—',fact:'640',
+    heur:{v:'Не было питания',cls:'v-pwr'},
+    ai:{v:'Терминал подключился',cls:'v-ok',conf:74,auto:false},
+    op:null,child:'…',
+    metrics:[['Обрыв трека','1 участок','warn'],['Спутников < 4','40 мин',''],
+      ['Питание','— просадка','bad'],['Пакетов','2 140','warn'],
+      ['Макс. скорость','64 км/ч',''],['В движении','7 ч 12 мин','']],
+    flags:[['нет питания','pill-warn-o'],['обрыв трека','pill-warn-o']],
+    why:'Правила по просадке напряжения дали «Не было питания»: 24.07 с 09:00 до 12:30 '+
+      'напряжение держалось ниже порога и терминал молчал. Но в 12:30 он вернулся на связь '+
+      'сам и с тех пор шлёт данные штатно, а снятие на сервисе подтверждено заявкой #64119 — '+
+      'поэтому вердикт «Терминал подключился», выезд не нужен. Уверенность 74%, ниже порога '+
+      'авто-ответа 85%.',
+    alts:[['версия правил: не было питания','18%'],['обрыв цепи питания','8%']],
+    draft:'Добрый день! По Е789ЖЗ96 24.07 терминал не выходил на связь с 09:00 до 12:30 — '+
+      'оборудование снимали на сервисе. С 12:30 терминал подключился, данные поступают '+
+      'штатно, пробег по треку совпадает с путевым листом. Считаем вопрос закрытым.'}
+};
+const ALL = Object.keys(OBJ);
+let mode = 'many', sel = 'А123БВ96', trackFor = null, curDraft = '';
+/* aiRun — DeepSeek уже звали по этой заявке; aiBusy — вызов в процессе */
+let aiRun = false, aiBusy = false;
+
+function plates(){ return mode === 'one' ? ['А123БВ96'] : ALL; }
+
+/* Действующий вердикт и его источник: оператор > ИИ (если звали) > правила. */
+function eff(p){
+  const o = OBJ[p];
+  if (o.op) return {src:'operator', v:o.op.v, cls:o.op.cls, who:o.op.who, when:o.op.when};
+  if (aiRun) return {src:'ai', v:o.ai.v, cls:o.ai.cls, conf:o.ai.conf, auto:o.ai.auto};
+  return {src:'rules', v:o.heur.v, cls:o.heur.cls};
+}
+/* Правила и живой вердикт разошлись — это надо показать, а не спрятать. */
+function disagree(p){
+  const e = eff(p), h = OBJ[p].heur;
+  return e.src === 'rules' || e.v === h.v ? null
+    : {from:h.v, to:e.v, by:e.src === 'ai' ? 'ИИ' : 'оператор'};
+}
+/* Пилюля вердикта: одна реализация на таблицу и на телеметрию. */
+function vpill(p){
+  const e = eff(p);
+  const tail = e.src === 'rules' ? 'по правилам' : e.src === 'ai' ? 'ИИ' : 'оператор';
+  const glyph = e.src === 'ai' ? '✦ ' : e.src === 'operator' ? '✎ ' : '';
+  const tip = e.src === 'rules'
+      ? 'Предварительный вердикт по правилам — посчитан бесплатно, DeepSeek ещё не вызывали'
+      : e.src === 'ai'
+      ? 'Вердикт ИИ (DeepSeek) · доверие ' + e.conf + '%'
+      : 'Вердикт исправлен вручную: ' + e.who + ' · ' + e.when + '. ИИ ручную правку не перезаписывает';
+  return '<span class="pill pill-src src-' + (e.src === 'operator' ? 'op' : e.src) + ' ' +
+    e.cls + '" title="' + tip + '"><span class="vn">' + glyph + e.v + '</span>' +
+    '<span class="st">' + tail + '</span></span>';
+}
+
+function renderTable(){
+  const list = plates();
+  document.getElementById('raz-count').textContent =
+    mode === 'raw' ? '19 вложений' : (list.length === 1 ? '1 объект' : list.length + ' объекта');
+  document.getElementById('raw-state').style.display = mode === 'raw' ? 'block' : 'none';
+  document.getElementById('tbl-state').style.display = mode === 'raw' ? 'none' : 'block';
+  if (mode === 'raw') return;
+
+  const cnt = {};
+  list.forEach(p => { const v = eff(p).v; cnt[v] = (cnt[v] || 0) + 1; });
+  document.getElementById('tbl-sum').innerHTML =
+    '<span class="meta">Всего ' + list.length + ':</span>' +
+    Object.entries(cnt).map(([v,n]) =>
+      '<span class="count">' + v + ' ' + n + '</span>').join('') +
+    (aiRun ? '' : '<span class="badge" title="Вердикты посчитаны правилами бесплатно. ' +
+      'DeepSeek не вызывался — обоснования и черновиков ответа пока нет">ИИ не вызывался</span>');
+
+  document.getElementById('tbody').innerHTML = list.map(p => {
+    const o = OBJ[p], e = eff(p), d = disagree(p);
+    return '<tr class="' + (p === sel ? 'sel' : '') + '" onclick="pick(\'' + p + '\')"' +
+      ' title="Показать телеметрию этого ТС">' +
+      '<td class="plate">' + p + ' <span class="tmark" title="Номер изменён оператором, перепроверено в гео">●</span></td>' +
+      '<td class="num" title="Изменить дату неисправности и перепроверить в гео">' + o.date + ' ✎</td>' +
+      '<td class="num">' + o.pl + '</td><td class="num">' + o.gl + '</td>' +
+      '<td class="num">' + o.fact + '</td>' +
+      '<td class="' + e.cls + '"><span class="vwrap">' + vpill(p) +
+        (e.src === 'ai' ? '<span class="conf mini" title="Доверие ИИ ' + e.conf + '%">' +
+          '<i style="width:' + e.conf + '%"></i></span>' : '') +
+        (d ? '<span class="vdis" title="Правила: ' + d.from + ' → ' + d.by + ': ' + d.to +
+          '">⇄</span>' : '') +
+        '<span class="vdis" title="Изменить вердикт вручную — источник станет «оператор»">▾</span>' +
+        '</span></td>' +
+      '<td class="act"><span class="tico ' + (trackFor === p ? 'on' : '') + '"' +
+        ' title="Карта и графики этого ТС" onclick="event.stopPropagation();toggleTrack(\'' + p + '\')">▤</span></td>' +
+      '<td class="act"><span class="tico" title="' +
+        (o.child === '#64512' ? 'Открыть заявку ' + o.child : 'Создать дочернюю заявку') +
+        '" onclick="event.stopPropagation()">' + (o.child === '#64512' ? '↗' : '+') + '</span></td></tr>';
+  }).join('');
+
+  /* спокойная строчка «кто с кем не согласен» — без восклицательных знаков */
+  const dis = list.map(p => [p, disagree(p)]).filter(([,d]) => d);
+  const dn = document.getElementById('dis-note');
+  dn.style.display = dis.length ? 'block' : 'none';
+  dn.innerHTML = dis.length
+    ? '⇄ Расхождение с правилами: ' + dis.map(([p,d]) =>
+        '<b>' + p + '</b> — правила: ' + d.from + ' → ' + d.by + ': ' + d.to).join('; ') + '.'
+    : '';
+}
+
+function renderTel(){
+  const o = OBJ[sel], e = eff(sel), d = disagree(sel);
+  document.getElementById('tel-plate').textContent = sel;
+  document.getElementById('tel-hd').innerHTML = vpill(sel) + '<span class="meta">' +
+    (e.src === 'rules' ? 'предварительно — ИИ ещё не вызывался'
+     : e.src === 'ai' ? 'Доверие ИИ ' + e.conf + '%' +
+        (e.auto ? ' — авто-ответ доступен' : ' — ниже порога, нужна проверка')
+     : 'исправлено вручную · ' + e.who + ' · ' + e.when) + '</span>';
+  /* полоса доверия — только у вердикта ИИ: у правил и у человека её просто нет */
+  document.getElementById('tel-conf-wrap').style.display = e.src === 'ai' ? 'block' : 'none';
+  if (e.src === 'ai') document.getElementById('tel-conf').style.width = e.conf + '%';
+  const td = document.getElementById('tel-dis');
+  td.style.display = d ? 'block' : 'none';
+  td.innerHTML = d ? '⇄ правила: <b>' + d.from + '</b> → ' + d.by + ': <b>' + d.to + '</b>' +
+    (d.by === 'ИИ' ? ' — машина переспорила правила, обоснование ниже'
+                   : ' — ручную правку ИИ не перезаписывает') : '';
+  document.getElementById('tel-tiles').innerHTML = o.metrics.map(m =>
+    '<div class="tile ' + m[2] + '"><em title="' + m[0] + '">' + m[0] + '</em><b>' + m[1] + '</b></div>').join('');
+  document.getElementById('tel-flags').innerHTML = o.flags.length
+    ? o.flags.map(f => '<span class="pill ' + f[1] + '">' + f[0] + '</span>').join('')
+    : '<span class="meta">флагов нет</span>';
+  /* обоснование, доверие и черновик существуют только после вызова модели */
+  document.getElementById('ai-cta').style.display = aiRun ? 'none' : 'block';
+  document.getElementById('tel-why').style.display = aiRun ? 'block' : 'none';
+  document.getElementById('tel-draft').style.display = aiRun ? 'block' : 'none';
+  document.getElementById('why-text').textContent = o.why;
+  document.getElementById('why-alts').innerHTML = o.alts.map(a =>
+    '<div class="alt"><span>ещё версия: <b>' + a[0] + '</b></span><span>' + a[1] + '</span></div>').join('');
+  curDraft = aiRun ? o.draft : '';
+  document.getElementById('draft-text').textContent = o.draft;
+  document.getElementById('ai-cost').textContent =
+    plates().length + (plates().length === 1 ? ' объект' : ' объекта') +
+    ' · ~' + (plates().length * 2) + ' тыс. токенов · ≈ ' + (plates().length * 3) + ' с';
+  const chip = document.getElementById('draft-chip');
+  chip.style.display = aiRun ? 'inline-block' : 'none';
+  chip.textContent = '✦ черновик ИИ для ' + sel;
+}
+
+/* Переключатель демо-состояния «до ИИ / после ИИ». */
+function setAI(on){
+  aiRun = !!on; aiBusy = false;
+  document.getElementById('a-rules').classList.toggle('on', !aiRun);
+  document.getElementById('a-ai').classList.toggle('on', aiRun);
+  document.getElementById('fb-q').textContent = aiRun
+    ? 'ИИ разобрал ' + plates().length + ' объекта — разбор верный?'
+    : 'ИИ ещё не вызывали — оценивать нечего: вердикт посчитан правилами';
+  document.getElementById('fb-icons').style.display = aiRun ? 'flex' : 'none';
+  renderTable(); renderTel();
+}
+/* Нажали «Ответ ИИ»: показываем, что вызов не мгновенный и не бесплатный. */
+function runAI(){
+  if (aiBusy || aiRun) return;
+  aiBusy = true;
+  const b = document.getElementById('ai-btn');
+  b.disabled = true; b.textContent = '✦ Спрашиваю DeepSeek…';
+  b.title = 'Запрос ушёл в модель — обычно занимает несколько секунд';
+  document.getElementById('ai-wait').style.display = 'block';
+  document.getElementById('ai-cost').textContent = 'идёт вызов модели…';
+  setTimeout(() => {
+    b.disabled = false; b.textContent = '✦ Ответ ИИ';
+    b.title = 'Отправить разбор в DeepSeek — вернёт обоснование, доверие и черновик ответа. ' +
+      'Платный вызов модели, считается по токенам';
+    document.getElementById('ai-wait').style.display = 'none';
+    setAI(true);
+  }, 1100);
+}
+
+function expandBar(on){
+  document.getElementById('reply').classList.toggle('exp', on);
+  document.getElementById('bar-more').classList.toggle('on', on);
+}
+function insertDraft(){
+  const r = document.getElementById('reply');
+  r.value = curDraft; expandBar(true); r.focus();
+}
+
+function pick(p){ sel = p; renderTable(); renderTel(); }
+
+function toggleTrack(p){
+  trackFor = (p === null || trackFor === p) ? null : p;
+  const tp = document.getElementById('tp');
+  tp.classList.toggle('open', !!trackFor);
+  document.getElementById('track-hint').classList.toggle('on', !!trackFor);
+  if (trackFor){
+    sel = trackFor;
+    document.getElementById('tp-title').textContent = trackFor + ' · ' + OBJ[trackFor].model;
+    document.getElementById('hint-plate').textContent = trackFor;
+    renderTel();
+  }
+  renderTable();
+}
+
+function setMode(m){
+  mode = m;
+  ['one','many','raw'].forEach(k =>
+    document.getElementById('m-' + k).classList.toggle('on', k === m));
+  if (!plates().includes(sel)) sel = plates()[0];
+  if (trackFor && !plates().includes(trackFor)) toggleTrack(null);
+  setAI(aiRun);   /* перерисовка + пересчёт подписей, зависящих от числа объектов */
+}
+
+function copyNum(){
+  const b = document.getElementById('copy-btn');
+  try { navigator.clipboard.writeText('64281'); } catch(e){}
+  b.classList.add('flash'); b.textContent = '✓';
+  setTimeout(() => { b.classList.remove('flash'); b.textContent = '⧉'; }, 900);
+}
+
+/* ══════════ общие мелочи ══════════ */
+function pickSeg(b){
+  b.parentElement.querySelectorAll('.seg').forEach(s => s.classList.remove('on'));
+  b.classList.add('on');
+}
+function pickOne(b){
+  b.parentElement.querySelectorAll('.opt').forEach(o => o.classList.remove('on'));
+  b.classList.add('on');
+}
+function toggleBox(id){
+  const el = document.getElementById(id);
+  el.style.display = el.style.display === 'none' ? 'flex' : 'none';
+  if (id === 'ass-opts' && el.style.display === 'flex') el.style.display = 'block';
+}
+function selText(id){
+  const on = document.querySelector('#' + id + ' .opt.on');
+  return on ? on.textContent.trim() : '';
+}
+
+/* ══════════ выпадающие панели ══════════ */
+let popGuard = false;
+function togglePop(id){
+  popGuard = true; setTimeout(() => { popGuard = false; }, 0);
+  document.querySelectorAll('.pop').forEach(p => { if (p.id !== id) p.classList.remove('on'); });
+  const p = document.getElementById(id), on = !p.classList.contains('on');
+  p.classList.toggle('on', on);
+  if (id === 'tpl-pop' && on){ tplBack(); renderTpls(); }
+}
+document.addEventListener('click', e => {
+  if (popGuard || e.target.closest('.pop')) return;
+  document.querySelectorAll('.pop.on').forEach(p => p.classList.remove('on'));
+});
+
+/* ══════════ 1 · смена статуса и модалка решения ══════════ */
+let typeCode = 'mileage';
+const ST = {
+  wait:{title:'В работу', ok:'В работу', delay:false, req:false,
+    note:'«В работе» Okdesk открывает только для типов «Выезд» и «Выезд с заправкой»',
+    cmt:'Принял в работу. Выезд монтажника согласую с контактным лицом и вернусь со сроком.'},
+  delayed:{title:'Ожидание ответа', ok:'Ожидание ответа', delay:true, req:true,
+    note:'Заявка уйдёт из работы до указанной даты и вернётся в список сама',
+    cmt:'Ждём от вас подтверждение по стоянке 22.07 — без него по А123БВ96 разбор закрыть не можем.'},
+  no_time:{title:'Нет времени', ok:'Отложить', delay:true, req:true,
+    note:'Отложенная заявка не считается просроченной до указанной даты',
+    cmt:'Отложил: нужна выгрузка трека за июль с сервера гео, вернусь к разбору 31.07.'},
+  completed:{title:'Решить', ok:'Ответить и решить', delay:false, req:false,
+    note:'Комментарий уйдёт клиенту, заявка перейдёт в «Решена»', cmt:''},
+  comment:{title:'Комментарий', ok:'Отправить', delay:false, req:true,
+    note:'Статус не изменится — уйдёт только комментарий', cmt:''}
+};
+let stCode = 'completed';
+
+function openStatus(code){
+  stCode = code;
+  const s = ST[code];
+  document.querySelectorAll('.pop').forEach(p => p.classList.remove('on'));
+  document.getElementById('mb-title').textContent = s.title + ' — #64281';
+  document.getElementById('mb-delay-row').style.display = s.delay ? 'block' : 'none';
+  document.getElementById('mb-req').style.display = s.req ? 'inline' : 'none';
+  document.getElementById('mb-note').textContent = s.note;
+  document.getElementById('mb-ok').textContent = s.ok;
+  const cmt = document.getElementById('mb-cmt');
+  cmt.value = s.cmt || document.getElementById('reply').value || (code === 'completed' ? curDraft : '');
+  cmt.placeholder = s.req ? 'Обязательный комментарий…' : 'Необязательный комментарий…';
+  document.getElementById('mb-guard').classList.toggle('on', typeCode === 'inner' && code !== 'comment');
+  document.getElementById('st-modal').classList.add('on');
+  mbCheck();
+}
+function closeStatus(){ document.getElementById('st-modal').classList.remove('on'); }
+function mbCheck(){
+  const s = ST[stCode];
+  const okCmt = !s.req || document.getElementById('mb-cmt').value.trim().length > 0;
+  const okDelay = !s.delay || !!document.getElementById('mb-delay').value;
+  const okType = !(typeCode === 'inner' && stCode !== 'comment');
+  const b = document.getElementById('mb-ok');
+  b.disabled = !(okCmt && okDelay && okType);
+  b.title = b.disabled
+    ? (!okType ? 'Сначала укажите тип заявки' :
+       !okCmt ? 'Для этого статуса комментарий обязателен' : 'Укажите дату «отложить до»')
+    : 'Применить смену статуса в Okdesk';
+}
+function updGuard(){
+  const bad = typeCode === 'inner';
+  document.getElementById('guard').classList.toggle('on', bad);
+  const r = document.getElementById('resolve-btn');
+  r.disabled = bad;
+  r.title = bad ? 'Сначала укажите тип заявки — Okdesk не пустит заявку в «Решена»'
+                : 'Отправить ответ клиенту и перевести заявку в «Решена»';
+  syncDetGuard(bad);
+}
+/* Без типа заявки чинить нужно именно в «Деталях» — раскрываем секцию сами.
+   Раскрываем РОВНО на переходе «тип пропал»: если оператор свернул секцию
+   руками, повторно её не разворачиваем — навязчивое раскрытие на каждый чих
+   хуже, чем незамеченная подсказка. Лаймовую полосу НЕ отдаём: полоса
+   показывает, где оператор работает сейчас, а работа начинается с «Разбора».
+   Так же сделано во фронте (проп forceOpen у Block — activate() не зовём). */
+let guardWasBad = false;
+function syncDetGuard(bad){
+  const det = document.getElementById('sec-det');
+  if (det && bad && !guardWasBad && !det.open){ det.open = true; }
+  guardWasBad = bad;
+}
+
+/* ══════════ 2 · шаблоны ответа с плейсхолдерами ══════════ */
+const TPL = [
+  {n:'Расхождение — потеря спутников', c:'Пробег', u:47, fav:true,
+   t:'Добрый день! Проверили трек по [гос.номер] за [период]. Расхождение [расхождение] км '+
+     'объясняется потерей спутников [дата] — в этот интервал пробег не фиксировался. '+
+     'Данные путевого листа корректны, к системе замечаний нет.'},
+  {n:'Расхождение в пределах погрешности', c:'Пробег', u:31, fav:true,
+   t:'Добрый день! По [гос.номер] расхождение [расхождение] км — это штатная погрешность '+
+     'GPS-одометра (до 2%). Данные системы и путевого листа считаем совпадающими.'},
+  {n:'Просадка питания терминала', c:'Питание', u:23, fav:false,
+   t:'Добрый день! По [гос.номер] [дата] зафиксирована просадка питания терминала — '+
+     'связь пропадала, поэтому пробег по системе не набран. Просим проверить подключение '+
+     'питания и цепь предохранителя.'},
+  {n:'Запрос уточнения у клиента', c:'Общие', u:18, fav:false,
+   t:'Добрый день! Для разбора по [гос.номер] нужна информация: находилась ли техника '+
+     '[дата] на территории базы и выполнялись ли работы. Ответ ждём до [завтра].'},
+  {n:'Согласование выезда монтажника', c:'Выезд', u:12, fav:false,
+   t:'Добрый день! По [гос.номер] требуется выезд монтажника. Предлагаем [завтра], '+
+     'адрес [адрес]. Контактное лицо [контакт]. Подтвердите, пожалуйста, время.'},
+  {n:'Промежуточный ответ (в работе)', c:'Общие', u:9, fav:false,
+   t:'Добрый день! Заявка принята в работу [сегодня]. Разбираем трек по [гос.номер], '+
+     'ответ направим в течение рабочего дня.'},
+  {n:'Терминал подключился — вопрос снят', c:'Питание', u:6, fav:false,
+   t:'Добрый день! Терминал [гос.номер] вышел на связь [вчера], данные поступают штатно. '+
+     'Считаем вопрос закрытым, при повторе — сообщите.'}
+];
+const CATS = ['Все категории','Пробег','Питание','Выезд','Общие'];
+const AUTO = ['сегодня','вчера','завтра'];
+let tplCat = 0, tplCur = -1, tplVals = {};
+
+function dmy(shift){
+  const d = new Date(2026, 6, 28); d.setDate(d.getDate() + shift);
+  return ('0'+d.getDate()).slice(-2)+'.'+('0'+(d.getMonth()+1)).slice(-2)+'.'+d.getFullYear();
+}
+function tplDefaults(){
+  const o = OBJ[sel], diff = Math.abs((+o.pl || 0) - (+o.fact || 0));
+  return {'гос.номер':sel, 'дата':o.date, 'период':'01.07.2026 — 24.07.2026',
+    'расхождение':isNaN(diff) ? '—' : String(diff), 'модель':o.model,
+    'адрес':'г. Жигулёвск, ул. Промышленная, 4', 'контакт':'Трофимов Н. В.',
+    'сегодня':dmy(0), 'вчера':dmy(-1), 'завтра':dmy(1)};
+}
+function phList(t){
+  const out = [], re = /\[([^\]]+)\]/g; let m;
+  while ((m = re.exec(t))) if (!out.includes(m[1])) out.push(m[1]);
+  return out;
+}
+function cycleCat(){
+  tplCat = (tplCat + 1) % CATS.length;
+  document.getElementById('tpl-cat').textContent = CATS[tplCat] + ' ▾';
+  renderTpls();
+}
+function renderTpls(){
+  const q = document.getElementById('tpl-q').value.trim().toLowerCase();
+  const list = TPL.map((t,i) => [t,i])
+    .filter(([t]) => (tplCat === 0 || t.c === CATS[tplCat]) &&
+      (!q || (t.n + ' ' + t.t).toLowerCase().includes(q)))
+    .sort((a,b) => (b[0].fav - a[0].fav) || (b[0].u - a[0].u));
+  document.getElementById('tpl-list').innerHTML = list.length
+    ? list.map(([t,i]) =>
+        '<button class="tpl" onclick="tplOpen(' + i + ')" title="' + t.t.slice(0,110) + '…">' +
+        '<span class="tn">' + (t.fav ? '★ ' : '') + t.n + '</span>' +
+        '<span class="badge" title="Категория шаблона">' + t.c + '</span>' +
+        (phList(t.t).length ? '<span class="badge" title="Динамический шаблон — запросит значения плейсхолдеров">дин.</span>' : '') +
+        '<span class="count" title="Использован ' + t.u + ' раз">' + t.u + '</span></button>').join('')
+    : '<div class="pop-bd"><span class="meta">Шаблоны не найдены</span></div>';
+}
+function tplOpen(i){
+  tplCur = i; tplVals = tplDefaults();
+  const ph = phList(TPL[i].t);
+  document.getElementById('tpl-hd').textContent = TPL[i].n;
+  document.getElementById('tpl-ph').innerHTML = ph.length
+    ? ph.map(p => {
+        const auto = AUTO.includes(p), v = tplVals[p] || '';
+        return '<div class="fgroup"><span class="cap">[' + p + ']</span>' +
+          '<input class="fld" value="' + v + '"' + (auto ? ' disabled' : '') +
+          ' oninput="tplSet(\'' + p + '\',this.value)" title="' +
+          (auto ? 'Подставляется автоматически по МСК' :
+                  'Значение подставлено из разбора заявки — можно поправить') + '"></div>';
+      }).join('')
+    : '<div class="fgroup"><span class="meta">В шаблоне нет плейсхолдеров</span></div>';
+  document.getElementById('tpl-step-list').style.display = 'none';
+  document.getElementById('tpl-step-fill').style.display = 'block';
+  tplPrev();
+}
+function tplSet(k,v){ tplVals[k] = v; tplPrev(); }
+function tplText(){
+  return TPL[tplCur].t.replace(/\[([^\]]+)\]/g, (m,k) => tplVals[k] || m);
+}
+function tplPrev(){ document.getElementById('tpl-prev').textContent = tplText(); }
+function tplBack(){
+  document.getElementById('tpl-hd').textContent = 'Шаблоны ответов';
+  document.getElementById('tpl-step-fill').style.display = 'none';
+  document.getElementById('tpl-step-list').style.display = 'block';
+}
+function tplInsert(){
+  const txt = tplText();
+  TPL[tplCur].u++;
+  const mo = document.getElementById('st-modal').classList.contains('on');
+  if (mo){ document.getElementById('mb-cmt').value = txt; mbCheck(); }
+  else { document.getElementById('reply').value = txt; expandBar(true); }
+  document.getElementById('tpl-pop').classList.remove('on');
+  tplBack(); renderTpls();
+}
+
+/* ══════════ 3 · оценка разбора ИИ ══════════ */
+function fbVote(v){
+  const ask = document.getElementById('fb-ask'), form = document.getElementById('fb-form'),
+        sent = document.getElementById('fb-sent');
+  document.getElementById('fb-up').classList.toggle('on', v === 'up');
+  document.getElementById('fb-down').classList.toggle('on', v === 'down');
+  if (v === 'up'){
+    ask.style.display = 'none'; form.style.display = 'none'; sent.style.display = 'block';
+    const c = document.getElementById('fb-chip');
+    c.className = 'pill pill-acc'; c.textContent = '✓ оценка отправлена — разобрано верно';
+    document.getElementById('fb-what').textContent =
+      'Разбор пойдёт в тренировочные образцы как удачный пример для few-shot.';
+    document.getElementById('fb-count').textContent = 'верно';
+  } else if (v === 'down'){
+    ask.style.display = 'flex'; form.style.display = 'block'; sent.style.display = 'none';
+    document.getElementById('fb-count').textContent = 'указываем ошибку';
+  } else {
+    ask.style.display = 'flex'; form.style.display = 'none'; sent.style.display = 'none';
+    document.getElementById('fb-count').textContent = 'не оценён';
+  }
+}
+function fbSend(){
+  document.getElementById('fb-ask').style.display = 'none';
+  document.getElementById('fb-form').style.display = 'none';
+  document.getElementById('fb-sent').style.display = 'block';
+  const c = document.getElementById('fb-chip');
+  c.className = 'pill pill-warn'; c.textContent = '✓ оценка отправлена — с ошибкой';
+  const kind = document.querySelector('#fb-form .fgroup .opt.on');
+  const cat = document.querySelectorAll('#fb-form .fgroup')[2].querySelector('.opt.on');
+  document.getElementById('fb-what').textContent =
+    (kind ? kind.textContent.trim() : 'Другое') +
+    (cat ? ' · правильная категория: ' + cat.textContent.trim() : '') +
+    ' · ' + (document.getElementById('fb-cmt').value.trim() || 'без комментария');
+  document.getElementById('fb-count').textContent = 'с ошибкой';
+}
+
+/* ══════════ 4 · детали заявки ══════════ */
+function setType(b, code, name){
+  pickOne(b); typeCode = code;
+  document.getElementById('det-type').textContent = name;
+  updGuard(); detCount();
+}
+function setAss(b, who, line){
+  pickOne(b);
+  document.getElementById('ass-opts').querySelectorAll('.opt').forEach(o => {
+    if (o !== b) o.classList.remove('on'); });
+  document.getElementById('det-ass').innerHTML = '<b>' + who + '</b> · ' + line;
+  detCount();
+}
+function takeSelf(){
+  document.getElementById('det-ass').innerHTML = '<b>Иванов С.</b> · Первая линия · вы';
+  document.getElementById('ass-opts').querySelectorAll('.opt').forEach(o => o.classList.remove('on'));
+  detCount();
+}
+function prmDirty(){
+  const b = document.getElementById('prm-save');
+  b.disabled = false;
+  document.getElementById('prm-msg').textContent = 'есть несохранённые правки';
+}
+function prmSave(){
+  const b = document.getElementById('prm-save');
+  b.disabled = true; b.textContent = 'Сохраняю…';
+  setTimeout(() => {
+    b.textContent = 'Сохранить параметры';
+    document.getElementById('prm-msg').textContent = '✓ параметры сохранены в Okdesk';
+    detCount();
+  }, 700);
+}
+function detCount(){
+  const filled = ['p-address','p-contact','p-tel']
+    .filter(id => document.getElementById(id).value.trim()).length;
+  document.getElementById('det-count').textContent =
+    document.getElementById('det-type').textContent + ' · параметры ' + filled + '/3';
+}
+
+/* ══════════ 5 · связанные заявки ══════════ */
+function relToggle(){
+  const f = document.getElementById('rel-full'), e = document.getElementById('rel-empty');
+  const empty = f.style.display !== 'none';
+  f.style.display = empty ? 'none' : 'block';
+  e.style.display = empty ? 'block' : 'none';
+  document.getElementById('rel-count').textContent = empty ? '0' : '3';
+  document.getElementById('rel-sw').textContent =
+    empty ? 'Вернуть заполненное состояние' : 'Показать пустое состояние';
+}
+
+/* ══════════ 6 · прогресс OCR ══════════ */
+let ocrDone = 14;
+function ocrStep(){
+  if (ocrDone >= 19) return;
+  ocrDone = 19;
+  document.getElementById('ocr-sum').innerHTML = 'ИИ прочитал <b>19 из 19</b> файлов';
+  const bar = document.getElementById('ocr-bar');
+  bar.querySelector('i').style.width = '100%';
+  bar.title = 'Прогресс распознавания вложений: 19 из 19';
+  document.querySelectorAll('#att-grid .fo').forEach(el => {
+    if (el.textContent.indexOf('OCR недоступен') >= 0) return;
+    el.className = 'fo'; el.textContent = '✓ распознан';
+  });
+  const b = document.getElementById('ocr-btn');
+  b.textContent = '✓ всё распознано'; b.disabled = true;
+  b.title = 'Прочитаны все вложения, кроме растрового скана без текстового слоя';
+}
+
+/* ══════════ 7 · передать монтажникам ══════════
+   Текст собирается по кнопке — как и всё, что стоит денег или времени:
+   пока не нажали, в секции только пояснение и две кнопки. Адрес, контакт и
+   телефон читаются из параметров заявки, вердикт — из действующего eff(). */
+const INST = {
+  cal:{cap:'Формат для календаря',
+       note:'Короткая тема и три строки — вставляется в событие календаря'},
+  msg:{cap:'Формат для мессенджера',
+       note:'Один связный текст — уходит монтажнику одним сообщением'}
+};
+let instKind = null;
+function instText(kind){
+  const addr = document.getElementById('p-address').value.trim() || 'адрес не заполнен';
+  const who  = document.getElementById('p-contact').value.trim() || 'контакт не заполнен';
+  const tel  = document.getElementById('p-tel').value.trim() || '+7 846 000-00-00';
+  const type = document.getElementById('det-type').textContent.trim();
+  const o = OBJ[sel], e = eff(sel);
+  const diff = Math.abs((+o.pl || 0) - (+o.fact || 0));
+  if (kind === 'cal'){
+    return '#64281 · ' + sel + ' · ' + e.v + ' — выезд монтажника\n' +
+      'Адрес: ' + addr + '\n' +
+      'Контакт: ' + who + ', ' + tel + '\n' +
+      'Суть: ' + o.model + ', ' + type.toLowerCase() + ' за июль. По путевому листу ' +
+      o.pl + ' км, по треку ' + o.fact + ' км (расхождение ' + diff + ' км). Вердикт «' +
+      e.v + '» — проверить антенну и монтаж терминала. Регион 63 (Самара).';
+  }
+  return 'Привет! Нужен выезд по заявке #64281 (регион 63, Самара). Машина ' + sel + ', ' +
+    o.model + ', стоит по адресу: ' + addr + '. На месте встретит ' + who + ', ' + tel +
+    '. По путевым листам за июль ' + o.pl + ' км, по треку ' + o.fact + ' км — расхождение ' +
+    diff + ' км, вердикт «' + e.v + '» (' + o.date + '). Посмотри антенну, питание и монтаж ' +
+    'терминала, по результату отпишись в заявку — я передам клиенту.';
+}
+function instMake(kind){
+  instKind = kind;
+  document.getElementById('inst-cap').textContent = INST[kind].cap;
+  document.getElementById('inst-note').textContent = INST[kind].note;
+  document.getElementById('inst-text').textContent = instText(kind);
+  document.getElementById('inst-out').style.display = 'block';
+  const s = document.getElementById('sec-inst');
+  if (s && s.open) setActiveSection(s);
+}
+function instCopy(){
+  const b = document.getElementById('inst-copy');
+  try { navigator.clipboard.writeText(document.getElementById('inst-text').textContent); } catch(e){}
+  b.textContent = '✓ скопировано';
+  setTimeout(() => { b.textContent = 'Скопировать'; }, 900);
+}
+
+/* ══════════ 8 · активная секция ══════════
+   Лаймовая полоса — ровно у одной секции: последней, которую раскрыли или в
+   которую кликнули. По умолчанию горит «Разбор» — с него начинается работа с
+   заявкой; если он свёрнут, полоса падает на первую раскрытую сверху вниз,
+   а если раскрытых нет — не горит нигде. */
+function setActiveSection(sec){
+  document.querySelectorAll('.sec.active').forEach(s => s.classList.remove('active'));
+  if (sec && sec.open) sec.classList.add('active');
+}
+document.querySelectorAll('.sec').forEach(sec => {
+  /* toggle — на раскрытие/сворачивание, mousedown — на клик внутрь уже раскрытой */
+  sec.addEventListener('toggle', () => {
+    if (sec.open) setActiveSection(sec);
+    else if (sec.classList.contains('active')) sec.classList.remove('active');
+  });
+  sec.addEventListener('mousedown', () => { if (sec.open) setActiveSection(sec) });
+});
+function initActiveSection(){
+  const razbor = document.getElementById('sec-razbor');
+  if (razbor && razbor.open) return setActiveSection(razbor);
+  setActiveSection([...document.querySelectorAll('.sec')].find(s => s.open));
+}
+
+setAI(false); renderTpls(); updGuard(); detCount();
+/* Инициализация — следующим тиком: событие toggle асинхронное, и секции, которые
+   другие init-функции раскрывают программно, иначе перехватывают полосу себе. */
+setTimeout(initActiveSection, 0);
+</script>
+</body>
+</html>
