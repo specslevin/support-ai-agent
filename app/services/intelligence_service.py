@@ -33,8 +33,14 @@ _GPS_UNAVAILABLE = "⚠️ Не удалось проверить оборудо
 class LLMRouter(Protocol):
     """Minimal contract for the LLM backend used by :class:`IntelligenceService`."""
 
-    async def chat(self, system: str, user: str) -> str:
-        """Return assistant text (expected to be a single JSON object for triage)."""
+    async def chat(self, system: str, user: str,
+                   max_tokens: int | None = None) -> str:
+        """Return assistant text (expected to be a single JSON object for triage).
+
+        ``max_tokens`` — потолок ОТВЕТА для этого вызова. Нужен пакетному разбору:
+        общий дефолт рассчитан на один короткий ответ, а там модель пишет по
+        строке на каждый объект, и ответ обрывается на полуслове (см. llm.py).
+        """
         ...
 
 

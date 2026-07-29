@@ -20,6 +20,7 @@ from typing import Any, Awaitable, Callable
 
 import structlog
 
+from app.core.ai.llm import LLM_ERROR_TEXT
 from app.core.gpspos_geo.service import GpsposGeoService
 from app.core.okdesk.service import OkdeskService
 
@@ -3347,13 +3348,28 @@ class IssueAutomationService:
             f"{json.dumps(payload, ensure_ascii=False)}\n\n"
             f"Верни ответ по каждой из {len(batch)} строк, строго в JSON."
         )
-        raw = await self._llm.chat(system, user)
+        # Потолок ответа считаем от ЧИСЛА СТРОК: на каждую модель пишет категорию,
+        # уверенность, обоснование и черновик клиенту, плюс один сводный текст на
+        # всю заявку. С общим дефолтом (2048) ответ на 12 строк обрывался на
+        # полуслове — JSON не парсился, и платный вызов уходил впустую (65915,
+        # первый реальный прогон). ~260 токенов на строку с запасом на кириллицу.
+        max_tokens = min(8192, 600 + 260 * len(batch))
+        raw = await self._llm.chat(system, user, max_tokens=max_tokens)
         parsed = self._parse_llm_json(raw)
         items = parsed.get("objects") if isinstance(parsed, dict) else None
         if not isinstance(items, list):
-            return {"rows": {}, "sent": len(batch), "skipped": skipped,
-                    "note": "Модель вернула ответ в неожидаемом формате — "
-                            "вердикты правил оставлены без изменений."}
+            # Сбой связи и «модель ответила не то» лечатся по-разному: первое —
+            # повторить, второе — править промпт. Раньше обе беды давали один текст.
+            if raw == LLM_ERROR_TEXT:
+                note = ("Не удалось связаться с ИИ — вердикты правил оставлены "
+                        "без изменений. Попробуйте ещё раз.")
+            else:
+                note = ("Модель вернула ответ в неожидаемом формате — вердикты "
+                        "правил оставлены без изменений.")
+            log.warning("ai_batch_unparsable", issue=issue_title,
+                        rows=len(batch), max_tokens=max_tokens,
+                        raw_len=len(raw or ""), raw_tail=(raw or "")[-300:])
+            return {"rows": {}, "sent": len(batch), "skipped": skipped, "note": note}
         allowed_idx = {i for i, _ in batch}
         rows: dict[int, dict[str, Any]] = {}
         for it in items:
