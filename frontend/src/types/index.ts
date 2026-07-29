@@ -210,7 +210,11 @@ export interface BatchObject {
   verdict_edited?: boolean
   plate_edited?: boolean
   date_edited?: boolean
+  /** Пробег («ПЛ» и/или «ГЛОНАСС заявл.») поправил оператор — `POST /batch/mileage`. */
+  mileage_edited?: boolean
   spec_vehicle?: boolean
+  /** Строку завёл оператор вручную (`POST /batch/row`), в акте её не нашли. */
+  manual_row?: boolean
   /**
    * Появляются после платного прогона ИИ по всей заявке (`POST /batch/ai`):
    * до него у строки есть только вердикт правил, обосновывать нечего.
@@ -279,6 +283,13 @@ export interface ParseResult {
   note?: string
   /** Есть только у разбора с вложениями (`attachments=true`). */
   ocr_progress?: OcrProgress
+  /**
+   * Документ правили вручную (вердикт, номер, дата, пробег, добавленная или
+   * удалённая строка). Одиночная карточка по умолчанию рисует более богатый кэш
+   * `automate`, но ручные правки пишутся сюда — с этим флагом главным становится
+   * `parse`, иначе после перезагрузки страницы правка пропадала бы с экрана.
+   */
+  operator_touched?: boolean
   /** Появляются после прогона ИИ по строкам (`POST /batch/ai`). */
   confidence?: number | null
   reasoning?: string | null

@@ -44,6 +44,14 @@ export function todayRu(): string {
   return fmtRu(nowMsk())
 }
 
+/** Today's date (MSK) as YYYY-MM-DD — формат, который ждут API разбора. */
+export function todayIsoMsk(): string {
+  const d = nowMsk()
+  const mm = String(d.getUTCMonth() + 1).padStart(2, '0')
+  const dd = String(d.getUTCDate()).padStart(2, '0')
+  return `${d.getUTCFullYear()}-${mm}-${dd}`
+}
+
 /** Date offset from today (MSK) by ``days`` in ru DD.MM.YYYY format. */
 function dateRuOffset(days: number): string {
   const d = nowMsk()

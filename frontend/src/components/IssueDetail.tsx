@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useState, useMemo, useEffect, useRef, useId, createContext, useContext } from 'react'
+import { useState, useMemo, useEffect, useRef, useId, createContext, useContext, Fragment } from 'react'
 import {
   ChevronDown, AlertTriangle, X, Check, Star, Bot, RefreshCw, Database,
   Lightbulb, Map, FilePlus, ExternalLink, Pause, Send,
@@ -8,6 +8,7 @@ import {
   Maximize2, Minimize2,
   Loader2, Lock, User, Headset, Play, ThumbsUp, ThumbsDown,
   Copy, Calendar, Phone, Pencil, MoreHorizontal, ChevronsDownUp,
+  Plus, Trash2,
 } from 'lucide-react'
 import { api } from '../api/client'
 import { useIssuesStore } from '../store/issuesStore'
@@ -21,7 +22,7 @@ import type {
 } from '../types'
 import {
   extractPlaceholders, hasPlaceholders, renderTemplate,
-  computedPlaceholderValue, isComputedPlaceholder,
+  computedPlaceholderValue, isComputedPlaceholder, todayIsoMsk,
 } from '../lib/templates'
 import { STATUS_COLOR, statusPillStyle } from '../lib/status'
 import {
@@ -1591,12 +1592,16 @@ function useBatchMode(issueId: number, issueTitle?: string | null, companyName?:
  * OCR и без единого токена DeepSeek). Именно он наполняет таблицу до того, как
  * оператор нажмёт платную кнопку ИИ. Ни `automate`, ни `compose_answer` здесь нет.
  */
-function useFreeParse(issueId: number, enabled = true) {
+function useFreeParse(issueId: number, enabled = true, postOnMiss = true) {
   return useQuery<ParseResult & { cached?: boolean; created_at?: string }>({
     queryKey: ['parse-free', issueId],
     queryFn: async () => {
       const cached = await api.getCachedParse(issueId)
       if (cached.cached) return cached
+      // Промах без права на прогон: карточка уже рисуется из кэша `automate`, и
+      // читать `parse` мы пришли только за ручными правками. Считать их «нет» —
+      // верно; гонять полный разбор на каждое открытие такой карточки — нет.
+      if (!postOnMiss) return cached
       return api.parseIssue(issueId)
     },
     enabled,
@@ -1906,6 +1911,549 @@ function ParseTableNote() {
   )
 }
 
+/** Вердикты, которые оператор может поставить руками (общий список обеих таблиц). */
+const ALLOWED_VERDICTS = ['Глушение', 'Данные верны', 'Не было питания', 'Нет данных', 'Терминал подключился', 'Проверить'] as const
+
+/** HTTP-код ошибки axios без импорта самого axios (нужен только для разбора ответа). */
+function apiStatus(e: unknown): number | undefined {
+  return (e as { response?: { status?: number } })?.response?.status
+}
+
+/** Текст ошибки бэкенда: `detail` уже по-русски — показываем оператору как есть. */
+function apiErrorText(e: unknown, fallback: string): string {
+  const detail = (e as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail
+  return typeof detail === 'string' && detail.trim() ? detail : fallback
+}
+
+/** Правимые колонки пробега: «ПЛ» и «ГЛОНАСС заявл.» — одна механика, разные поля. */
+const MILEAGE_FIELDS = {
+  sheet: {
+    editTitle: 'Изменить пробег по путевому листу (км) — вердикт строки пересчитается',
+    editedTitle: 'Пробег по путевому листу изменён оператором',
+  },
+  declared: {
+    editTitle: 'Изменить заявленный пробег по системе (км) — вердикт строки пересчитается',
+    editedTitle: 'Заявленный пробег изменён оператором',
+  },
+} as const
+type MileageField = keyof typeof MILEAGE_FIELDS
+
+/** Тело `POST /batch/mileage` без селектора строки. */
+type MileagePatch = {
+  sheet_mileage_km?: number
+  declared_system_km?: number
+  clear_sheet?: boolean
+  clear_declared?: boolean
+}
+
+/**
+ * Ввод пробега → что отправлять бэкенду.
+ *
+ * `null` — значение не изменилось, запрос не нужен. Клиенты пишут «80,79» и
+ * «1 234,5», поэтому пробелы выкидываем, запятую приводим к точке. Пустой ввод
+ * значит «стереть»: `null` в поле бэкенд трактует как «не менять», стирание идёт
+ * отдельным флагом `clear_*`.
+ */
+function mileageChange(o: BatchObject, field: MileageField, raw: string):
+  { patch: MileagePatch } | { error: string } | null {
+  const current = (field === 'sheet' ? o.sheet_mileage_km : o.declared_system_km) ?? null
+  const val = raw.trim().replace(/\s/g, '').replace(',', '.')
+  if (!val) {
+    if (current == null) return null
+    return { patch: field === 'sheet' ? { clear_sheet: true } : { clear_declared: true } }
+  }
+  const num = Number(val)
+  if (!Number.isFinite(num)) return { error: `«${raw.trim()}» — не похоже на число. Пробег вводится в км, например 80,79` }
+  if (num < 0) return { error: 'Пробег не может быть отрицательным' }
+  if (num === current) return null
+  return { patch: field === 'sheet' ? { sheet_mileage_km: num } : { declared_system_km: num } }
+}
+
+/** Что оператор правил в строке руками — подписи для предупреждения о переразборе. */
+function manualEditLabels(o: BatchObject): string[] {
+  const what: string[] = []
+  if (o.manual_row) what.push('строка заведена вручную')
+  if (o.plate_edited) what.push('номер')
+  if (o.date_edited) what.push('дата')
+  if (o.mileage_edited) what.push('пробег')
+  if (o.verdict_edited || rowVerdictSource(o) === 'operator') what.push('вердикт')
+  return what
+}
+
+/**
+ * Строки с ручными правками. Форс-прогон разбора перезаписывает документ целиком,
+ * поэтому перед ним оператору показываем поимённо, что именно пропадёт.
+ */
+function manualEditedRows(objects: BatchObject[]): { obj: BatchObject; what: string[] }[] {
+  return objects
+    .map(obj => ({ obj, what: manualEditLabels(obj) }))
+    .filter(r => r.what.length > 0)
+}
+
+/**
+ * Ячейка гос.номера, даты или пробега с правкой по карандашу (клик по карандашу,
+ * а не по тексту — защита от случайного изменения; Enter применяет, Esc отменяет).
+ *
+ * Один компонент на обе таблицы разбора: раньше эта разметка была скопирована
+ * дважды и успела разойтись мелочами.
+ *
+ * `kind='number'` — пробег: ввод свободный текстом (клиенты пишут «80,79»),
+ * запятую в точку и проверку на число делает обработчик таблицы. Пустой ввод для
+ * пробега осмыслен — это «стереть значение», поэтому он тоже уходит в onApply.
+ */
+function ParseEditCell({ kind, value, saving, edited, manual, readOnly, emptyLabel, editTitle, editedTitle, onApply }: {
+  kind: 'plate' | 'date' | 'number'
+  value: string | null
+  /** Идёт сохранение этой ячейки — поле блокируется, рядом крутится ↻. */
+  saving?: boolean
+  /** Значение уже правил оператор (`plate_edited` / `date_edited`). */
+  edited?: boolean
+  /** Всю строку завёл оператор (`manual_row`) — помечаем только у номера. */
+  manual?: boolean
+  /** Демо-режим или строка без номера — только просмотр. */
+  readOnly?: boolean
+  emptyLabel: string
+  editTitle: string
+  editedTitle: string
+  onApply: (val: string) => void
+}) {
+  const [editing, setEditing] = useState(false)
+  // Отмена по Escape: blur происходит и при Esc, поэтому применение гасим флагом.
+  const cancelRef = useRef(false)
+
+  const mark = manual ? (
+    <span title="Строка добавлена оператором" className="inline-flex shrink-0 text-info"><Plus size={10} /></span>
+  ) : null
+
+  // Пустой пробег — обычное дело (в акте его может и не быть), а пустой номер или
+  // дата это дырка в разборе: предупреждением подсвечиваем только их.
+  const emptyClass = kind === 'number' ? 'text-muted' : 'text-warning'
+
+  if (readOnly) {
+    return (
+      <span className="inline-flex items-center gap-1">
+        <span className={value ? '' : emptyClass}>{value ?? '—'}</span>
+        {mark}
+      </span>
+    )
+  }
+
+  if (editing) {
+    return (
+      <span className="inline-flex items-center gap-1" onClick={e => e.stopPropagation()}>
+        <input
+          {...(kind === 'date' ? { type: 'date' } : {})}
+          {...(kind === 'number' ? { inputMode: 'decimal' as const, placeholder: '0' } : {})}
+          autoFocus
+          defaultValue={value ?? ''}
+          disabled={saving}
+          onKeyDown={e => {
+            if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+            else if (e.key === 'Escape') { cancelRef.current = true; (e.target as HTMLInputElement).blur() }
+          }}
+          onBlur={e => {
+            const val = e.target.value
+            setEditing(false)
+            if (cancelRef.current) { cancelRef.current = false; return }
+            onApply(val)
+          }}
+          className={`rounded border border-accent bg-frame px-1 py-0.5 text-[11px] text-white outline-none placeholder:text-muted/40 disabled:opacity-50 ${
+            kind === 'plate' ? 'w-[5.5rem] font-mono' : kind === 'number' ? 'w-[4.5rem]' : 'w-[8.5rem]'
+          }`}
+        />
+        <span className="shrink-0 text-[9px] text-muted/60">
+          {kind === 'number' ? 'Enter / Esc · пусто = стереть' : 'Enter / Esc'}
+        </span>
+      </span>
+    )
+  }
+
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span className={value ? '' : emptyClass}>{value ?? emptyLabel}</span>
+      <button
+        onClick={e => { e.stopPropagation(); setEditing(true) }}
+        title={editTitle}
+        className="shrink-0 text-muted/40 hover:text-accent transition-colors"
+      ><Pencil size={11} /></button>
+      {edited && <span title={editedTitle} className="shrink-0 text-info">●</span>}
+      {mark}
+      {saving && <span className="shrink-0 animate-spin text-muted">↻</span>}
+    </span>
+  )
+}
+
+/**
+ * Ячейка вердикта: пилюля с источником (правила / ИИ / оператор) и прозрачный
+ * нативный `select` поверх неё — так остаётся штатный выпадающий список без
+ * своей вёрстки (таблица лежит в overflow-x-auto, свой попап там обрезался бы).
+ *
+ * Один компонент на обе таблицы: правка вердикта была только в пакетной, в
+ * одиночной висела read-only пилюля.
+ */
+function VerdictCell({ o, loading, readOnly, onChange }: {
+  o: BatchObject
+  loading?: boolean
+  /** Демо-режим — только просмотр. */
+  readOnly?: boolean
+  onChange: (verdict: string) => void
+}) {
+  const spec = o.spec_vehicle ? (
+    <span
+      title="Спецтехника без км-пробега — оценивать по факту работы/моточасам"
+      className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-pill bg-warning/15 text-warning text-[9px] font-medium align-middle"
+    >
+      спецтехника
+    </span>
+  ) : null
+
+  if (readOnly) {
+    return <><VerdictPill verdict={o.verdict} source={rowVerdictSource(o)} />{spec}</>
+  }
+
+  const d = verdictDisagreement(o.verdict, o.heuristic_category, rowVerdictSource(o))
+  return (
+    <>
+      <span className="inline-flex min-w-0 items-center">
+        <span className="relative inline-flex min-w-0 items-center rounded-pill focus-within:ring-1 focus-within:ring-accent">
+          <VerdictPill
+            verdict={o.verdict}
+            source={rowVerdictSource(o)}
+            className={loading ? 'opacity-50' : ''}
+            title={verdictCellHint(o)}
+          />
+          <span className="ml-1.5 shrink-0 text-[11px] text-muted">▾</span>
+          {/* Список вердиктов был НЕВИДИМ: у select стоял text-transparent (чтобы
+              не просвечивал поверх пилюли), а option наследуют цвет от select —
+              в раскрытом списке получался чёрный текст на чёрном. Цвет каждого
+              пункта задаём инлайном (VERDICT_OPTION_STYLE). */}
+          <select
+            value={o.verdict}
+            disabled={loading}
+            onChange={e => onChange(e.target.value)}
+            onClick={e => e.stopPropagation()}
+            title={verdictCellHint(o)}
+            aria-label="Вердикт по объекту"
+            className="absolute inset-0 h-full w-full cursor-pointer appearance-none border-0 bg-transparent opacity-0 outline-none disabled:cursor-wait"
+          >
+            {ALLOWED_VERDICTS.map(v => (
+              <option key={v} value={v} style={VERDICT_OPTION_STYLE}>{v}</option>
+            ))}
+            {!ALLOWED_VERDICTS.includes(o.verdict as typeof ALLOWED_VERDICTS[number]) && (
+              <option value={o.verdict} style={VERDICT_OPTION_STYLE}>{o.verdict}</option>
+            )}
+          </select>
+        </span>
+        {d && (
+          <span title={`Правила: ${d.from} → ${d.by}: ${d.to}`} className="ml-1.5 shrink-0 text-[11px] text-muted">⇄</span>
+        )}
+        {loading && <span className="ml-1.5 shrink-0 animate-spin text-muted">↻</span>}
+      </span>
+      {spec}
+    </>
+  )
+}
+
+/** Кнопка удаления строки разбора — иконка того же размера, что соседние в строке. */
+function DeleteRowButton({ disabled, onClick }: { disabled?: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={e => { e.stopPropagation(); if (!disabled) onClick() }}
+      disabled={disabled}
+      // Единственную строку бэкенд удалять запрещает (пустой разбор он считает
+      // отсутствующим) — не даём оператору упереться в отказ после подтверждения.
+      title={disabled
+        ? 'Единственную строку разбора удалить нельзя — используйте «Обновить разбор»'
+        : 'Удалить строку из разбора'}
+      className={`inline-flex transition-colors ${disabled ? 'cursor-not-allowed text-muted/25' : 'text-muted/50 hover:text-red-400'}`}
+    ><Trash2 size={14} /></button>
+  )
+}
+
+/**
+ * Инлайн-форма «+ Добавить ТС»: гос.номер + дата неисправности. Нужна, когда
+ * OCR не увидел акт (или ТС нет в письме) — оператор заводит строку сам.
+ */
+function AddRowForm({ defaultDate, onAdd, onCancel }: {
+  defaultDate: string
+  /** Промис отклонён → форму НЕ закрываем: оператор поправит номер и повторит. */
+  onAdd: (plate: string, date: string) => Promise<void>
+  onCancel: () => void
+}) {
+  const [plate, setPlate] = useState('')
+  const [date, setDate] = useState(defaultDate)
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const submit = async () => {
+    const p = plate.trim().toUpperCase()
+    if (!p || !date || pending) return
+    setPending(true)
+    setError(null)
+    try {
+      await onAdd(p, date)
+    } catch (e) {
+      setError(apiErrorText(e, `Не удалось добавить ${p} — проверьте номер и дату.`))
+      setPending(false)
+    }
+  }
+
+  const onKey = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') { e.preventDefault(); submit() }
+    else if (e.key === 'Escape') { e.preventDefault(); if (!pending) onCancel() }
+  }
+
+  return (
+    <div className="space-y-1.5 rounded-md border border-border bg-frame px-2.5 py-2">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <input
+          autoFocus
+          value={plate}
+          disabled={pending}
+          placeholder="А123ВС163"
+          onChange={e => setPlate(e.target.value)}
+          onKeyDown={onKey}
+          aria-label="Гос.номер"
+          className="w-[7rem] rounded border border-border bg-darker px-1.5 py-1 font-mono text-[11px] text-white outline-none placeholder:text-muted/50 focus:border-accent disabled:opacity-50"
+        />
+        <input
+          type="date"
+          value={date}
+          disabled={pending}
+          onChange={e => setDate(e.target.value)}
+          onKeyDown={onKey}
+          aria-label="Дата неисправности"
+          className="w-[8.5rem] rounded border border-border bg-darker px-1.5 py-1 text-[11px] text-white outline-none focus:border-accent disabled:opacity-50"
+        />
+        <button
+          onClick={submit}
+          disabled={pending || !plate.trim() || !date}
+          className="rounded-md border border-accent/40 bg-accent/10 px-2.5 py-1 text-[11px] font-semibold text-accent transition-colors hover:bg-accent/20 disabled:opacity-40"
+        >
+          {pending ? <Working label="Добавляю…" /> : 'Добавить'}
+        </button>
+        <button
+          onClick={onCancel}
+          disabled={pending}
+          className="text-[11px] text-muted transition-colors hover:text-white disabled:opacity-40"
+        >Отмена</button>
+        <span className="shrink-0 text-[9px] text-muted/60">Enter / Esc</span>
+      </div>
+      {error && <p className="text-[11px] leading-4 text-orange-400">{error}</p>}
+    </div>
+  )
+}
+
+/**
+ * Подтверждение удаления строки разбора. Готового ConfirmDialog в проекте нет —
+ * скелет и стили от StatusActionModal (оверлей + карточка + подвал с кнопками).
+ */
+function DeleteRowDialog({ obj, onConfirm, onCancel }: {
+  obj: BatchObject
+  /** Промис отклонён → окно остаётся открытым с текстом ошибки бэкенда (в т.ч. 409). */
+  onConfirm: () => Promise<void>
+  onCancel: () => void
+}) {
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  // Esc = отмена, но не посреди запроса (иначе оператор закроет окно на полпути).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !pending) onCancel() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [pending, onCancel])
+
+  const run = async () => {
+    setPending(true)
+    setError(null)
+    try {
+      await onConfirm()
+      // Успех — окно размонтируется родителем, состояние трогать уже нельзя.
+    } catch (e) {
+      setError(apiErrorText(e, 'Не удалось удалить строку. Попробуйте снова.'))
+      setPending(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="fixed inset-0 bg-black/70" onClick={() => !pending && onCancel()} />
+      <div className="relative z-10 w-full max-w-md rounded-xl border border-border bg-card shadow-lg">
+        <div className="flex items-center justify-between border-b border-border px-5 py-4">
+          <h2 className="text-sm font-semibold">Удалить строку разбора?</h2>
+          <button onClick={() => !pending && onCancel()} className="text-muted hover:text-white"><X size={18} /></button>
+        </div>
+
+        <div className="space-y-3 px-5 py-4">
+          <p className="text-xs leading-relaxed text-secondary">
+            Из таблицы уйдёт объект{' '}
+            <b className="font-mono font-medium text-white">{obj.plate ?? 'без номера'}</b>
+            {obj.date && <> за <b className="font-medium text-white">{obj.date}</b></>}
+            {obj.file && <> (источник — <span className="text-muted">{obj.file}</span>)</>}.
+          </p>
+          <p className="flex items-start gap-2 rounded-md bg-warning/15 px-3 py-2 text-[11px] leading-4 text-warning">
+            <AlertTriangle size={13} className="mt-px shrink-0" />
+            <span>Удаление действует только на текущий разбор: «Обновить разбор» вернёт строку, если она снова найдётся в акте.</span>
+          </p>
+          {error && <p className="text-[11px] leading-4 text-orange-400">{error}</p>}
+        </div>
+
+        <div className="flex items-center justify-between gap-3 border-t border-border px-5 py-4">
+          <button
+            onClick={onCancel}
+            disabled={pending}
+            className="text-xs text-muted transition-colors hover:text-white disabled:opacity-40"
+          >Отмена</button>
+          <button
+            onClick={run}
+            disabled={pending}
+            className={`flex items-center gap-1.5 rounded-md border border-red-500/40 bg-red-500/15 px-4 py-2 text-xs font-semibold text-red-400 transition-colors hover:bg-red-500/25 disabled:opacity-50 ${pending ? 'cursor-wait' : ''}`}
+          >
+            {pending ? <Working label="Удаляю…" /> : <><Trash2 size={14} /> Удалить строку</>}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Предупреждение перед форс-прогоном разбора. Прогон собирает документ заново из
+ * вложений и молча затирает ручные правки — окно называет их поимённо, чтобы
+ * оператор решал осознанно. Сохранения правок тут нет и быть не может: разбор
+ * либо старый с правками, либо новый без них.
+ */
+function RerunConfirmDialog({ rows, onConfirm, onCancel }: {
+  rows: { obj: BatchObject; what: string[] }[]
+  onConfirm: () => void
+  onCancel: () => void
+}) {
+  // Esc = отмена. Прогон запускает родитель и сам показывает его прогресс, так
+  // что окно закрывается сразу по подтверждению — ждать здесь нечего.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onCancel() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onCancel])
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="fixed inset-0 bg-black/70" onClick={onCancel} />
+      <div className="relative z-10 w-full max-w-md rounded-xl border border-border bg-card shadow-lg">
+        <div className="flex items-center justify-between border-b border-border px-5 py-4">
+          <h2 className="text-sm font-semibold">Обновить разбор?</h2>
+          <button onClick={onCancel} className="text-muted hover:text-white"><X size={18} /></button>
+        </div>
+
+        <div className="space-y-3 px-5 py-4">
+          <p className="flex items-start gap-2 rounded-md bg-warning/15 px-3 py-2 text-[11px] leading-4 text-warning">
+            <AlertTriangle size={13} className="mt-px shrink-0" />
+            <span>
+              Разбор соберётся заново из вложений, ручные правки при этом пропадут —
+              сохранить их нельзя. Правлено вручную строк: {rows.length}.
+            </span>
+          </p>
+          <ul className="max-h-48 space-y-1 overflow-y-auto text-[11px] leading-4 text-secondary">
+            {rows.map(({ obj, what }, i) => (
+              <li key={i} className="flex flex-wrap items-baseline gap-x-1.5">
+                <b className="font-mono font-medium text-white">{obj.plate ?? 'без номера'}</b>
+                {obj.date && <span className="text-muted">{obj.date}</span>}
+                <span>— {what.join(', ')}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        <div className="flex items-center justify-between gap-3 border-t border-border px-5 py-4">
+          <button
+            onClick={onCancel}
+            className="text-xs text-muted transition-colors hover:text-white"
+          >Отмена</button>
+          <button
+            onClick={onConfirm}
+            className="flex items-center gap-1.5 rounded-md border border-red-500/40 bg-red-500/15 px-4 py-2 text-xs font-semibold text-red-400 transition-colors hover:bg-red-500/25"
+          ><RefreshCw size={14} /> Обновить разбор</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Тихое предложение отметить ошибку ИИ: строка под тем объектом, у которого
+ * оператор только что переписал вердикт ИИ. Такая правка — готовый обучающий
+ * сигнал, но уходит он ТОЛЬКО по клику: сами ничего не отправляем.
+ */
+function AiMissPrompt({ issueId, verdict, colSpan, onHide }: {
+  issueId: number
+  /** Новый вердикт оператора — он и едет в оценку как правильная категория. */
+  verdict: string
+  colSpan: number
+  onHide: () => void
+}) {
+  const [sent, setSent] = useState(false)
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const send = async () => {
+    if (pending || sent) return
+    setPending(true)
+    setError(null)
+    try {
+      await api.addAiFeedback(issueId, { rating: 'bad', error_kind: 'wrong_verdict', correct_category: verdict })
+      setSent(true)
+    } catch (e) {
+      // Предложение оставляем на месте — оператор может повторить отправку.
+      setError(apiErrorText(e, 'Не удалось отправить оценку. Попробуйте ещё раз.'))
+    } finally {
+      setPending(false)
+    }
+  }
+
+  return (
+    <tr>
+      <td colSpan={colSpan} className="pb-1.5">
+        <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] leading-4 text-muted">
+          {sent ? (
+            <span className="inline-flex items-center gap-1 text-green-400">
+              <Check size={11} className="shrink-0" /> Отмечено: ИИ ошибся, верно «{verdict}»
+            </span>
+          ) : (
+            <>
+              <button
+                onClick={e => { e.stopPropagation(); send() }}
+                disabled={pending}
+                title={`Отправить в «Оценки ИИ»: вердикт ИИ неверный, правильный — «${verdict}»`}
+                className="inline-flex items-center gap-1 text-muted transition-colors hover:text-accent disabled:opacity-50"
+              >
+                {pending ? <Working label="Отмечаю…" /> : <><ThumbsDown size={11} className="shrink-0" /> ИИ ошибся? Отметить</>}
+              </button>
+              <button
+                onClick={e => { e.stopPropagation(); onHide() }}
+                title="Скрыть предложение"
+                className="inline-flex text-muted/40 transition-colors hover:text-white"
+              ><X size={11} /></button>
+            </>
+          )}
+          {error && <span className="text-orange-400">{error}</span>}
+        </span>
+      </td>
+    </tr>
+  )
+}
+
+/** Кнопка под таблицей разбора: раскрывает инлайн-форму добавления объекта. */
+function AddRowButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      title="Добавить объект в разбор вручную (акт не распознан или ТС нет в письме)"
+      className="inline-flex items-center gap-1 text-[11px] text-muted transition-colors hover:text-accent"
+    ><Plus size={12} /> Добавить ТС</button>
+  )
+}
+
 /** Полный ИИ-прогон → строка таблицы разбора того же формата, что у пакетной. */
 function rowFromAutomate(res: AutomationResult): BatchObject {
   const t = res.telemetry
@@ -1943,17 +2491,43 @@ function SingleParseTable({ issueId, issueTitle, companyName, onSelect }: {
   issueId: number
   issueTitle?: string | null
   companyName?: string | null
-  onSelect?: (obj: BatchObject) => void
+  /** Выбранная строка наверх — вместе со всем списком (оператор может добавить ТС). */
+  onSelect?: (obj: BatchObject | null, idx: number, objects: BatchObject[]) => void
 }) {
   const queryClient = useQueryClient()
   const isDemo = useAuthStore(s => s.user?.role === 'demo')
-  // Какое поле сейчас правится / сохраняется. Правка только по клику на карандаш —
-  // защита от случайного изменения. cancelEditRef — отмена по Escape (blur без применения).
-  const [editingField, setEditingField] = useState<'plate' | 'date' | null>(null)
-  const [savingField, setSavingField] = useState<'plate' | 'date' | null>(null)
-  const cancelEditRef = useRef(false)
+  // Какая ячейка сейчас сохраняется: ключ `${idx}:plate|date|sheet|declared`.
+  const [savingCell, setSavingCell] = useState<string | null>(null)
+  const [verdictLoading, setVerdictLoading] = useState<number | null>(null)
+  // Строки, где оператор только что переписал вердикт ИИ → предложение отметить
+  // ошибку модели. Ключ — индекс строки, значение — новый вердикт. Живёт до
+  // перезагрузки/смены заявки: это подсказка, а не состояние заявки.
+  const [aiMiss, setAiMiss] = useState<Record<number, string>>({})
+  // Правка, ради которой придётся пересобрать разбор (см. RerunConfirmDialog).
+  const [pendingRefine, setPendingRefine] = useState<{ idx: number; field: 'plate' | 'date'; val: string } | null>(null)
+  // Выбранная строка: строк может быть больше одной — оператор добавляет ТС руками.
+  const [selIdx, setSelIdx] = useState(0)
+  const [rowError, setRowError] = useState<string | null>(null)
+  const [addOpen, setAddOpen] = useState(false)
+  const [deleteIdx, setDeleteIdx] = useState<number | null>(null)
+  // Разбор `parse` перебивает кэш `automate`: после ручной правки (вердикт,
+  // добавленная/удалённая строка) свежие данные лежат именно в нём.
+  const [parseEdited, setParseEdited] = useState(false)
 
   const { isBatch, ready, cachedBatchObjects } = useBatchMode(issueId, issueTitle, companyName)
+
+  // Ключи состояния завязаны на конкретную заявку — при смене сбрасываем.
+  useEffect(() => {
+    setSavingCell(null)
+    setVerdictLoading(null)
+    setSelIdx(0)
+    setRowError(null)
+    setAddOpen(false)
+    setDeleteIdx(null)
+    setParseEdited(false)
+    setAiMiss({})
+    setPendingRefine(null)
+  }, [issueId])
 
   const automateQ = useQuery({
     queryKey: ['automate-cached', issueId],
@@ -1964,22 +2538,61 @@ function SingleParseTable({ issueId, issueTitle, companyName, onSelect }: {
 
   // Бесплатный разбор зовём только там, где он реально нужен: заявка одиночная,
   // режим уже известен, а полного ИИ-прогона в кэше нет (он богаче и главнее).
-  const freeQ = useFreeParse(issueId, ready && !isBatch && automateQ.isSuccess && !automate)
+  // При наличии `automate` разбор всё равно читаем — но ТОЛЬКО из кэша: там могут
+  // лежать ручные правки оператора, а без них таблица после F5 показывала бы
+  // вердикт до правки (правки пишутся в `parse`, а рисовали мы `automate`).
+  const freeQ = useFreeParse(issueId, ready && !isBatch && automateQ.isSuccess, !automate)
   const free = freeQ.data
+  // Правка этой сессии или отметка бэкенда о правке в прошлой — одинаково означают,
+  // что авторитетен `parse`.
+  const parseWins = parseEdited || Boolean(free?.operator_touched)
 
-  // Строка таблицы: сначала ИИ-прогон, иначе единственная строка бесплатного
-  // разбора. Две и более строк — территория пакетной таблицы, не наша.
-  const row: BatchObject | null = automate
-    ? rowFromAutomate(automate)
-    : (free?.objects?.length === 1 ? free.objects[0] : null)
-  const p = row
+  // Строки таблицы: обычно одна — ИИ-прогон (богаче) либо бесплатный разбор. После
+  // ручной правки строк источник только один — документ `parse` (в нём и правки,
+  // и добавленные оператором объекты, которых кэш `automate` не знает).
+  const freeRows = free?.objects ?? []
+  const rows: BatchObject[] = (!automate || parseWins) && freeRows.length
+    ? freeRows
+    : automate ? [rowFromAutomate(automate)] : []
+  // Что именно перезапишет переанализ: пересобирается документ `parse`, значит и
+  // ручные правки искать надо в нём, а не в строке из кэша `automate`.
+  const riskRows = freeRows.length ? freeRows : rows
+
+  /** Ответ batch-эндпоинта → кэш бесплатного разбора: он и рисует таблицу после правки. */
+  const putParse = (data: BatchResult) => {
+    // Мержим в существующий документ: ответ batch-эндпоинта не содержит `parsed`,
+    // а он лежит в кэше `parse-free` и нужен остальным читателям.
+    queryClient.setQueryData(
+      ['parse-free', issueId],
+      (prev: (ParseResult & { cached?: boolean }) | undefined) => ({ ...(prev ?? {}), ...data, cached: true }),
+    )
+    setParseEdited(true)
+  }
+
+  /**
+   * Правка строки одиночного разбора. Особый случай: таблица нарисована из кэша
+   * `automate`, а документа `parse` ещё нет — бэкенд отвечает 400 «Сначала
+   * выполните разбор по вложениям». Тогда создаём его бесплатным разбором (ноль
+   * токенов DeepSeek) и повторяем запрос ОДИН раз; второй отказ показываем как есть.
+   */
+  const withParseDoc = async (send: () => Promise<BatchResult>): Promise<BatchResult> => {
+    try {
+      return await send()
+    } catch (e) {
+      // Ровно этот отказ, а не любой 400: остальные (недопустимый вердикт, дубль
+      // строки) — по делу, и перезапуск разбора затёр бы правки оператора.
+      if (apiStatus(e) !== 400 || !apiErrorText(e, '').startsWith('Сначала выполните разбор')) throw e
+      await api.parseIssue(issueId)
+      return await send()
+    }
+  }
 
   // Уточнение номера/даты = перепроверка ТС в гео по исправленным данным. Пока ИИ
   // не звали, правка идёт бесплатным `parse` — незачем платить за опечатку клиента.
   const refine = useMutation<AutomationResult | ParseResult, unknown, { plate?: string; date?: string }>({
     mutationFn: (override) =>
       automate ? api.automateIssue(issueId, override) : api.parseIssue(issueId, override),
-    onSettled: () => setSavingField(null),
+    onSettled: () => setSavingCell(null),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['automate-cached', issueId] })
       queryClient.invalidateQueries({ queryKey: ['parse-free', issueId] })
@@ -1989,139 +2602,281 @@ function SingleParseTable({ issueId, issueTitle, companyName, onSelect }: {
     },
   })
 
-  const applyEdit = (field: 'plate' | 'date', raw: string) => {
+  /**
+   * Правка номера/даты. Нетронутый одиночный разбор (ровно одна строка) правим
+   * переанализом, как и раньше. Как только оператор начал править сам документ
+   * разбора (добавил строку, поменял вердикт), все правки идут в него же
+   * batch-эндпоинтом по индексу: переанализ пересобрал бы документ и потерял их.
+   */
+  const applyEdit = async (idx: number, field: 'plate' | 'date', raw: string) => {
+    const o = rows[idx]
     const val = raw.trim()
-    const current = (field === 'plate' ? p?.plate : p?.date) ?? ''
-    if (!val || val === current) return
-    setSavingField(field)
-    refine.mutate({ [field]: val })
+    const current = (field === 'plate' ? o?.plate : o?.date) ?? ''
+    if (!o || !val || val === current) return
+    if (rows.length === 1 && !parseWins) {
+      // Переанализ пересобирает документ разбора. Правки в нём обычно уводят нас в
+      // ветку ниже (parseWins), но у старых кэшей нет `operator_touched` — прежде
+      // чем затирать их молча, спрашиваем.
+      if (manualEditedRows(riskRows).length) { setPendingRefine({ idx, field, val }); return }
+      setSavingCell(`${idx}:${field}`)
+      refine.mutate({ [field]: val })
+      return
+    }
+    setSavingCell(`${idx}:${field}`)
+    setRowError(null)
+    try {
+      const updated = await withParseDoc(() => field === 'plate'
+        ? api.updateBatchPlate(issueId, o.plate ?? '', val.toUpperCase(), o.date || undefined, o.file || undefined, idx)
+        : api.updateBatchDate(issueId, val, o.plate, o.date, o.file || undefined, idx))
+      putParse(updated)
+    } catch (e) {
+      setRowError(apiErrorText(e, field === 'plate'
+        ? `Не удалось обновить номер на ${val} — проверьте, найден ли он в гео.`
+        : `Не удалось обновить дату на ${val} — проверьте данные ТС в гео.`))
+    } finally {
+      setSavingCell(null)
+    }
+  }
+
+  /**
+   * Правка пробега («ПЛ» / «ГЛОНАСС заявл.»): клиент нередко ошибается в цифре, а
+   * от неё зависит вердикт. Переанализом это не правят — только документ разбора,
+   * иначе потерялись бы остальные правки. Бэкенд после записи сам пересчитывает
+   * вердикт строки по правилам, поэтому таблицу целиком берём из его ответа.
+   */
+  const applyMileage = async (idx: number, field: MileageField, raw: string) => {
+    const o = rows[idx]
+    if (!o) return
+    const change = mileageChange(o, field, raw)
+    if (!change) return
+    if ('error' in change) { setRowError(change.error); return }
+    setSavingCell(`${idx}:${field}`)
+    setRowError(null)
+    try {
+      const updated = await withParseDoc(() =>
+        api.updateBatchMileage(issueId, change.patch, { index: idx, plate: o.plate, date: o.date, file: o.file || undefined }))
+      putParse(updated)
+    } catch (e) {
+      setRowError(apiErrorText(e, `Не удалось сохранить пробег для ${o.plate ?? 'строки без номера'}.`))
+    } finally {
+      setSavingCell(null)
+    }
+  }
+
+  // Правка вердикта — тот же эндпоинт, что у пакетной таблицы: он умеет писать и в
+  // документ одиночного разбора. Источник вердикта станет «оператор».
+  const handleVerdictChange = async (idx: number, newVerdict: string) => {
+    const o = rows[idx]
+    if (!o?.plate) return
+    // Источник ДО правки: если вердикт ставил ИИ, правка оператора — обучающий сигнал.
+    const wasAi = rowVerdictSource(o) === 'ai'
+    setVerdictLoading(idx)
+    setRowError(null)
+    try {
+      const plate = o.plate
+      const updated = await withParseDoc(() =>
+        api.updateBatchVerdict(issueId, plate, newVerdict, o.file || undefined, o.date || undefined))
+      putParse(updated)
+      if (wasAi) setAiMiss(prev => ({ ...prev, [idx]: newVerdict }))
+    } catch (e) {
+      setRowError(apiErrorText(e, `Не удалось сохранить вердикт для ${o.plate}`))
+    } finally {
+      setVerdictLoading(null)
+    }
+  }
+
+  const addRow = async (plate: string, date: string) => {
+    const updated = await withParseDoc(() => api.addBatchRow(issueId, plate, date))
+    setRowError(null)
+    putParse(updated)
+    setAddOpen(false)
+  }
+
+  const deleteRow = async (idx: number) => {
+    const o = rows[idx]
+    if (!o) return
+    const updated = await withParseDoc(() =>
+      api.deleteBatchRow(issueId, idx, o.plate, o.date, o.file || undefined))
+    setRowError(null)
+    putParse(updated)
+    setDeleteIdx(null)
+    // Предложения «ИИ ошибся» привязаны к индексам строк — после удаления они
+    // сдвигаются, и оценка ушла бы не про тот объект. Проще снять их все.
+    setAiMiss({})
+    // Выбор не должен показывать телеметрию удалённого ТС: сдвигаем или прижимаем
+    // к последней оставшейся строке (наверх уедет через эффект ниже).
+    setSelIdx(prev => prev > idx ? prev - 1 : Math.min(prev, Math.max(updated.objects.length - 1, 0)))
   }
 
   // Строку отдаём наверх, чтобы блок телеметрии показывал этот же объект
   // (вместе с источником вердикта — от него зависит вид пилюли и полоса доверия).
   useEffect(() => {
-    if (!row || !onSelect) return
+    if (!onSelect) return
     // Таблицу ведёт пакетный разбор — тогда и объект выбирает он, иначе телеметрия
     // показала бы строку, которой на экране нет.
     if (isBatch || cachedBatchObjects >= 1) return
-    onSelect(row)
+    if (!rows.length) { onSelect(null, 0, []); return }
+    const i = Math.min(selIdx, rows.length - 1)
+    onSelect(rows[i], i, rows)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [automate, free, isBatch, cachedBatchObjects])
+  }, [automate, free, parseWins, selIdx, isBatch, cachedBatchObjects])
 
   // Пакетная заявка (в т.ч. когда пакетный разбор уже дал строки) рисует таблицу
   // сама — двух таблиц об одном и том же в карточке быть не должно.
   if (isBatch || cachedBatchObjects >= 1) return null
+  // Режим ещё не известен — не показываем ни таблицу, ни кнопку добавления
+  // (иначе «+ Добавить ТС» мигал бы до загрузки разбора).
+  if (!ready || !automateQ.isSuccess) return null
 
-  if (!row) {
-    // Разбор состоялся, но номер не нашёлся — объясняем причину вместо пустоты.
-    if (free?.note) return <p className="text-[11px] leading-4 text-muted">{free.note}</p>
-    if (freeQ.isFetching) {
-      return (
-        <p className="flex items-center gap-1.5 text-[11px] text-muted">
-          <Loader2 size={12} className="animate-spin shrink-0" /> Разбираю факты заявки…
-        </p>
-      )
-    }
-    return null
+  if (!rows.length && freeQ.isFetching) {
+    return (
+      <p className="flex items-center gap-1.5 text-[11px] text-muted">
+        <Loader2 size={12} className="animate-spin shrink-0" /> Разбираю факты заявки…
+      </p>
+    )
   }
 
-  const t = row.telemetry
+  // Правка строк доступна оператору, но не демо-витрине.
+  const canEdit = !isDemo
+  const multi = rows.length > 1
+  const delObj = deleteIdx != null ? rows[deleteIdx] : null
 
   return (
     <>
-    <ParseSummary objects={[row]} total={1} />
-    <div className="overflow-x-auto">
-      <table className="w-full text-[11px]">
-        <ParseTableHead actions={1} />
-        <tbody>
-          <tr className="border-t border-line">
-            <td className="py-2 pr-2 font-mono">
-              {isDemo ? (p?.plate ?? '—') : editingField === 'plate' ? (
-                <span className="inline-flex items-center gap-1">
-                  <input
-                    autoFocus
-                    defaultValue={p?.plate ?? ''}
-                    disabled={savingField === 'plate'}
-                    onKeyDown={e => {
-                      if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
-                      else if (e.key === 'Escape') { cancelEditRef.current = true; (e.target as HTMLInputElement).blur() }
-                    }}
-                    onBlur={e => {
-                      const val = e.target.value
-                      setEditingField(null)
-                      if (cancelEditRef.current) { cancelEditRef.current = false; return }
-                      applyEdit('plate', val)
-                    }}
-                    className="w-[5.5rem] bg-frame border border-accent rounded px-1 py-0.5 font-mono text-[11px] text-white outline-none disabled:opacity-50"
+    {rows.length > 0 ? (
+      <>
+        <ParseSummary objects={rows} total={rows.length} />
+        <div className="overflow-x-auto">
+          <table className="w-full text-[11px]">
+            <ParseTableHead actions={canEdit ? 2 : 1} />
+            <tbody>
+              {rows.map((o, idx) => (
+                <Fragment key={idx}>
+                <tr
+                  onClick={() => multi && setSelIdx(idx)}
+                  title={multi ? 'Показать телеметрию этого ТС' : undefined}
+                  className={`border-t border-line ${multi ? 'cursor-pointer' : ''} ${
+                    multi && selIdx === idx ? 'bg-accent/10 border-l-2 border-l-accent' : multi ? 'hover:bg-card-hover/60' : ''
+                  }`}
+                >
+                  <td className="py-2 pr-2 font-mono">
+                    <ParseEditCell
+                      kind="plate"
+                      value={o.plate}
+                      readOnly={isDemo}
+                      saving={savingCell === `${idx}:plate`}
+                      edited={o.plate_edited}
+                      manual={o.manual_row}
+                      emptyLabel="нет номера"
+                      editTitle={o.plate ? 'Изменить гос.номер и перепроверить ТС в гео' : 'Вписать гос.номер вручную и проверить в гео'}
+                      editedTitle="Номер изменён оператором, перепроверено в гео"
+                      onApply={val => applyEdit(idx, 'plate', val)}
+                    />
+                  </td>
+                  <td className="pr-2">
+                    <ParseEditCell
+                      kind="date"
+                      value={o.date}
+                      readOnly={isDemo}
+                      saving={savingCell === `${idx}:date`}
+                      edited={o.date_edited}
+                      emptyLabel="нет даты"
+                      editTitle="Изменить дату неисправности и перепроверить в гео"
+                      editedTitle="Дата изменена оператором, перепроверено в гео"
+                      onApply={val => applyEdit(idx, 'date', val)}
+                    />
+                  </td>
+                  <td className="pr-2">
+                    <ParseEditCell
+                      kind="number"
+                      value={o.sheet_mileage_km != null ? String(o.sheet_mileage_km) : null}
+                      readOnly={isDemo}
+                      saving={savingCell === `${idx}:sheet`}
+                      edited={o.mileage_edited}
+                      emptyLabel="—"
+                      editTitle={MILEAGE_FIELDS.sheet.editTitle}
+                      editedTitle={MILEAGE_FIELDS.sheet.editedTitle}
+                      onApply={val => applyMileage(idx, 'sheet', val)}
+                    />
+                  </td>
+                  <td className="pr-2">
+                    <ParseEditCell
+                      kind="number"
+                      value={o.declared_system_km != null ? String(o.declared_system_km) : null}
+                      readOnly={isDemo}
+                      saving={savingCell === `${idx}:declared`}
+                      edited={o.mileage_edited}
+                      emptyLabel="—"
+                      editTitle={MILEAGE_FIELDS.declared.editTitle}
+                      editedTitle={MILEAGE_FIELDS.declared.editedTitle}
+                      onApply={val => applyMileage(idx, 'declared', val)}
+                    />
+                  </td>
+                  <td className="pr-2 text-white font-medium">{o.system_mileage_km ?? o.telemetry?.system_mileage_km ?? '—'}</td>
+                  <td className="pr-2">
+                    <VerdictCell
+                      o={o}
+                      readOnly={isDemo}
+                      loading={verdictLoading === idx}
+                      onChange={v => handleVerdictChange(idx, v)}
+                    />
+                  </td>
+                  <td className="pr-1 text-center">
+                    <TrackLink plate={o.plate ?? null} date={o.date ?? null} />
+                  </td>
+                  {canEdit && (
+                    <td className="text-center">
+                      <DeleteRowButton disabled={rows.length === 1} onClick={() => setDeleteIdx(idx)} />
+                    </td>
+                  )}
+                </tr>
+                {aiMiss[idx] && (
+                  <AiMissPrompt
+                    issueId={issueId}
+                    verdict={aiMiss[idx]}
+                    colSpan={PARSE_COLUMNS.length + (canEdit ? 2 : 1)}
+                    onHide={() => setAiMiss(prev => { const n = { ...prev }; delete n[idx]; return n })}
                   />
-                  <span className="text-[9px] text-muted/60 shrink-0">Enter / Esc</span>
-                </span>
-              ) : (
-                <span className="inline-flex items-center gap-1">
-                  <span className={p?.plate ? '' : 'text-warning'}>{p?.plate ?? 'нет номера'}</span>
-                  <button
-                    onClick={() => setEditingField('plate')}
-                    title={p?.plate ? 'Изменить гос.номер и перепроверить ТС в гео' : 'Вписать гос.номер вручную и проверить в гео'}
-                    className="text-muted/40 hover:text-accent shrink-0 transition-colors"
-                  ><Pencil size={11} /></button>
-                  {savingField === 'plate' && <span className="animate-spin text-muted shrink-0">↻</span>}
-                </span>
-              )}
-            </td>
-            <td className="pr-2">
-              {isDemo ? (p?.date ?? '—') : editingField === 'date' ? (
-                <span className="inline-flex items-center gap-1">
-                  <input
-                    type="date"
-                    autoFocus
-                    defaultValue={p?.date ?? ''}
-                    disabled={savingField === 'date'}
-                    onKeyDown={e => {
-                      if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
-                      else if (e.key === 'Escape') { cancelEditRef.current = true; (e.target as HTMLInputElement).blur() }
-                    }}
-                    onBlur={e => {
-                      const val = e.target.value
-                      setEditingField(null)
-                      if (cancelEditRef.current) { cancelEditRef.current = false; return }
-                      applyEdit('date', val)
-                    }}
-                    className="w-[8.5rem] bg-frame border border-accent rounded px-1 py-0.5 text-[11px] text-white outline-none disabled:opacity-50"
-                  />
-                  <span className="text-[9px] text-muted/60 shrink-0">Enter / Esc</span>
-                </span>
-              ) : (
-                <span className="inline-flex items-center gap-1">
-                  <span className={p?.date ? '' : 'text-warning'}>{p?.date ?? 'нет даты'}</span>
-                  <button
-                    onClick={() => setEditingField('date')}
-                    title="Изменить дату неисправности и перепроверить в гео"
-                    className="text-muted/40 hover:text-accent shrink-0 transition-colors"
-                  ><Pencil size={11} /></button>
-                  {savingField === 'date' && <span className="animate-spin text-muted shrink-0">↻</span>}
-                </span>
-              )}
-            </td>
-            <td className="pr-2">{row.sheet_mileage_km ?? '—'}</td>
-            <td className="pr-2">{row.declared_system_km ?? '—'}</td>
-            <td className="pr-2 text-white font-medium">{row.system_mileage_km ?? t?.system_mileage_km ?? '—'}</td>
-            <td className="pr-2">
-              <VerdictPill verdict={row.verdict} source={row.verdict_source} />
-              {row.spec_vehicle && (
-                <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-pill bg-warning/15 text-warning text-[9px] font-medium align-middle">
-                  спецтехника
-                </span>
-              )}
-            </td>
-            <td className="text-center">
-              <TrackLink plate={row.plate ?? null} date={row.date ?? null} />
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-    <ParseDisagreeNote objects={[row]} />
-    <ParseTableNote />
+                )}
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <ParseDisagreeNote objects={rows} />
+        <ParseTableNote />
+      </>
+    ) : (
+      /* Разбор состоялся, но номер не нашёлся — объясняем причину вместо пустоты. */
+      free?.note ? <p className="text-[11px] leading-4 text-muted">{free.note}</p> : null
+    )}
+    {canEdit && (addOpen ? (
+      <div className="mt-1.5">
+        <AddRowForm defaultDate={rows[0]?.date || todayIsoMsk()} onAdd={addRow} onCancel={() => setAddOpen(false)} />
+      </div>
+    ) : (
+      <div className="mt-1.5"><AddRowButton onClick={() => setAddOpen(true)} /></div>
+    ))}
+    {rowError && <p className="mt-1 text-xs text-orange-400">{rowError}</p>}
+    {delObj && (
+      <DeleteRowDialog
+        obj={delObj}
+        onConfirm={() => deleteRow(deleteIdx!)}
+        onCancel={() => setDeleteIdx(null)}
+      />
+    )}
+    {pendingRefine && (
+      <RerunConfirmDialog
+        rows={manualEditedRows(riskRows)}
+        onConfirm={() => {
+          const { idx, field, val } = pendingRefine
+          setPendingRefine(null)
+          setSavingCell(`${idx}:${field}`)
+          refine.mutate({ [field]: val })
+        }}
+        onCancel={() => setPendingRefine(null)}
+      />
+    )}
     </>
   )
 }
@@ -2314,15 +3069,20 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
   const [verdictError, setVerdictError] = useState<string | null>(null)
   const [plateLoading, setPlateLoading] = useState<Set<string>>(new Set())
   const [plateError, setPlateError] = useState<string | null>(null)
-  // Какая строка сейчас в режиме правки номера (защита от случайной правки —
-  // правим только по явному клику на карандаш). cancelPlateRef — отмена по Escape.
-  const [editingPlateKey, setEditingPlateKey] = useState<string | null>(null)
-  const cancelPlateRef = useRef(false)
-  // Какая строка правит дату (симметрично номеру — по клику на карандаш).
-  const [editingDateKey, setEditingDateKey] = useState<string | null>(null)
-  const cancelDateRef = useRef(false)
   const [dateLoading, setDateLoading] = useState<Set<string>>(new Set())
   const [dateError, setDateError] = useState<string | null>(null)
+  // Ключ занятой ячейки пробега — `${ключ строки}:sheet|declared` (в строке две
+  // правимые колонки, спиннер должен крутиться только в своей).
+  const [mileageLoading, setMileageLoading] = useState<Set<string>>(new Set())
+  const [mileageError, setMileageError] = useState<string | null>(null)
+  // Строки, где оператор только что переписал вердикт ИИ → предложение отметить
+  // ошибку модели. Ключ строки → новый вердикт; живёт до перезагрузки страницы.
+  const [aiMiss, setAiMiss] = useState<Record<string, string>>({})
+  // Открыто предупреждение «переразбор затрёт ручные правки».
+  const [rerunOpen, setRerunOpen] = useState(false)
+  // Инлайн-форма «+ Добавить ТС» и строка, для которой открыто окно удаления.
+  const [addOpen, setAddOpen] = useState(false)
+  const [deleteIdx, setDeleteIdx] = useState<number | null>(null)
   // Разбор пересчитан в этой сессии (а не показан из кэша) — только для подписи.
   // Сами данные всегда берём из кэша react-query: источник один, иначе результат
   // прогона ИИ (он пишет в тот же кэш) не попадал бы в таблицу.
@@ -2348,6 +3108,11 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
     setVerdictError(null)
     setPlateError(null)
     setDateError(null)
+    setMileageError(null)
+    setAddOpen(false)
+    setDeleteIdx(null)
+    setAiMiss({})
+    setRerunOpen(false)
     // Сброс авто-дораспознавания: ключи завязаны на конкретную заявку — нельзя,
     // чтобы запланированный проход выстрелил по другой/закрытой заявке.
     ocrRoundsRef.current = 0
@@ -2438,6 +3203,16 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
     run.mutate()
   }
 
+  /**
+   * Клик по кнопке разбора. Повторный прогон собирает документ заново и молча
+   * затирает ручные правки — если они есть, сперва предупреждаем. Правок нет —
+   * запускаем сразу, лишний клик оператору не нужен.
+   */
+  const requestRun = () => {
+    if (manualEditedRows(cached?.objects ?? []).length) { setRerunOpen(true); return }
+    startRun()
+  }
+
   const createRow = async (o: import('../types').BatchObject, idx: number) => {
     if (!o.plate) return
     const key = rowKey(o, idx)
@@ -2498,6 +3273,55 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
     }
   }
 
+  /**
+   * Ручная правка пробега: «ПЛ» из акта и «ГЛОНАСС заявл.» — те самые числа, из-за
+   * расхождения которых заведена заявка, и OCR их путает не реже номера. Бэкенд
+   * после записи пересчитывает вердикт строки по правилам, поэтому таблицу целиком
+   * берём из его ответа.
+   */
+  const handleMileageChange = async (o: import('../types').BatchObject, field: MileageField, raw: string, idx: number) => {
+    const change = mileageChange(o, field, raw)
+    if (!change) return
+    if ('error' in change) { setMileageError(change.error); return }
+    const key = `${rowKey(o, idx)}:${field}`
+    setMileageLoading(prev => new Set([...prev, key]))
+    setMileageError(null)
+    try {
+      const updated = await api.updateBatchMileage(issueId, change.patch, {
+        index: idx, plate: o.plate, date: o.date, file: o.file || undefined,
+      })
+      putBatch(updated)
+    } catch (e) {
+      setMileageError(apiErrorText(e, `Не удалось сохранить пробег для ${o.plate ?? 'строки без номера'}.`))
+    } finally {
+      setMileageLoading(prev => { const s = new Set(prev); s.delete(key); return s })
+    }
+  }
+
+  // Оператор заводит объект вручную: OCR не увидел акт или ТС нет в письме.
+  // Ошибку показывает сама форма — она же остаётся открытой для повторной попытки.
+  const addRow = async (plate: string, date: string) => {
+    const updated = await api.addBatchRow(issueId, plate, date)
+    putBatch(updated)
+    setAddOpen(false)
+  }
+
+  // Удаление строки: index сверяется на бэкенде с номером/датой/файлом (409, если
+  // список успел разойтись). Ошибку показывает окно подтверждения.
+  const deleteRow = async (idx: number, o: import('../types').BatchObject) => {
+    const updated = await api.deleteBatchRow(issueId, idx, o.plate, o.date, o.file || undefined)
+    putBatch(updated)
+    setDeleteIdx(null)
+    // Ключ строки содержит её индекс — после удаления он сдвигается, и предложение
+    // «ИИ ошибся» повисло бы на чужом объекте. Снимаем все.
+    setAiMiss({})
+    // Телеметрия ниже не должна показывать удалённый ТС: сдвигаем выбор.
+    if (selectedIdx != null) {
+      if (selectedIdx === idx) onSelectObject?.(Math.max(0, Math.min(idx, updated.objects.length - 1)), updated.objects)
+      else if (selectedIdx > idx) onSelectObject?.(selectedIdx - 1, updated.objects)
+    }
+  }
+
   // Кнопка «Разбор по объектам» доступна для любой заявки с >=1 извлекаемым вложением —
   // оператор может вручную запустить разбор (напр. 63317: 1 файл, ~40 ТС). Авто-запуск
   // OCR не делаем; таблица рисуется из результата run/кеша (>=2 объекта → мультиобъект).
@@ -2514,17 +3338,18 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
   // При остановке цикла (стоп прогресса/лимит) autoOcr=false → кнопка «Продолжить».
   const ocrBusy = run.isPending || autoOcr
 
-  const ALLOWED_VERDICTS = ['Глушение', 'Данные верны', 'Не было питания', 'Нет данных', 'Терминал подключился', 'Проверить'] as const
-
   const handleVerdictChange = async (o: import('../types').BatchObject, newVerdict: string, idx: number) => {
     if (!o.plate) return
     // Ключ строки (idx|номер|дата|файл) — правка и спиннер строго по этой строке.
     const key = rowKey(o, idx)
+    // Источник ДО правки: если вердикт ставил ИИ, правка оператора — обучающий сигнал.
+    const wasAi = rowVerdictSource(o) === 'ai'
     setVerdictLoading(prev => new Set([...prev, key]))
     setVerdictError(null)
     try {
       const updated = await api.updateBatchVerdict(issueId, o.plate, newVerdict, o.file || undefined, o.date || undefined)
       putBatch(updated)
+      if (wasAi) setAiMiss(prev => ({ ...prev, [key]: newVerdict }))
     } catch {
       setVerdictError(`Не удалось сохранить вердикт для ${o.plate}`)
     } finally {
@@ -2553,7 +3378,7 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
       )}
       <div className={compact ? 'flex justify-end' : ''}>
         <button
-          onClick={startRun}
+          onClick={requestRun}
           disabled={ocrBusy || isDemo}
           title={isDemo ? 'Недоступно в демо-режиме'
             : compact ? 'Обновить разбор'
@@ -2598,7 +3423,7 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
           <ParseSummary objects={res.objects} total={res.total} />
           <div className="overflow-x-auto">
             <table className="w-full text-[11px]">
-              <ParseTableHead actions={2} />
+              <ParseTableHead actions={isDemo ? 2 : 3} />
               <tbody>
                 {res.objects.map((o, idx) => {
                   const key = rowKey(o, idx)
@@ -2607,8 +3432,8 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
                   const isVerdictLoading = !!o.plate && verdictLoading.has(key)
                   const isPlateLoading = plateLoading.has(key)
                   return (
+                    <Fragment key={idx}>
                     <tr
-                      key={idx}
                       onClick={() => onSelectObject?.(idx, res.objects)}
                       title="Показать телеметрию этого ТС"
                       className={`border-t border-line cursor-pointer ${
@@ -2620,142 +3445,67 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
                       }`}
                     >
                       <td className="py-2 pr-2 font-mono">
-                        {isDemo ? (o.plate ?? '—') : editingPlateKey === key ? (
-                          <span className="inline-flex items-center gap-1">
-                            <input
-                              autoFocus
-                              defaultValue={o.plate ?? ''}
-                              disabled={isPlateLoading}
-                              onKeyDown={e => {
-                                if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
-                                else if (e.key === 'Escape') { cancelPlateRef.current = true; (e.target as HTMLInputElement).blur() }
-                              }}
-                              onBlur={e => {
-                                const val = e.target.value
-                                setEditingPlateKey(null)
-                                if (cancelPlateRef.current) { cancelPlateRef.current = false; return }
-                                handlePlateChange(o, val, idx)
-                              }}
-                              className="w-[5.5rem] bg-frame border border-accent rounded px-1 py-0.5 font-mono text-[11px] text-white outline-none disabled:opacity-50"
-                            />
-                            <span className="text-[9px] text-muted/60 shrink-0">Enter / Esc</span>
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center gap-1">
-                            <span className={o.plate ? '' : 'text-warning'}>{o.plate ?? 'нет номера'}</span>
-                            <button
-                              onClick={() => setEditingPlateKey(key)}
-                              title={o.plate ? 'Изменить гос.номер и перепроверить ТС в гео' : 'Вписать гос.номер вручную (OCR не распознал) и проверить в гео'}
-                              className="text-muted/40 hover:text-accent shrink-0 transition-colors"
-                            ><Pencil size={11} /></button>
-                            {o.plate_edited && <span title="Номер изменён оператором, перепроверено в гео" className="text-info shrink-0">●</span>}
-                            {isPlateLoading && <span className="animate-spin text-muted shrink-0">↻</span>}
-                          </span>
-                        )}
+                        <ParseEditCell
+                          kind="plate"
+                          value={o.plate}
+                          readOnly={isDemo}
+                          saving={isPlateLoading}
+                          edited={o.plate_edited}
+                          manual={o.manual_row}
+                          emptyLabel="нет номера"
+                          editTitle={o.plate ? 'Изменить гос.номер и перепроверить ТС в гео' : 'Вписать гос.номер вручную (OCR не распознал) и проверить в гео'}
+                          editedTitle="Номер изменён оператором, перепроверено в гео"
+                          onApply={val => handlePlateChange(o, val, idx)}
+                        />
                       </td>
                       <td className="pr-2">
-                        {isDemo || !o.plate ? (o.date ?? '—') : editingDateKey === key ? (
-                          <span className="inline-flex items-center gap-1">
-                            <input
-                              type="date"
-                              autoFocus
-                              defaultValue={o.date ?? ''}
-                              disabled={dateLoading.has(key)}
-                              onClick={e => e.stopPropagation()}
-                              onKeyDown={e => {
-                                if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
-                                else if (e.key === 'Escape') { cancelDateRef.current = true; (e.target as HTMLInputElement).blur() }
-                              }}
-                              onBlur={e => {
-                                const val = e.target.value
-                                setEditingDateKey(null)
-                                if (cancelDateRef.current) { cancelDateRef.current = false; return }
-                                handleDateChange(o, val, idx)
-                              }}
-                              className="w-[8.5rem] rounded border border-accent bg-frame px-1 py-0.5 text-[11px] text-white outline-none disabled:opacity-50"
-                            />
-                            <span className="shrink-0 text-[9px] text-muted/60">Enter / Esc</span>
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center gap-1">
-                            <span className={o.date ? '' : 'text-warning'}>{o.date ?? 'нет даты'}</span>
-                            <button
-                              onClick={e => { e.stopPropagation(); setEditingDateKey(key) }}
-                              title="Изменить дату неисправности и перепроверить в гео"
-                              className="shrink-0 text-muted/40 hover:text-accent transition-colors"
-                            ><Pencil size={11} /></button>
-                            {o.date_edited && <span title="Дата изменена оператором, перепроверено в гео" className="shrink-0 text-info">●</span>}
-                            {dateLoading.has(key) && <span className="shrink-0 animate-spin text-muted">↻</span>}
-                          </span>
-                        )}
+                        <ParseEditCell
+                          kind="date"
+                          value={o.date}
+                          /* Без номера дату править нечему: строку сперва опознают. */
+                          readOnly={isDemo || !o.plate}
+                          saving={dateLoading.has(key)}
+                          edited={o.date_edited}
+                          emptyLabel="нет даты"
+                          editTitle="Изменить дату неисправности и перепроверить в гео"
+                          editedTitle="Дата изменена оператором, перепроверено в гео"
+                          onApply={val => handleDateChange(o, val, idx)}
+                        />
                       </td>
-                      <td className="pr-2">{o.sheet_mileage_km ?? '—'}</td>
-                      <td className="pr-2">{o.declared_system_km ?? '—'}</td>
+                      <td className="pr-2">
+                        <ParseEditCell
+                          kind="number"
+                          value={o.sheet_mileage_km != null ? String(o.sheet_mileage_km) : null}
+                          readOnly={isDemo}
+                          saving={mileageLoading.has(`${key}:sheet`)}
+                          edited={o.mileage_edited}
+                          emptyLabel="—"
+                          editTitle={MILEAGE_FIELDS.sheet.editTitle}
+                          editedTitle={MILEAGE_FIELDS.sheet.editedTitle}
+                          onApply={val => handleMileageChange(o, 'sheet', val, idx)}
+                        />
+                      </td>
+                      <td className="pr-2">
+                        <ParseEditCell
+                          kind="number"
+                          value={o.declared_system_km != null ? String(o.declared_system_km) : null}
+                          readOnly={isDemo}
+                          saving={mileageLoading.has(`${key}:declared`)}
+                          edited={o.mileage_edited}
+                          emptyLabel="—"
+                          editTitle={MILEAGE_FIELDS.declared.editTitle}
+                          editedTitle={MILEAGE_FIELDS.declared.editedTitle}
+                          onApply={val => handleMileageChange(o, 'declared', val, idx)}
+                        />
+                      </td>
                       <td className="pr-2">{o.system_mileage_km ?? '—'}</td>
                       <td className="pr-2">
-                        {isDemo ? (
-                          <VerdictPill verdict={o.verdict} source={rowVerdictSource(o)} />
-                        ) : (
-                          <span className="inline-flex min-w-0 items-center">
-                            {/* Пилюля показывает ИСТОЧНИК вердикта (правила / ИИ / оператор),
-                                а нативный select лежит прозрачным слоем поверх — так остаётся
-                                штатный выпадающий список без своей вёрстки. */}
-                            <span className="relative inline-flex min-w-0 items-center rounded-pill focus-within:ring-1 focus-within:ring-accent">
-                              <VerdictPill
-                                verdict={o.verdict}
-                                source={rowVerdictSource(o)}
-                                className={isVerdictLoading ? 'opacity-50' : ''}
-                                title={verdictCellHint(o)}
-                              />
-                              <span className="ml-1.5 shrink-0 text-[11px] text-muted">▾</span>
-                              {/* Список вердиктов был НЕВИДИМ: у select стоял
-                                  text-transparent (чтобы не просвечивал поверх
-                                  пилюли), а option наследуют цвет от select —
-                                  в раскрытом списке получался чёрный текст на
-                                  чёрном. Цвет каждого пункта задаём инлайном:
-                                  класс `text-primary` в проекте не утилита, а имя
-                                  ЦВЕТА (`text-text-primary`), поэтому и не работал.
-                                  Нативный список оставляем: таблица лежит в
-                                  overflow-x-auto, и свой попап там обрезался бы. */}
-                              <select
-                                value={o.verdict}
-                                disabled={isVerdictLoading}
-                                onChange={e => handleVerdictChange(o, e.target.value, idx)}
-                                onClick={e => e.stopPropagation()}
-                                title={verdictCellHint(o)}
-                                aria-label="Вердикт по объекту"
-                                className="absolute inset-0 h-full w-full cursor-pointer appearance-none border-0 bg-transparent opacity-0 outline-none disabled:cursor-wait"
-                              >
-                                {ALLOWED_VERDICTS.map(v => (
-                                  <option key={v} value={v} style={VERDICT_OPTION_STYLE}>{v}</option>
-                                ))}
-                                {!ALLOWED_VERDICTS.includes(o.verdict as typeof ALLOWED_VERDICTS[number]) && (
-                                  <option value={o.verdict} style={VERDICT_OPTION_STYLE}>{o.verdict}</option>
-                                )}
-                              </select>
-                            </span>
-                            {(() => {
-                              const d = verdictDisagreement(o.verdict, o.heuristic_category, rowVerdictSource(o))
-                              return d ? (
-                                <span
-                                  title={`Правила: ${d.from} → ${d.by}: ${d.to}`}
-                                  className="ml-1.5 shrink-0 text-[11px] text-muted"
-                                >⇄</span>
-                              ) : null
-                            })()}
-                            {isVerdictLoading && (
-                              <span className="ml-1.5 animate-spin text-muted shrink-0">↻</span>
-                            )}
-                          </span>
-                        )}
-                        {o.spec_vehicle && (
-                          <span
-                            title="Спецтехника без км-пробега — оценивать по факту работы/моточасам"
-                            className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-pill bg-warning/15 text-warning text-[9px] font-medium align-middle"
-                          >
-                            спецтехника
-                          </span>
-                        )}
+                        <VerdictCell
+                          o={o}
+                          readOnly={isDemo}
+                          loading={isVerdictLoading}
+                          onChange={v => handleVerdictChange(o, v, idx)}
+                        />
                       </td>
                       <td className="pr-1 text-center">
                         {o.plate && o.date && (
@@ -2788,7 +3538,21 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
                           )
                         )}
                       </td>
+                      {!isDemo && (
+                        <td className="text-center">
+                          <DeleteRowButton disabled={res.objects.length === 1} onClick={() => setDeleteIdx(idx)} />
+                        </td>
+                      )}
                     </tr>
+                    {aiMiss[key] && (
+                      <AiMissPrompt
+                        issueId={issueId}
+                        verdict={aiMiss[key]}
+                        colSpan={PARSE_COLUMNS.length + (isDemo ? 2 : 3)}
+                        onHide={() => setAiMiss(prev => { const n = { ...prev }; delete n[key]; return n })}
+                      />
+                    )}
+                    </Fragment>
                   )
                 })}
               </tbody>
@@ -2796,6 +3560,15 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
           </div>
           <ParseDisagreeNote objects={res.objects} />
           <ParseTableNote />
+          {!isDemo && (addOpen ? (
+            <AddRowForm
+              defaultDate={res.objects[0]?.date || todayIsoMsk()}
+              onAdd={addRow}
+              onCancel={() => setAddOpen(false)}
+            />
+          ) : (
+            <AddRowButton onClick={() => setAddOpen(true)} />
+          ))}
           {isAggregate && (
             /* Кнопки сводного ответа здесь НЕТ намеренно: оба источника ответа
                («по правилам» и «✦ ИИ») живут в липком баре, рядом с полем, куда
@@ -2825,6 +3598,21 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
       {verdictError && <p className="text-xs text-orange-400">{verdictError}</p>}
       {plateError && <p className="text-xs text-orange-400">{plateError}</p>}
       {dateError && <p className="text-xs text-orange-400">{dateError}</p>}
+      {mileageError && <p className="text-xs text-orange-400">{mileageError}</p>}
+      {deleteIdx != null && res?.objects[deleteIdx] && (
+        <DeleteRowDialog
+          obj={res.objects[deleteIdx]}
+          onConfirm={() => deleteRow(deleteIdx, res.objects[deleteIdx])}
+          onCancel={() => setDeleteIdx(null)}
+        />
+      )}
+      {rerunOpen && (
+        <RerunConfirmDialog
+          rows={manualEditedRows(res?.objects ?? [])}
+          onConfirm={() => { setRerunOpen(false); startRun() }}
+          onCancel={() => setRerunOpen(false)}
+        />
+      )}
     </div>
   )
 }
@@ -3676,7 +4464,7 @@ export function IssueDetail() {
             issueId={issue.id}
             issueTitle={issue.subject}
             companyName={issue.company_name}
-            onSelect={obj => { setSelectedIdx(0); setSelectedObj(obj); setParseRows([obj]) }}
+            onSelect={(obj, idx, objects) => { setSelectedIdx(idx); setSelectedObj(obj); setParseRows(objects) }}
           />
           <AutoAnalysis
             issueId={issue.id}

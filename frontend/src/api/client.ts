@@ -198,6 +198,43 @@ export const api = {
     }).then(r => r.data)
   },
 
+  // Исправление пробега в строке разбора: «ПЛ» (sheet_mileage_km) и «ГЛОНАСС
+  // заявл.» (declared_system_km). Бэкенд пересчитывает вердикт строки по правилам
+  // (кроме строк, где вердикт уже поставил оператор).
+  //
+  // Стереть значение можно ТОЛЬКО флагом clear_*: отсутствие поля бэкенд трактует
+  // как «не менять», поэтому пустую строку слать нельзя.
+  updateBatchMileage(
+    id: number,
+    patch: { sheet_mileage_km?: number; declared_system_km?: number; clear_sheet?: boolean; clear_declared?: boolean },
+    sel: { index?: number; plate?: string | null; date?: string | null; file?: string },
+  ): Promise<BatchResult> {
+    return http.post(`/issues/${id}/batch/mileage`, {
+      ...patch,
+      ...(sel.index != null ? { index: sel.index } : {}),
+      ...(sel.plate ? { plate: sel.plate } : {}),
+      ...(sel.date ? { date: sel.date } : {}),
+      ...(sel.file ? { file: sel.file } : {}),
+    }).then(r => r.data)
+  },
+
+  // Ручное добавление строки в разбор: акт есть, но OCR его не увидел (или ТС
+  // вообще нет в письме) — оператор заводит объект сам. Дата строго YYYY-MM-DD.
+  addBatchRow(id: number, plate: string, date: string, file?: string): Promise<BatchResult> {
+    return http.post(`/issues/${id}/batch/row`, { plate, date, ...(file ? { file } : {}) }).then(r => r.data)
+  },
+
+  // Удаление строки разбора. index — позиция в objects; plate/date/file бэкенд
+  // сверяет с ней и отвечает 409, если список успел разойтись (правка в другой вкладке).
+  deleteBatchRow(id: number, index: number, plate?: string | null, date?: string | null, file?: string): Promise<BatchResult> {
+    return http.post(`/issues/${id}/batch/row/delete`, {
+      index,
+      ...(plate ? { plate } : {}),
+      ...(date ? { date } : {}),
+      ...(file ? { file } : {}),
+    }).then(r => r.data)
+  },
+
   // ОДИН платный вызов ИИ на ВСЮ заявку: уверенность, обоснование и черновик
   // ответа по каждому объекту разбора. Ручные правки оператора не перезаписывает.
   batchAi(id: number): Promise<BatchResult & { ok: boolean; updated: number; sent: number; skipped: number }> {

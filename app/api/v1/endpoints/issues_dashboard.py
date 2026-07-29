@@ -6,6 +6,8 @@ import datetime as _dt
 import json
 import re
 import urllib.parse
+# Алиас: имя `fields` уже занято локальной переменной в /issues/{id}/fields.
+from dataclasses import fields as _dc_fields
 
 import httpx
 import structlog
@@ -34,7 +36,7 @@ from app.core.okdesk.client import OkdeskAPIError
 from app.core.okdesk.models import Employee
 from app.core.okdesk.service import OkdeskService
 from app.core.services.cache_service import CacheService
-from app.services.issue_automation import IssueAutomationService
+from app.services.issue_automation import IssueAutomationService, ParsedIssue, TelemetryFacts
 
 log = structlog.get_logger(__name__)
 router = APIRouter(prefix="/issues", tags=["dashboard:issues"])
@@ -551,7 +553,8 @@ async def installer_export(
         company_short = _short_company(company_name)
 
         # Номер + дата неисправности из разбора темы/описания.
-        parsed = automation.parse_issue(live.title, live.description, None)
+        parsed = automation.parse_issue(live.title, live.description, None,
+                                        created_at=live.created_at)
         plate = parsed.plate
         date_ru: str | None = None
         if parsed.date:
@@ -699,6 +702,7 @@ async def automate_issue(
             live.description,
             params,
             issue_type=live.type.name if live.type else None,
+            created_at=live.created_at,
             attachments_text=attachments_text or None,
             sender=sender,
             comments=comments_digest or None,
@@ -823,6 +827,7 @@ async def parse_issue_facts(
             attachments=(live.attachments if attachments else None),
             comments=comments_digest or None,
             plate_override=plate, date_override=date,
+            created_at=live.created_at,
             ocr_cache=cache,
             progress_out=(ocr_progress if attachments else None),
         )
@@ -1072,6 +1077,7 @@ async def automate_batch(
                                                      issue_title=live.title,
                                                      issue_description=live.description,
                                                      ocr_cache=cache,
+                                                     created_at=live.created_at,
                                                      progress_out=ocr_progress)
         except Exception:
             # analyze_batch is best-effort and shouldn't raise, but guard anyway
@@ -1179,6 +1185,20 @@ async def _objects_doc(cache: CacheService, external_id: int) -> tuple[str, dict
     raise HTTPException(status_code=400, detail="Сначала выполните разбор по вложениям")
 
 
+def _mark_operator_touched(data: dict) -> None:
+    """Пометить документ разбора как правленный вручную.
+
+    Одиночная карточка показывает кэш «automate» — он богаче (уверенность,
+    обоснование, черновик), — а все ручные правки уходят в «parse»: их видно до
+    перезагрузки страницы, после неё таблица снова берёт automate и правка
+    пропадает с экрана, хотя в кэше лежит. Флаг говорит фронту, что с этого
+    момента авторитетен «parse». Альтернативы хуже: дублировать каждую правку в
+    оба кэша — это ручное сопоставление полей (в automate вердикт зовётся
+    `category`), а гонять разбор при каждом открытии карточки — лишняя работа
+    на ровном месте."""
+    data["operator_touched"] = True
+
+
 @router.post("/{issue_id}/batch/verdict")
 async def update_batch_verdict(
     issue_id: int,
@@ -1232,6 +1252,7 @@ async def update_batch_verdict(
         # Сводные поля одиночного разбора дублируют единственную строку.
         data["verdict"] = objects[0].get("verdict")
         data["verdict_source"] = objects[0].get("verdict_source")
+    _mark_operator_touched(data)
     try:
         await cache.save_result_cache(external_id, kind, json.dumps(data, ensure_ascii=False))
     except Exception:
@@ -1401,6 +1422,7 @@ async def update_batch_date(
         parsed0 = data.get("parsed")
         if isinstance(parsed0, dict):
             parsed0["date"] = row.get("date")
+    _mark_operator_touched(data)
     try:
         await cache.save_result_cache(external_id, kind, json.dumps(data, ensure_ascii=False))
     except Exception:
@@ -1486,12 +1508,302 @@ async def update_batch_plate(
         parsed0 = data.get("parsed")
         if isinstance(parsed0, dict):
             parsed0["plate"] = row.get("plate")
+    _mark_operator_touched(data)
     try:
         await cache.save_result_cache(external_id, kind, json.dumps(data, ensure_ascii=False))
     except Exception:
         log.warning("batch_plate_save_failed", issue_id=issue_id)
         raise HTTPException(status_code=500, detail="Не удалось сохранить гос.номер")
     return {"ok": True, "updated": updated, **data}
+
+
+class MileageUpdate(BaseModel):
+    index: int | None = None  # точный селектор строки, как в PlateUpdate/DateUpdate
+    plate: str | None = None  # фолбэк-селектор, когда индекс строки неизвестен
+    date: str | None = None
+    file: str | None = None
+    sheet_mileage_km: float | None = None    # колонка «ПЛ»: путевой лист/одометр
+    declared_system_km: float | None = None  # колонка «ГЛОНАСС заявл.»: со слов клиента
+    # None в теле означает «поле не передано, не менять», поэтому стереть ошибочно
+    # распознанную цифру в null иначе нечем — нужны явные флаги.
+    clear_sheet: bool = False
+    clear_declared: bool = False
+
+
+# Верхняя граница суточного пробега: за сутки ТС физически не проедет 100 000 км,
+# такое число — всегда промах OCR или лишние нули, набранные оператором.
+_MAX_DAILY_KM = 100_000.0
+
+
+def _telemetry_from_row(raw: object) -> TelemetryFacts | None:
+    """Собрать ``TelemetryFacts`` обратно из строки разбора (там лежит ``asdict``).
+
+    Ключи dict совпадают с полями dataclass один в один, но кэш переживает деплои:
+    строка, разобранная старой версией, не знает новых полей, а строка из более
+    новой принесёт лишние — прямой ``TelemetryFacts(**raw)`` на такой упал бы
+    TypeError и уронил бы правку цифр. Поэтому фильтруем по актуальному набору
+    полей; недостающие берут значения по умолчанию."""
+    if not isinstance(raw, dict) or not raw:
+        return None
+    known = {f.name for f in _dc_fields(TelemetryFacts)}
+    try:
+        return TelemetryFacts(**{k: v for k, v in raw.items() if k in known})
+    except Exception:
+        return None
+
+
+@router.post("/{issue_id}/batch/mileage")
+async def update_batch_mileage(
+    issue_id: int,
+    body: MileageUpdate,
+    cache: CacheService = Depends(get_cache_service),
+    automation: IssueAutomationService = Depends(get_issue_automation_service),
+) -> dict[str, object]:
+    """Оператор исправляет ПРОБЕГ в строке разбора (ПЛ и/или заявленный клиентом
+    по ГЛОНАСС) — вердикт строки пересчитывается по этим цифрам.
+
+    OCR регулярно перевирает пробег в акте, и вердикт правил считается по мусору.
+    Раньше оператору оставалось только вручную переставить вердикт: исходная цифра
+    в таблице оставалась неверной, а обоснование с ней не сходилось.
+
+    В ОТЛИЧИЕ от ``/batch/plate`` и ``/batch/date`` гео здесь НЕ дёргаем: пробег из
+    акта — данные клиента, телеметрия от них не зависит, а лишний поход в гео стоит
+    времени и способен уронить строку в 502 на ровном месте. Вердикт пересчитываем
+    из УЖЕ сохранённой в строке телеметрии."""
+    if (body.sheet_mileage_km is None and body.declared_system_km is None
+            and not body.clear_sheet and not body.clear_declared):
+        raise HTTPException(status_code=400, detail="Не передано ни одного значения")
+    for value in (body.sheet_mileage_km, body.declared_system_km):
+        if value is None:
+            continue
+        if value < 0:
+            raise HTTPException(status_code=400, detail="Пробег не может быть отрицательным")
+        if value > _MAX_DAILY_KM:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Пробег за сутки не может быть больше {int(_MAX_DAILY_KM)} км — проверьте цифру")
+    issue_data = await cache.get_issue_with_analysis(issue_id)
+    if not issue_data:
+        raise HTTPException(status_code=404, detail="Issue not found")
+    external_id = issue_data["issue"].external_id
+    kind, data = await _objects_doc(cache, external_id)
+    objects: list[dict] = data.get("objects") or []
+    if body.index is not None and 0 <= body.index < len(objects):
+        match_idx = [body.index]
+    else:
+        target = _norm_plate(body.plate) if body.plate else None
+        match_idx = [
+            i for i, o in enumerate(objects)
+            if (target is None or _norm_plate(o.get("plate")) == target)
+            and (not body.file or o.get("file") == body.file)
+            and (not body.date or o.get("date") == body.date)
+        ]
+    updated = 0
+    for i in match_idx:
+        o = objects[i]
+        # clear_* сильнее значения: явное «стереть» не должно зависеть от того,
+        # прислал ли клиент заодно старое число в том же поле.
+        if body.clear_sheet:
+            o["sheet_mileage_km"] = None
+        elif body.sheet_mileage_km is not None:
+            o["sheet_mileage_km"] = body.sheet_mileage_km
+        if body.clear_declared:
+            o["declared_system_km"] = None
+        elif body.declared_system_km is not None:
+            o["declared_system_km"] = body.declared_system_km
+        # Маркер ручной правки цифр — по образцу plate_edited/date_edited: в таблице
+        # видно, что число пришло не из OCR.
+        o["mileage_edited"] = True
+        updated += 1
+        if o.get("verdict_source") == "operator":
+            # Вердикт уже переставлен оператором осознанно — цифры чиним, но его
+            # решение молча перебивать пересчётом нельзя.
+            continue
+        t = _telemetry_from_row(o.get("telemetry"))
+        if t is None:
+            # Телеметрии в строке нет (объект не искали или гео не ответило) —
+            # пересчитывать вердикт не из чего, оставляем прежний.
+            continue
+        o["verdict"] = IssueAutomationService._verdict_from_facts(
+            t, o.get("sheet_mileage_km"), o.get("declared_system_km"),
+            bool(o.get("spec_vehicle")))
+        # Вторая эвристика тоже зависит от ПЛ (issue_automation.py:1507) и уходит в
+        # промпт как «подсказка_эвристики» — оставить её от старых цифр значит
+        # подсунуть модели устаревшую подсказку в следующем платном прогоне.
+        # Сети не требует: считается из той же телеметрии.
+        o["heuristic_category"] = automation._heuristic_category(
+            ParsedIssue(plate=o.get("plate"), date=o.get("date"),
+                        sheet_mileage_km=o.get("sheet_mileage_km")), t)
+        o["verdict_source"] = "rules"
+        # Обоснование, черновик и уверенность объясняли вердикт по СТАРЫМ цифрам —
+        # снимаем, иначе текст спорит с пересчитанной таблицей.
+        o.pop("reasoning", None)
+        o.pop("draft_answer", None)
+        o.pop("confidence", None)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Строка не найдена в разборе")
+    data["total"] = len(objects)
+    data["jamming_count"] = sum(1 for o in objects if o.get("verdict") == "Глушение")
+    data["ok_count"] = sum(1 for o in objects if o.get("verdict") == "Данные верны")
+    if kind == "parse" and len(objects) == 1:
+        _mirror_parse_root(data, objects)
+        parsed0 = data.get("parsed")
+        if isinstance(parsed0, dict):
+            # Шапка одиночного разбора дублирует строку: без этого рядом с
+            # исправленной таблицей остались бы старые цифры OCR.
+            parsed0["sheet_mileage_km"] = objects[0].get("sheet_mileage_km")
+            parsed0["declared_system_km"] = objects[0].get("declared_system_km")
+    _mark_operator_touched(data)
+    try:
+        await cache.save_result_cache(external_id, kind, json.dumps(data, ensure_ascii=False))
+    except Exception:
+        log.warning("batch_mileage_save_failed", issue_id=issue_id)
+        raise HTTPException(status_code=500, detail="Не удалось сохранить пробег")
+    return {"ok": True, "updated": updated, **data}
+
+
+class RowAdd(BaseModel):
+    plate: str
+    date: str                 # ISO YYYY-MM-DD: дата неисправности новой строки
+    file: str | None = None   # имя акта, если оператор знает, откуда строка
+
+
+class RowDelete(BaseModel):
+    index: int                # точный селектор строки, как в PlateUpdate/DateUpdate
+    # Снимок строки с экрана оператора: сверяем перед удалением, чтобы не снести
+    # соседнюю строку, если список успел перестроиться в другой вкладке.
+    plate: str | None = None
+    date: str | None = None
+    file: str | None = None
+
+
+def _mirror_parse_root(data: dict, objects: list[dict]) -> None:
+    """Свести корневые поля одиночного разбора («parse») к ПЕРВОЙ строке.
+
+    В kind == "parse" корень дублирует данные первой строки, и часть фронта читает
+    именно его. Правки вердикта/номера меняют строку на месте, поэтому им хватает
+    зеркалирования при единственной строке; добавление и удаление меняют САМ СОСТАВ
+    и порядок строк, поэтому корень надо переклеивать всегда, пока строки есть:
+    иначе после удаления первой строки в корне остались бы вердикт и телеметрия
+    уже удалённого ТС."""
+    if not objects:
+        return
+    row = objects[0]
+    data["verdict"] = row.get("verdict")
+    data["verdict_source"] = row.get("verdict_source")
+    data["telemetry"] = row.get("telemetry")
+    data["heuristic_category"] = row.get("heuristic_category")
+    parsed0 = data.get("parsed")
+    if isinstance(parsed0, dict):
+        parsed0["plate"] = row.get("plate")
+        parsed0["date"] = row.get("date")
+
+
+@router.post("/{issue_id}/batch/row")
+async def add_batch_row(
+    issue_id: int,
+    body: RowAdd,
+    cache: CacheService = Depends(get_cache_service),
+    automation: IssueAutomationService = Depends(get_issue_automation_service),
+) -> dict[str, object]:
+    """Оператор добавляет в разбор строку, которой там нет: OCR не увидел акт, либо
+    ТС названо только в тексте письма или комментарии.
+
+    Вердикт по новой строке считает система (правила по фактам гео), поэтому
+    ``verdict_source`` остаётся «rules»: человек задал только номер и дату, решение
+    приняла машина — пилюля «✎ оператор» здесь была бы обманом."""
+    plate = (body.plate or "").strip()
+    if not plate:
+        raise HTTPException(status_code=400, detail="Гос.номер пуст")
+    new_date = (body.date or "").strip()
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", new_date):
+        raise HTTPException(status_code=400, detail="Дата должна быть в формате YYYY-MM-DD")
+    issue_data = await cache.get_issue_with_analysis(issue_id)
+    if not issue_data:
+        raise HTTPException(status_code=404, detail="Issue not found")
+    external_id = issue_data["issue"].external_id
+    kind, data = await _objects_doc(cache, external_id)
+    objects: list[dict] = data.get("objects") or []
+    target = _norm_plate(plate)
+    # Ключ строки разбора — (номер, дата), как при дедупликации в analyze_batch:
+    # один ТС за одну дату разбирается один раз, поэтому повтор — это почти всегда
+    # случайный второй клик, а не второй акт.
+    if any(_norm_plate(o.get("plate")) == target and o.get("date") == new_date
+           for o in objects):
+        raise HTTPException(status_code=400, detail="Такая строка уже есть в разборе")
+    try:
+        fresh = await automation._analyze_object(
+            plate, new_date, None, None, body.file or "", declared=None)
+    except Exception:
+        log.warning("batch_row_add_failed", issue_id=issue_id, plate=plate, date=new_date)
+        raise HTTPException(status_code=502, detail="Не удалось проверить ТС в гео")
+    # Единственный признак «строку завёл оператор»: в актах её нет, и при следующем
+    # форс-разборе вложений она исчезнет — UI обязан отличать её от строк OCR.
+    fresh["manual_row"] = True
+    objects.append(fresh)
+    data["objects"] = objects
+    data["total"] = len(objects)
+    data["jamming_count"] = sum(1 for o in objects if o.get("verdict") == "Глушение")
+    data["ok_count"] = sum(1 for o in objects if o.get("verdict") == "Данные верны")
+    if kind == "parse":
+        _mirror_parse_root(data, objects)
+    _mark_operator_touched(data)
+    try:
+        await cache.save_result_cache(external_id, kind, json.dumps(data, ensure_ascii=False))
+    except Exception:
+        log.warning("batch_row_add_save_failed", issue_id=issue_id)
+        raise HTTPException(status_code=500, detail="Не удалось сохранить строку")
+    return {"ok": True, "updated": 1, **data}
+
+
+@router.post("/{issue_id}/batch/row/delete")
+async def delete_batch_row(
+    issue_id: int,
+    body: RowDelete,
+    cache: CacheService = Depends(get_cache_service),
+) -> dict[str, object]:
+    """Оператор убирает из разбора лишнюю строку: OCR распознал дубль акта или
+    вытащил ТС, которого в заявке нет.
+
+    Удаление НЕ запоминается: следующий форс-прогон ``/automate_batch`` или
+    ``/parse`` вернёт строку, если она снова найдётся во вложениях. Это осознанно —
+    список строк остаётся производным от актов, а не отдельным состоянием, которое
+    пришлось бы синхронизировать; чинить надо сам акт или номер в строке."""
+    issue_data = await cache.get_issue_with_analysis(issue_id)
+    if not issue_data:
+        raise HTTPException(status_code=404, detail="Issue not found")
+    external_id = issue_data["issue"].external_id
+    kind, data = await _objects_doc(cache, external_id)
+    objects: list[dict] = data.get("objects") or []
+    if not (0 <= body.index < len(objects)):
+        raise HTTPException(status_code=404, detail="Строка не найдена в разборе")
+    # Пустой objects _objects_doc считает отсутствующим разбором, и добавить строку
+    # обратно через /batch/row стало бы уже некуда — перезапуск разбора дешевле.
+    if len(objects) == 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Нельзя удалить единственную строку разбора — используйте «Обновить разбор»")
+    row = objects[body.index]
+    # Индекс сам по себе ненадёжен: список мог перестроиться в другой вкладке
+    # (правка номера, повторный разбор), и оператор удалил бы не ту строку.
+    if ((body.plate is not None and _norm_plate(row.get("plate")) != _norm_plate(body.plate))
+            or (body.date is not None and row.get("date") != body.date)
+            or (body.file is not None and (row.get("file") or "") != body.file)):
+        raise HTTPException(status_code=409, detail="Строка изменилась, обновите разбор")
+    objects.pop(body.index)
+    data["objects"] = objects
+    data["total"] = len(objects)
+    data["jamming_count"] = sum(1 for o in objects if o.get("verdict") == "Глушение")
+    data["ok_count"] = sum(1 for o in objects if o.get("verdict") == "Данные верны")
+    if kind == "parse":
+        _mirror_parse_root(data, objects)
+    _mark_operator_touched(data)
+    try:
+        await cache.save_result_cache(external_id, kind, json.dumps(data, ensure_ascii=False))
+    except Exception:
+        log.warning("batch_row_delete_save_failed", issue_id=issue_id)
+        raise HTTPException(status_code=500, detail="Не удалось сохранить разбор")
+    return {"ok": True, "updated": 1, **data}
 
 
 class AiFeedbackBody(BaseModel):
@@ -1624,7 +1936,8 @@ async def compose_answer(
             objects = await automation.analyze_batch(external_id, live.attachments,
                                                      issue_title=live.title,
                                                      issue_description=live.description,
-                                                     ocr_cache=cache)
+                                                     ocr_cache=cache,
+                                                     created_at=live.created_at)
         if not objects:
             raise HTTPException(status_code=400,
                                 detail="Сначала выполните разбор — по чему составлять ответ")
@@ -1862,6 +2175,7 @@ async def get_issue_track(
         extra_text = "\n".join(t for t in (attachments_text, comments_text) if t) or None
         result = await automation.build_track(
             live.title, live.description, attachments_text=extra_text,
+            created_at=live.created_at,
             date_from=date_from, date_to=date_to,
         )
         # The independent single-plate parse in build_track sometimes fails where
@@ -1906,7 +2220,7 @@ async def get_issue_track(
                 if not fb_date:
                     parsed_again = automation.parse_issue(
                         live.title, live.description, None,
-                        extra_text=extra_text,
+                        extra_text=extra_text, created_at=live.created_at,
                     )
                     if parsed_again.date:
                         fb_date = parsed_again.date
@@ -2068,7 +2382,8 @@ async def get_extracted(
             att_text = await automation.read_attachments(external_id, live.attachments or [])
         except Exception:
             log.warning("extracted_attachments_failed", issue_id=issue_id)
-        parsed = automation.parse_issue(live.title, live.description, None, extra_text=att_text)
+        parsed = automation.parse_issue(live.title, live.description, None, extra_text=att_text,
+                                        created_at=live.created_at)
         body_text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", live.description or "")).strip()
         return {
             "plate": parsed.plate,
@@ -2344,7 +2659,8 @@ async def backfill_training(
         try:
             live = await okdesk.get_issue(ext)
             # Дёшево отсеиваем не-пробеговые: нужен распознаваемый номер+дата.
-            parsed = automation.parse_issue(live.title, live.description, None)
+            parsed = automation.parse_issue(live.title, live.description, None,
+                                            created_at=live.created_at)
             if not parsed.plate or not parsed.date:
                 not_mileage += 1
                 continue
@@ -2358,6 +2674,7 @@ async def backfill_training(
             sample = await automation.build_training_sample(
                 live.title, live.description, answer,
                 getattr(iss, "status", None) or "completed",
+                created_at=live.created_at,
             )
             if not sample:
                 not_mileage += 1
@@ -2430,7 +2747,8 @@ async def resolve_issue(
             # Смена статуса без комментария («В работе»/«Открыть») — образец не пишем.
             live = await okdesk.get_issue(external_id) if comment else None
             sample = (await automation.build_training_sample(
-                live.title, live.description, comment, status_code
+                live.title, live.description, comment, status_code,
+                created_at=live.created_at
             )) if (comment and live) else None
             if sample:
                 latest = (issue_data.get("latest_analysis"))
