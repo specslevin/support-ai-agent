@@ -325,9 +325,18 @@ _PLATE_FALLBACK_RE = re.compile(
 )
 # Standard-only (буква+3цифры+2буквы[+регион]) для извлечения СПИСКА номеров из
 # «общей» заявки (один файл — много ТС). Без спецформата, чтобы «23-00 нет»→«2300НЕ» не лез.
-# Регион только слитно (без \s? перед \d{0,3}) — иначе в списке «В152ТУ\n2.»
-# хвост «2» от номера следующего пункта прилипает к номеру.
-_PLATE_STD_RE = re.compile(rf"(?<![A-Za-zА-Яа-яЁё0-9.-])[{_L}]\s?\d{{3}}\s?[{_L}]{{2}}\d{{0,3}}", re.I)
+# Регион через ПРОБЕЛ принимается ровно по тем же правилам, что и в _PLATE_RE
+# (2-3 цифры отдельным токеном, справа не цифра/разделитель). Раньше здесь регион
+# принимался ТОЛЬКО слитно, и построчный движок терял его на темах вида
+# «Т877НХ 58» (65780), «А 908 АУ 73» (65976), «О268АА 73» (65973), «Е 444 АО 73»
+# (65975): в шапке разбора номер был с регионом (её считает _PLATE_RE), а в
+# СТРОКАХ таблицы — без. Пробел/таб, а не \s: перевод строки — уже следующий
+# пункт списка, иначе в «В152ТУ\n2.» к номеру прилипал бы «2» от нумерации.
+_PLATE_STD_RE = re.compile(
+    rf"(?<![A-Za-zА-Яа-яЁё0-9.-])[{_L}]\s?\d{{3}}\s?[{_L}]{{2}}"
+    rf"(?:[ \t]{{1,2}}\d{{2,3}}(?![\d.,:/-])|\d{{0,3}})",
+    re.I,
+)
 
 # Полный «правильный» гос.номер (для нормализованного значения без пробелов):
 # стандартный ЛЦЦЦЛЛ[регион] ЛИБО форматы спецтехники. Если распознанный номер
@@ -1110,6 +1119,13 @@ _ISO_TS_RE = re.compile(r"\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?")
 
 def _scrub_iso_dates(text: str) -> str:
     return _ISO_TS_RE.sub(" ", text)
+
+
+def _extra_with_comments(parse_extra: str | None, comments: str | None) -> str:
+    """extra-текст разбора + дайджест комментариев (без ISO-таймштампов).
+    Единый склейщик для всех путей — чтобы шапка разбора и построчный движок
+    видели ОДИН И ТОТ ЖЕ текст."""
+    return f"{parse_extra or ''}\n{_scrub_iso_dates(comments or '')}"
 
 
 def _clean_answer(text: str | None) -> str:
@@ -2447,9 +2463,21 @@ class IssueAutomationService:
         # (без ISO-таймштампов публикации — см. _scrub_iso_dates).
         parse_extra = attachments_text
         if comments and not _strip_html(description).strip():
-            parse_extra = f"{attachments_text or ''}\n{_scrub_iso_dates(comments)}"
+            parse_extra = _extra_with_comments(attachments_text, comments)
         parsed = self.parse_issue(title, description, params, extra_text=parse_extra,
                                   created_at=created_at)
+        if comments and not parsed.date:
+            # Дату клиент дописал КОММЕНТАРИЕМ, а описание при этом не пустое
+            # (65780: «по спидометру 90км» в теле, «Извините, что не написала
+            # дату. за 22.07.226г» — в комментарии) — ветка выше комментарии не
+            # подмешивала, и разбор отдавал date=None. Комментарии тут ТОЛЬКО
+            # добирают ПУСТУЮ дату: в переписке дат много (ответ оператора,
+            # сроки), перебивать ими дату из темы/тела нельзя.
+            alt = self.parse_issue(title, description, params,
+                                   extra_text=_extra_with_comments(parse_extra, comments),
+                                   created_at=created_at)
+            if alt.date:
+                parsed.date, parsed.date_to = alt.date, alt.date_to
         # Ручное переопределение (оператор): клиент указал номер с опечаткой,
         # совпавшей с чужим реальным ТС, или неверную дату — авто-разбор тут
         # бессилен. Перезаписываем даже то, что нашёл regex, и пропускаем
@@ -2803,7 +2831,9 @@ class IssueAutomationService:
                             issue_description: str | None = None,
                             ocr_cache: Any = None,
                             progress_out: dict[str, Any] | None = None,
-                            created_at: str | _dt.date | None = None) -> list[dict[str, Any]]:
+                            created_at: str | _dt.date | None = None,
+                            extra_text: str | None = None,
+                            fallback_date: str | None = None) -> list[dict[str, Any]]:
         """Per-object analysis of a batch/«общая» issue (one vehicle act per attachment).
 
         Returns a list of {file, plate, date, sheet_mileage_km, system_mileage_km,
@@ -2812,6 +2842,19 @@ class IssueAutomationService:
 
         ``created_at`` — дата создания заявки, нужна только для года даты
         неисправности (см. parse_issue). Не передали — прежнее поведение.
+
+        ``extra_text`` — тот же дополнительный текст (вложения/дайджест
+        комментариев), по которому считалась ШАПКА разбора: без него строки
+        таблицы оставались без даты, хотя в шапке дата была. Не передали —
+        прежнее поведение.
+
+        ``fallback_date`` — дата из шапки разбора для строк, у которых своей нет.
+        Отдельным параметром, а НЕ через ``extra_text``: дату из переписки
+        добирать надо (65780), а вот заводить по переписке новое ТС — нельзя.
+        Пропустив дайджест комментариев в текст, мы получали строку, где
+        гос.номер взят из ответа оператора, а дата — из соседнего комментария про
+        ДРУГУЮ машину (65847): телеметрия запрашивалась для чужой пары
+        «номер + дата», и вердикт выглядел достоверным, будучи бессмысленным.
 
         Degrades gracefully: never raises. When there are no extractable
         attachments, OCR yields nothing, or no plates can be parsed, returns
@@ -2857,7 +2900,9 @@ class IssueAutomationService:
             # Порог снят: фронт получает одинаковую таблицу для 1 и для N ТС, не
             # потратив ни одного токена. OCR здесь не запускается — ветка работает
             # только когда извлекаемых вложений нет.
-            p0 = _parse(issue_title, issue_description)
+            p0 = _parse(issue_title, issue_description, extra_text)
+            # Дата шапки — только если своя не нашлась (см. fallback_date выше).
+            p0_date = p0.date or fallback_date
             targets_subj: list[tuple[str, str | None, float | None, float | None]] = list(body_rows)
             # Каждая строка тела — своя цель (своя дата/пробег, 64455/65649).
             # Номера, встреченные только в ТЕМЕ, добираем с общей датой/ПЛ из
@@ -2865,12 +2910,12 @@ class IssueAutomationService:
             for plate in title_plates:
                 if _plate_dedup_key(plate) not in body_keys:
                     targets_subj.append(
-                        (plate, p0.date, p0.sheet_mileage_km, p0.declared_system_km))
+                        (plate, p0_date, p0.sheet_mileage_km, p0.declared_system_km))
             if not targets_subj and p0.plate:
                 # Номер есть только в общем разборе темы+тела (нестандартная
                 # разметка строки) — одиночная заявка не должна остаться без строки.
                 targets_subj.append(
-                    (p0.plate, p0.date, p0.sheet_mileage_km, p0.declared_system_km))
+                    (p0.plate, p0_date, p0.sheet_mileage_km, p0.declared_system_km))
             # ОБЩАЯ дата заявки — строкам, у которых СВОЕЙ даты нет. 65910: в
             # сводном разборе дата 23.07 и ПЛ есть, а обе строки объектов вышли
             # с date=None → «Нет номера/даты» и телеметрия не запрашивалась
@@ -2880,8 +2925,8 @@ class IssueAutomationService:
             # у одного ТС за разные даты — разные вердикты (63617).
             # Пробеги НЕ раздаём: дата у заявки одна на всех, а пробег у каждого
             # ТС свой — общий ПЛ, размноженный по строкам, дал бы ложные вердикты.
-            if p0.date:
-                targets_subj = [(pl, dt or p0.date, s, g)
+            if p0_date:
+                targets_subj = [(pl, dt or p0_date, s, g)
                                 for pl, dt, s, g in targets_subj]
             # Год строк тела прижимаем к дате создания — см. такой же кламп для
             # табличных/актовых строк ниже.
@@ -3114,7 +3159,8 @@ class IssueAutomationService:
             if any(d is None for _, d, _, _ in targets):
                 doc_date = (_parse(name, extra=text).date
                             or (_parse(issue_title, issue_description).date
-                                if (issue_title or issue_description) else None))
+                                if (issue_title or issue_description) else None)
+                            or fallback_date)
                 if doc_date:
                     targets = [(p, d or doc_date, s, g) for p, d, s, g in targets]
 
@@ -3638,9 +3684,25 @@ class IssueAutomationService:
         parse_extra = attachments_text
         if comments and not _strip_html(description).strip():
             # 64871: у форвард-писем тело письма лежит в первом комментарии.
-            parse_extra = f"{attachments_text or ''}\n{_scrub_iso_dates(comments)}"
+            parse_extra = _extra_with_comments(attachments_text, comments)
         parsed = self.parse_issue(title, description, params, extra_text=parse_extra,
                                   created_at=created_at)
+        # Тот же текст, что видела шапка разбора, отдаём построчному движку —
+        # иначе строка таблицы остаётся без даты, хотя в шапке дата есть.
+        batch_extra = parse_extra
+        if comments and not parsed.date:
+            # Дата дописана КОММЕНТАРИЕМ при непустом описании (65780, см. такой
+            # же добор в analyze_issue): комментарии добирают только ПУСТУЮ дату.
+            extra_c = _extra_with_comments(parse_extra, comments)
+            alt = self.parse_issue(title, description, params,
+                                   extra_text=extra_c, created_at=created_at)
+            if alt.date:
+                parsed.date, parsed.date_to = alt.date, alt.date_to
+                # Найденную дату отдаём строкам ОТДЕЛЬНЫМ параметром, а не
+                # подмешиванием переписки в текст: иначе построчный движок заводит
+                # ТС по гос.номеру из ответа оператора и склеивает его с датой из
+                # комментария про другую машину (65847). Дата — общая на заявку,
+                # список машин — нет.
         if plate_override:
             norm = _normalize_plate(plate_override)
             parsed.plate = norm or plate_override.strip()
@@ -3667,7 +3729,8 @@ class IssueAutomationService:
                     issue_external_id, attachments or [],
                     issue_title=title, issue_description=description,
                     ocr_cache=ocr_cache, progress_out=progress_out,
-                    created_at=created_at)
+                    created_at=created_at, extra_text=batch_extra,
+                    fallback_date=parsed.date)
             except Exception:  # pragma: no cover - analyze_batch и так best-effort
                 log.warning("parse_facts_batch_failed", issue=issue_external_id)
                 objects = []
