@@ -97,6 +97,11 @@ frontend/src/
 | POST | `/api/v1/issues/bulk/assignee\|type\|status` | Массовое редактирование |
 | POST/GET | `/api/v1/issues/{id}/automate_batch` | POST — разбор «общей» заявки по объектам; GET — кэш |
 | POST | `/api/v1/issues/{id}/batch/verdict` | Изменить вердикт строки разбора (ключ: номер+дата+файл) |
+| POST | `/api/v1/issues/{id}/batch/plate\|date` | Исправить гос.номер / дату строки — телеметрия и вердикт считаются заново |
+| POST | `/api/v1/issues/{id}/batch/mileage` | Исправить пробег строки (ПЛ и «ГЛОНАСС заявл.») — вердикт пересчитывается БЕЗ похода в гео |
+| POST | `/api/v1/issues/{id}/batch/row` | Добавить строку разбора (номер + дата; телеметрию и вердикт считает система) |
+| POST | `/api/v1/issues/{id}/batch/row/delete` | Удалить строку разбора (сверка снимка, единственную строку удалить нельзя) |
+| POST | `/api/v1/issues/{id}/batch/ai` | Один платный прогон ИИ по всем строкам заявки (per-object + сводный ответ) |
 | POST | `/api/v1/issues/{id}/compose_answer` | Один общий ответ по разбору (группировка по вердиктам) |
 | GET | `/api/v1/issues/{id}/extracted` | Извлечённые данные (номер/дата/ПЛ/ГЛОНАСС/сырой текст) без ИИ |
 | POST | `/api/v1/issues/{id}/create_children` | Создать вложенные заявки по объектам |
