@@ -87,14 +87,29 @@ class GpsposGeoClient:
         await self._client.aclose()
 
     async def request(self, method: str, path: str, **kwargs: Any) -> Any:
+        # Все вызовы geo — читающие (Objects/ObjectPackets/ReverseGeocoder — POST
+        # лишь по форме запроса), поэтому повтор безопасен и для POST.
+        # 30.07.2026: geo подвисал ~6 минут, каждый запрос трека умирал по
+        # таймауту 30с → панель отдавала 500. Один повтор с паузой закрывает
+        # короткие провалы сети/сервиса, не растягивая ожидание вдвое надолго.
+        last_transport_error: Exception | None = None
         for attempt in range(2):
             token = await self._auth.get_token()
             req_kwargs = dict(kwargs)
             headers = {**(req_kwargs.pop("headers", None) or {}), "Authorization": f"Bearer {token}"}
-            r = await self._client.request(method, path, headers=headers, **req_kwargs)
+            try:
+                r = await self._client.request(method, path, headers=headers, **req_kwargs)
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                last_transport_error = exc
+                if attempt == 0:
+                    await asyncio.sleep(1.0)
+                    continue
+                raise
             if r.status_code == 401 and attempt == 0:
                 await self._auth.refresh_token()
                 continue
             r.raise_for_status()
             return r.json()
+        if last_transport_error is not None:
+            raise last_transport_error
         raise RuntimeError("Unauthorized after token refresh")

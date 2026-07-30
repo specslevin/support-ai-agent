@@ -2237,6 +2237,12 @@ async def get_issue_track(
         return result
     except HTTPException:
         raise
+    except (httpx.TimeoutException, httpx.TransportError):
+        # geo подвис (30.07.2026 — ~6 минут): раньше это был голый 500 и красное
+        # «Ошибка загрузки трека» без намёка, что виноват внешний сервис и надо
+        # просто повторить. Отдаём мягкий код — панель объяснит и предложит повтор.
+        log.warning("get_issue_track_geo_unavailable", issue_id=issue_id)
+        return {"error": "geo_unavailable", "points": []}
     except Exception:
         log.exception("get_issue_track_failed", issue_id=issue_id)
         raise HTTPException(status_code=500, detail="Failed to build track")

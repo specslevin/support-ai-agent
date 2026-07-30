@@ -419,6 +419,19 @@ function DateRangePicker({ from, to, timeFrom, timeTo, onChange }: DateRangePick
   )
 }
 
+// Провал внешнего geo — не повод перезагружать страницу: даём повтор на месте.
+function RetryButton({ onClick, busy }: { onClick: () => void; busy: boolean }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={busy}
+      className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-lg border border-border text-muted hover:text-white hover:border-accent disabled:opacity-50 transition-colors"
+    >
+      <RotateCcw size={12} /> {busy ? 'Загрузка...' : 'Повторить'}
+    </button>
+  )
+}
+
 export function TrackPanel({ issueId }: { issueId: number }) {
   const mapApi = useRef<MapApi | null>(null)
   const setTrackOpen = useIssuesStore(s => s.setTrackOpen)
@@ -441,7 +454,7 @@ export function TrackPanel({ issueId }: { issueId: number }) {
     ? (interval.timeTo ? `${interval.to}T${interval.timeTo}` : interval.to)
     : null
 
-  const { data, isPending, isError } = useQuery({
+  const { data, isPending, isError, isFetching, refetch } = useQuery({
     queryKey: ['track', issueId, trackPlate, trackDate, dateFrom, dateTo],
     queryFn: () => api.getTrack(issueId, trackPlate, trackDate, dateFrom, dateTo),
     staleTime: 5 * 60_000,
@@ -463,10 +476,16 @@ export function TrackPanel({ issueId }: { issueId: number }) {
     return <div className="flex items-center justify-center h-full text-muted text-sm">Загрузка трека...</div>
   }
   if (isError) {
-    return <div className="flex items-center justify-center h-full text-red-400 text-sm">Ошибка загрузки трека</div>
+    return (
+      <div className="flex flex-col items-center justify-center h-full gap-2 px-4 text-center">
+        <div className="text-red-400 text-sm">Ошибка загрузки трека</div>
+        <RetryButton onClick={() => refetch()} busy={isFetching} />
+      </div>
+    )
   }
   if (data.error) {
     const msg = data.error === 'object_not_found' ? 'Объект не найден в geo'
+      : data.error === 'geo_unavailable' ? 'Сервис GPS (geo) не ответил — трек не загружен. Повторите попытку.'
       : data.error === 'no_plate' ? 'В заявке не найден гос.номер ТС (возможно, это общая/внутренняя заявка на несколько ТС)'
       : data.error === 'no_date' ? 'Гос.номер найден, но не указана дата неисправности — задайте период вручную через календарь'
       : data.error === 'no_plate_or_date' ? 'В заявке не указан один гос.номер ТС или дата (возможно, это общая/внутренняя заявка на несколько ТС)'
@@ -476,7 +495,10 @@ export function TrackPanel({ issueId }: { issueId: number }) {
         <div className="px-4 py-2.5 border-b border-border shrink-0">
           <button onClick={() => setTrackOpen(false)} className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-lg border border-border text-muted hover:text-white hover:border-accent transition-colors"><PanelLeftClose size={13} /> Свернуть</button>
         </div>
-        <div className="flex items-center justify-center flex-1 text-muted text-sm px-4 text-center">{msg}</div>
+        <div className="flex flex-col items-center justify-center flex-1 gap-2 text-muted text-sm px-4 text-center">
+          {msg}
+          {data.error === 'geo_unavailable' && <RetryButton onClick={() => refetch()} busy={isFetching} />}
+        </div>
       </div>
     )
   }

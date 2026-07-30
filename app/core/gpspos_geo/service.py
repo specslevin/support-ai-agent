@@ -56,7 +56,17 @@ class GpsposGeoService:
             now = time.time()
             if self._objects_cache and now - self._objects_cache[0] < self._OBJECTS_TTL:
                 return self._objects_cache[1]
-            raw = await self._client.request("GET", "Objects")
+            try:
+                raw = await self._client.request("GET", "Objects")
+            except Exception:
+                # Список ТС меняется редко, поэтому при недоступном geo просроченный
+                # кэш лучше отказа: иначе короткий провал geo превращал панель трека
+                # в «object_not_found»/500 для всех заявок сразу (30.07.2026).
+                if self._objects_cache:
+                    log.warning("geo_objects_refresh_failed_using_stale",
+                                age_sec=round(now - self._objects_cache[0], 1))
+                    return self._objects_cache[1]
+                raise
             rows = _unwrap_list(raw)
             self._objects_cache = (now, rows)
             return rows

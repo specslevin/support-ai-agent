@@ -38,15 +38,19 @@ def _configure_structlog() -> None:
     shared = [structlog.processors.TimeStamper(fmt="iso", key="timestamp")]
     is_tty = bool(sys.stdout) and sys.stdout.isatty()
     if is_tty:
-        proc = structlog.dev.ConsoleRenderer()
+        # ConsoleRenderer сам разворачивает exc_info в traceback.
+        procs = [structlog.dev.ConsoleRenderer()]
     else:
-        proc = structlog.processors.JSONRenderer()
+        # Без format_exc_info JSONRenderer писал в лог лишь {"exc_info": true} и
+        # traceback терялся — на проде было не понять, почему упал эндпоинт.
+        procs = [structlog.processors.format_exc_info,
+                 structlog.processors.JSONRenderer()]
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
             structlog.processors.add_log_level,
             *shared,
-            proc,
+            *procs,
         ],
         cache_logger_on_first_use=True,
     )
