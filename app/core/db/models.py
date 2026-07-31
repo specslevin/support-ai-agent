@@ -199,6 +199,11 @@ class AiFeedback(Base):
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     ai_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
     correct_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Чей разбор оценивают: 'rules' — вердикт посчитали правила (бесплатно),
+    # 'ai' — отвечал DeepSeek, 'operator' — строку переписал оператор. Без этого
+    # дефекты правил и промахи модели лежали бы в одной куче, а лечатся они в
+    # разных местах (лестница вердиктов vs промпт/few-shot).
+    verdict_source: Mapped[str | None] = mapped_column(String(16), nullable=True)
     created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False

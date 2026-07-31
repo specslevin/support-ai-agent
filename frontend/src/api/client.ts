@@ -345,7 +345,13 @@ export const api = {
     return http.post(`/issues/${id}/resolve`, null, { params: { status_code, comment_public, ...(comment ? { comment } : {}), ...(delay_to ? { delay_to } : {}) } }).then(r => r.data)
   },
 
-  updateIssueParameters(id: number, params: { address?: string; contact_person?: string; tel_person?: string }): Promise<{ ok: boolean; parameters: { name: string; value: string }[] }> {
+  /**
+   * Правка обязательной тройки кастом-атрибутов Okdesk. Бэкенд шлёт их в
+   * `POST /issues/{id}/parameters` — через общий PATCH заявки Okdesk их МОЛЧА
+   * игнорирует (200 и ничего не изменилось). Пустые значения не отправляем:
+   * обязательный атрибут Okdesk пустым не примет.
+   */
+  updateIssueParameters(id: number, params: { address?: string; contact_person?: string; tel_person?: string }): Promise<{ ok: boolean; parameters: { name: string; value: string }[]; editable_parameters?: { code: string; name: string; value: string }[] }> {
     return http.post(`/issues/${id}/parameters`, params).then(r => r.data)
   },
 

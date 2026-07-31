@@ -308,6 +308,33 @@ def _build_parameters(params: list) -> list[dict[str, str]]:
     return result
 
 
+# Обязательная тройка кастом-атрибутов Okdesk: без них заявку не перевести
+# «В работе». Правится из карточки (POST /issues/{id}/parameters).
+_EDITABLE_PARAM_CODES = ("address", "contact_person", "tel_person")
+
+
+def _editable_parameters(params: list) -> list[dict[str, str]]:
+    """Обязательная тройка по КОДАМ и с СЫРЫМИ значениями — для правки в карточке.
+
+    Отдельно от ``_build_parameters``, потому что тот показывает параметры человеку
+    и для этого их чистит: прячет короткие значения, выбрасывает непохожий на
+    телефон ``tel_person`` и ДОБАВЛЯЕТ «Номер телефона», вытащенный из «Контактного
+    лица». Для формы правки такая витрина врёт: поле выглядит заполненным, оператор
+    его не трогает, а в Okdesk атрибут по-прежнему пуст — и заявка так же не идёт
+    «В работе». Здесь отдаём ровно то, что лежит в Okdesk.
+    """
+    by_code = {getattr(p, "code", None): p for p in params or []}
+    out: list[dict[str, str]] = []
+    for code in _EDITABLE_PARAM_CODES:
+        p = by_code.get(code)
+        out.append({
+            "code": code,
+            "name": (getattr(p, "name", None) if p else None) or code,
+            "value": str(getattr(p, "value", None) or "") if p else "",
+        })
+    return out
+
+
 def _okdesk_portal_url(external_id: int | None = None) -> str | None:
     """Ссылка на заявку в портале Okdesk (кнопка «открыть в Okdesk»).
 
@@ -407,6 +434,8 @@ async def get_issue_details(
                 "child_ids": live.child_ids,
                 "related": await _related_issues(cache, live.parent_id, live.child_ids),
                 "parameters": _build_parameters(live.parameters),
+                # Та же тройка, но сырьём и по кодам — для формы правки.
+                "editable_parameters": _editable_parameters(live.parameters),
                 # Адрес заявки в портале Okdesk: домен знает только бэкенд.
                 "okdesk_url": _okdesk_portal_url(row.external_id),
             }
@@ -1811,6 +1840,10 @@ class AiFeedbackBody(BaseModel):
     error_kind: str | None = None  # 'wrong_verdict' | 'wrong_plate' | 'wrong_date' | 'wrong_mileage' | 'other'
     comment: str | None = None
     correct_category: str | None = None
+    # Чей разбор оценивают: 'rules' (бесплатный разбор правилами), 'ai' (отвечал
+    # DeepSeek), 'operator' (строку переписали руками). Фронт присылает источник
+    # вердикта выбранной строки; старые записи без источника считаем 'ai'.
+    verdict_source: str | None = None
 
 
 async def _ai_category_of(cache: CacheService, external_id: int) -> str | None:
@@ -1835,9 +1868,16 @@ async def add_ai_feedback(
     request: Request,
     cache: CacheService = Depends(get_cache_service),
 ) -> dict[str, object]:
-    """Оценка оператором качества ИИ-разбора: 'good' (верно) / 'bad' (ошибка)+комментарий."""
+    """Оценка оператором качества разбора: 'good' (верно) / 'bad' (ошибка)+комментарий.
+
+    Оценивать можно ЛЮБОЙ разбор, а не только платный прогон DeepSeek: дефекты
+    даты/номера/пробега чаще всего рождаются в бесплатном разборе по правилам, и
+    без оценки о них было некуда сообщить. Чей разбор оценили — в
+    ``verdict_source``."""
     if body.rating not in ("good", "bad"):
         raise HTTPException(status_code=400, detail="rating must be 'good' or 'bad'")
+    if body.verdict_source is not None and body.verdict_source not in ("rules", "ai", "operator"):
+        raise HTTPException(status_code=400, detail="verdict_source must be 'rules', 'ai' or 'operator'")
     issue_data = await cache.get_issue_with_analysis(issue_id)
     if not issue_data:
         raise HTTPException(status_code=404, detail="Issue not found")
@@ -1848,6 +1888,7 @@ async def add_ai_feedback(
         external_id, body.rating, error_kind=body.error_kind, comment=body.comment,
         ai_category=ai_cat, correct_category=body.correct_category,
         created_by=(user.get("u") if user else None),
+        verdict_source=body.verdict_source,
     )
     return {"ok": True, **res}
 
@@ -2451,9 +2492,22 @@ async def update_issue_parameters(
 
     Нужно, чтобы заполнить обязательные поля (Местоположение техники /
     Контактное лицо / Номер телефона) и затем перевести заявку «В работе».
-    Доступно только не-demo (POST блокируется middleware для demo)."""
+    Доступно только не-demo (POST блокируется middleware для demo).
+
+    Пустую строку в Okdesk не отправляем: обязательный атрибут он отклоняет
+    (422 «не может быть пустым»), а из формы пустое поле приходит как «я его не
+    менял». Стереть значение через API нельзя — только заменить."""
     if body.address is None and body.contact_person is None and body.tel_person is None:
         raise HTTPException(status_code=400, detail="Нужно передать хотя бы один параметр")
+    empty = [name for name, val in (("address", body.address),
+                                    ("contact_person", body.contact_person),
+                                    ("tel_person", body.tel_person))
+             if val is not None and not val.strip()]
+    if empty:
+        raise HTTPException(
+            status_code=400,
+            detail="Okdesk не принимает пустое значение обязательного атрибута — "
+                   "введите значение или оставьте поле как было")
     try:
         issue_data = await cache.get_issue_with_analysis(issue_id)
         if not issue_data:
@@ -2474,21 +2528,29 @@ async def update_issue_parameters(
         except Exception:
             log.warning("update_params_refresh_cache_failed", issue_id=issue_id)
 
-        # Возвращаем актуальные параметры из свежей выгрузки заявки.
+        # Возвращаем актуальные параметры из свежей выгрузки заявки — и сырую
+        # тройку тоже: по ней форма понимает, что реально легло в Okdesk.
         try:
             live = await okdesk.get_issue(external_id)
             parameters = _build_parameters(live.parameters)
+            editable = _editable_parameters(live.parameters)
         except Exception:
-            parameters = []
-        return {"ok": True, "parameters": parameters}
+            parameters, editable = [], []
+        return {"ok": True, "parameters": parameters, "editable_parameters": editable}
     except HTTPException:
         raise
     except OkdeskAPIError as exc:
         log.warning("update_params_okdesk_rejected", issue_id=issue_id, status=exc.status_code, body=exc.body)
         raise HTTPException(status_code=400, detail=f"Okdesk отклонил изменение параметров: {exc.body}")
     except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code if exc.response is not None else 0
         body_txt = (exc.response.text or "")[:500] if exc.response is not None else ""
-        log.warning("update_params_okdesk_http_error", issue_id=issue_id, body=body_txt)
+        log.warning("update_params_okdesk_http_error", issue_id=issue_id, status=status, body=body_txt)
+        if status == 403:
+            raise HTTPException(
+                status_code=403,
+                detail="У API-ключа Okdesk нет права менять дополнительные атрибуты — "
+                       "нужно добавить его в роль сотрудника, к которому привязан ключ")
         raise HTTPException(status_code=502, detail=f"Okdesk вернул ошибку при изменении параметров: {body_txt}")
     except Exception:
         log.exception("update_issue_parameters_failed", issue_id=issue_id)
@@ -2534,6 +2596,16 @@ async def update_issue_fields(
     Раньше из карточки правились только тип, ответственный и три кастом-параметра —
     за сроком и приоритетом приходилось идти в Okdesk. Уходит РОВНО то, что
     оператор изменил (переданные не-None поля), остальное не трогаем.
+
+    Каждое поле — СВОЙ эндпоинт Okdesk: `PATCH /issues/{id}` принимает только тему
+    и описание, а срок/приоритет/продолжительность живут в `/deadlines`,
+    `/priorities`, `/planned_execution_in_minutes`. Раньше всё уходило одним
+    PATCH'ем — Okdesk отвечал 200 и молча игнорировал всё, кроме темы.
+
+    Из карточки сейчас приходит ТОЛЬКО тема: на остальные три эндпоинта наш
+    API-ключ получает 403 (право выдаётся роли сотрудника, к которому привязан
+    ключ), поэтому в UI они показаны на просмотр. Поддержку здесь сознательно
+    оставляем рабочей — когда права выдадут, менять надо будет только фронт.
     """
     fields = {k: v for k, v in body.model_dump(exclude_none=True).items()}
     if not fields:
@@ -2544,14 +2616,48 @@ async def update_issue_fields(
     if not issue_data:
         raise HTTPException(status_code=404, detail="Issue not found")
     external_id = issue_data["issue"].external_id
-    try:
-        await okdesk.update_issue_fields(external_id, fields)
-    except OkdeskAPIError as e:
-        log.warning("update_issue_fields_rejected", issue_id=issue_id, detail=str(e)[:200])
-        raise HTTPException(status_code=400, detail=f"Okdesk отклонил правку: {e}")
-    except Exception:
-        log.exception("update_issue_fields_failed", issue_id=issue_id, fields=list(fields))
-        raise HTTPException(status_code=502, detail="Не удалось сохранить поля в Okdesk")
+
+    # Порядок фиксирован: сначала тема (один PATCH), потом остальные по одному
+    # запросу на поле. Ошибка на любом шаге прерывает — уже применённые поля
+    # остаются, поэтому в detail пишем, что именно не прошло.
+    async def _apply(field: str, value: object) -> None:
+        if field == "title":
+            await okdesk.update_issue_fields(external_id, {"title": str(value)})
+        elif field == "deadline_at":
+            await okdesk.set_issue_deadline(external_id, str(value))
+        elif field == "priority":
+            await okdesk.set_issue_priority(external_id, str(value))
+        elif field == "planned_execution_in_hours":
+            await okdesk.set_issue_planned_execution(external_id, float(value))  # type: ignore[arg-type]
+        else:
+            # Новое поле в IssueFieldsUpdate без своего эндпоинта Okdesk: молча
+            # «сохранить» его — это ровно тот баг, который здесь и починен.
+            raise HTTPException(status_code=400, detail=f"Поле «{field}» не умеем сохранять в Okdesk")
+
+    for field, value in sorted(fields.items(), key=lambda kv: kv[0] != "title"):
+        try:
+            await _apply(field, value)
+        except HTTPException:
+            raise
+        except OkdeskAPIError as e:
+            log.warning("update_issue_fields_rejected", issue_id=issue_id, field=field, detail=str(e)[:200])
+            raise HTTPException(status_code=400, detail=f"Okdesk отклонил «{field}»: {e}")
+        except httpx.HTTPStatusError as e:
+            status = e.response.status_code if e.response is not None else 0
+            if status == 403:
+                # Права даются роли сотрудника, к которому привязан API-ключ
+                # (Okdesk: «Изменение приоритета заявки», «Смена планового времени
+                # решения», «Плановая продолжительность»). Кодом это не обойти.
+                log.warning("update_issue_fields_forbidden", issue_id=issue_id, field=field)
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"У API-ключа Okdesk нет права менять «{field}» — "
+                           "нужно добавить действие в роль сотрудника, к которому привязан ключ")
+            log.warning("update_issue_fields_http_error", issue_id=issue_id, field=field, status=status)
+            raise HTTPException(status_code=502, detail=f"Okdesk вернул ошибку на «{field}» (HTTP {status})")
+        except Exception:
+            log.exception("update_issue_fields_failed", issue_id=issue_id, field=field)
+            raise HTTPException(status_code=502, detail=f"Не удалось сохранить «{field}» в Okdesk")
     # Кэш заявки держит тему/срок/приоритет — обновляем полным upsert'ом
     # (refresh_single_issue тянет только статус и ответственного), иначе список
     # слева и подсветка просрочки останутся на старых данных до синхронизации.

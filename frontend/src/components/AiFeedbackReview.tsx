@@ -152,8 +152,25 @@ export function AiFeedbackReview({ onOpenIssue }: { onOpenIssue?: () => void }) 
                 {it.error_kind && (
                   <span className="text-warning">{ERROR_KIND_LABEL[it.error_kind] ?? it.error_kind}</span>
                 )}
+                {/* Чей разбор оценили. Дефект правил и промах модели лечатся в разных
+                    местах (лестница вердиктов vs промпт), поэтому пометка видна
+                    сразу. У оценок, поставленных до появления бесплатной оценки,
+                    источника нет — их не помечаем никак. */}
+                {it.verdict_source && it.verdict_source !== 'ai' && (
+                  <span
+                    title="Оценён разбор без модели: посчитан правилами или переписан оператором"
+                    className="inline-flex items-center px-2 py-0.5 rounded-full bg-white/5 text-muted font-medium"
+                  >
+                    {it.verdict_source === 'rules' ? 'правила' : 'правка оператора'}
+                  </span>
+                )}
                 {it.ai_category && (
-                  <span className="text-muted">вердикт ИИ: <span className="text-white/80">{it.ai_category}</span></span>
+                  // «вердикт ИИ» только там, где отвечала модель: у оценки разбора
+                  // по правилам это вердикт правил, и подпись врала бы.
+                  <span className="text-muted">
+                    {it.verdict_source && it.verdict_source !== 'ai' ? 'вердикт разбора: ' : 'вердикт ИИ: '}
+                    <span className="text-white/80">{it.ai_category}</span>
+                  </span>
                 )}
                 <span className="ml-auto text-muted/70 shrink-0">{formatDate(it.created_at)}</span>
               </div>

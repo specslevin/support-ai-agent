@@ -57,6 +57,11 @@ class OkdeskClient:
             r.raise_for_status()
 
         r.raise_for_status()
+        # Часть методов Okdesk отвечает 200 с ПУСТЫМ телом (например
+        # `POST /issues/{id}/parameters`). Пустое тело — это успех, а не ошибка
+        # разбора JSON, поэтому отдаём None, а не роняем вызывающего.
+        if not (r.content or b"").strip():
+            return None
         return r.json()
 
     async def get_issue_comments(self, issue_id: int) -> Any:

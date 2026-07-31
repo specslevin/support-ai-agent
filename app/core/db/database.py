@@ -43,6 +43,12 @@ def _run_lightweight_migrations(conn) -> None:
     if not _column_exists(conn, "ai_feedback", "resolved_by"):
         conn.exec_driver_sql("ALTER TABLE ai_feedback ADD COLUMN resolved_by TEXT")
 
+    # ai_feedback.verdict_source — чей разбор оценили: правила / ИИ / оператор.
+    # Оценку разрешили ставить и бесплатному разбору (правила), поэтому источник
+    # нужно хранить: старые записи (до этой правки) ставились только по ИИ.
+    if not _column_exists(conn, "ai_feedback", "verdict_source"):
+        conn.exec_driver_sql("ALTER TABLE ai_feedback ADD COLUMN verdict_source TEXT")
+
 
 async def init_db():
     async with engine.begin() as conn:

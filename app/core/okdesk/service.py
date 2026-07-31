@@ -208,16 +208,49 @@ class OkdeskService:
     async def update_issue_fields(self, issue_id: int, fields: dict[str, Any]) -> Issue:
         """Редактирование полей заявки: ``PATCH /issues/{id}`` с ``{"issue": {...}}``.
 
-        Состав полей контролирует вызывающий эндпоинт (белый список) — здесь
-        сознательно нет фильтрации, чтобы метод не пришлось править при каждом
-        новом поле. Пустой ``fields`` не отправляем: Okdesk на пустом теле отдаёт
-        ошибку валидации.
+        ВАЖНО: этот метод принимает ТОЛЬКО ``title`` и ``description`` — больше
+        ничего Okdesk здесь не умеет (см. «Редактирование заявки» в apidocs:
+        допустимые параметры запроса — ровно эти два). Всё остальное — срок,
+        приоритет, плановая продолжительность, дополнительные атрибуты — живёт в
+        отдельных эндпоинтах (``/deadlines``, ``/priorities``,
+        ``/planned_execution_in_minutes``, ``/parameters``) и через этот PATCH
+        МОЛЧА игнорируется: HTTP 200, а в заявке ничего не изменилось.
         """
         if not fields:
             raise ValueError("Нет полей для обновления")
+        extra = set(fields) - {"title", "description"}
+        if extra:
+            raise ValueError(
+                "PATCH /issues принимает только title и description; "
+                f"для {sorted(extra)} нужны отдельные эндпоинты Okdesk")
         data = await self._client._request(
             "PATCH", f"issues/{issue_id}", json={"issue": fields})
         return Issue.model_validate(data)
+
+    async def set_issue_deadline(self, issue_id: int, deadline_at: str) -> None:
+        """Плановая дата решения: ``PATCH /issues/{id}/deadlines``.
+
+        Формат Okdesk — ``"YYYY-MM-DD HH:MM"`` (МСК-время заявки), не ISO с «T».
+        """
+        await self._client._request(
+            "PATCH", f"issues/{issue_id}/deadlines",
+            json={"deadline_at": deadline_at.replace("T", " ")[:16]},
+        )
+
+    async def set_issue_priority(self, issue_id: int, code: str) -> None:
+        """Приоритет заявки: ``PATCH /issues/{id}/priorities`` с ``{"code": ...}``."""
+        await self._client._request(
+            "PATCH", f"issues/{issue_id}/priorities", json={"code": code})
+
+    async def set_issue_planned_execution(self, issue_id: int, hours: float) -> None:
+        """Плановая продолжительность. Okdesk принимает МИНУТЫ
+        (``PATCH /issues/{id}/planned_execution_in_minutes``), а в карточке и в
+        выгрузке заявки поле называется ``planned_execution_in_hours`` — переводим
+        здесь, чтобы разница форматов не расползалась по эндпоинтам."""
+        await self._client._request(
+            "PATCH", f"issues/{issue_id}/planned_execution_in_minutes",
+            json={"planned_execution_in_minutes": int(round(hours * 60))},
+        )
 
     async def update_issue_parameters(
         self,
@@ -225,14 +258,21 @@ class OkdeskService:
         address: str | None = None,
         contact_person: str | None = None,
         tel_person: str | None = None,
-    ) -> Issue:
+    ) -> None:
         """Обновить кастом-параметры заявки (Местоположение техники / Контактное
         лицо / Номер телефона). Шлём только переданные (не-None) поля.
 
-        Okdesk: PATCH /api/v1/issues/{issue_id} с телом
-        ``{"issue": {"custom_parameters": {...}}}`` (см. «Редактирование заявки»
-        в apidocs.okdesk.ru). Пустые обязательные параметры мешают переводу
-        заявки в статус «В работе» — этот метод их заполняет."""
+        Okdesk: ``POST /api/v1/issues/{issue_id}/parameters`` с телом
+        ``{"custom_parameters": {code: value}}`` («Редактирование дополнительных
+        атрибутов заявки» в apidocs.okdesk.ru). Отвечает 200 с ПУСТЫМ телом,
+        поэтому возвращать здесь нечего — актуальные значения вызывающий
+        перечитывает через ``get_issue``.
+
+        Через ``PATCH /issues/{id}`` эти атрибуты НЕ проходят: Okdesk отвечает 200
+        и молча ничего не меняет (проверено на живой заявке 65910) — именно из-за
+        этого правки параметров до сих пор не доезжали до Okdesk. Пустое значение
+        у обязательного атрибута Okdesk отклоняет с 422, так что «стереть» поле
+        нельзя — только заменить."""
         custom: dict[str, Any] = {}
         if address is not None:
             custom["address"] = address
@@ -240,11 +280,10 @@ class OkdeskService:
             custom["contact_person"] = contact_person
         if tel_person is not None:
             custom["tel_person"] = tel_person
-        data = await self._client._request(
-            "PATCH", f"issues/{issue_id}",
-            json={"issue": {"custom_parameters": custom}},
+        await self._client._request(
+            "POST", f"issues/{issue_id}/parameters",
+            json={"custom_parameters": custom},
         )
-        return Issue.model_validate(data)
 
     async def list_equipment(self, **params: Any) -> list[Equipment]:
         data = await self._client._request("GET", "equipments/list", params=params)

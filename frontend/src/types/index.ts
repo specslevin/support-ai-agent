@@ -74,6 +74,13 @@ export interface OkdeskDetail {
    */
   related?: RelatedIssue[]
   parameters: { name: string; value: string }[]
+  /**
+   * Обязательная тройка кастом-атрибутов по КОДАМ и с сырыми значениями — то, что
+   * реально лежит в Okdesk. `parameters` — витрина для человека: она чистит мусор
+   * и подставляет телефон, вытащенный из «Контактного лица», поэтому форма правки
+   * обязана смотреть сюда, иначе поле выглядит заполненным, а атрибут пуст.
+   */
+  editable_parameters?: { code: string; name: string; value: string }[]
   /** Ссылка на эту заявку в портале Okdesk (домен знает только бэкенд). */
   okdesk_url?: string | null
 }
@@ -425,6 +432,8 @@ export interface AiFeedbackBody {
   error_kind?: AiFeedbackErrorKind
   comment?: string
   correct_category?: string
+  /** Чей разбор оценивают: правила (бесплатно), ИИ или правка оператора. */
+  verdict_source?: 'rules' | 'ai' | 'operator'
 }
 
 /** Сохранённая оценка ИИ-разбора (GET /issues/{id}/ai_feedback → feedback). */
@@ -434,6 +443,8 @@ export interface AiFeedback {
   comment: string | null
   ai_category: string | null
   correct_category: string | null
+  /** null у оценок, выставленных до того, как оценивать разрешили и правила. */
+  verdict_source?: 'rules' | 'ai' | 'operator' | null
   created_by: string | null
   created_at: string | null
 }
@@ -447,6 +458,7 @@ export interface AiFeedbackListItem {
   comment: string | null
   ai_category: string | null
   correct_category: string | null
+  verdict_source?: 'rules' | 'ai' | 'operator' | null
   created_by: string | null
   created_at: string | null
   resolved?: boolean

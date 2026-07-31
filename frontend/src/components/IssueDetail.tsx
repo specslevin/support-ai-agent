@@ -525,25 +525,42 @@ function EditableParameters({ d, issueId }: { d: OkdeskDetail; issueId: number }
   const isDemo = useAuthStore(s => s.user?.role === 'demo')
   const queryClient = useQueryClient()
 
+  // Сырые значения по КОДАМ: `d.parameters` — витрина для человека (прячет мусор,
+  // подставляет телефон из «Контактного лица»), и форма по ней показывала бы
+  // заполненным поле, которое в Okdesk пусто. Фолбэк на матч по имени — для
+  // ответов бэкенда без `editable_parameters`.
   const initial = useMemo(() => {
     const out: Record<string, string> = { address: '', contact_person: '', tel_person: '' }
     for (const ep of EDITABLE_PARAMS) {
-      const hit = d.parameters.find(p => ep.match.test(p.name))
-      out[ep.code] = hit?.value ?? ''
+      const byCode = d.editable_parameters?.find(p => p.code === ep.code)
+      out[ep.code] = byCode
+        ? byCode.value
+        : (d.editable_parameters ? '' : (d.parameters.find(p => ep.match.test(p.name))?.value ?? ''))
     }
     return out
-  }, [d.parameters])
+  }, [d.editable_parameters, d.parameters])
 
   const [vals, setVals] = useState<Record<string, string>>(initial)
-  useEffect(() => { setVals(initial) }, [initial])
+  // Ключ — по значениям, а не по ссылке на массив: react-query отдаёт новый объект
+  // на каждый фоновый рефетч, и сброс по ссылке стирал бы уже набранный текст.
+  const initialKey = JSON.stringify(initial)
+  useEffect(() => { setVals(initial) }, [initialKey])  // eslint-disable-line react-hooks/exhaustive-deps
 
-  const dirty = EDITABLE_PARAMS.some(ep => (vals[ep.code] ?? '') !== (initial[ep.code] ?? ''))
+  // «Есть что отправить» = ровно то, что уйдёт в payload: очистка поля не считается
+  // правкой (Okdesk обязательный атрибут пустым не примет).
+  const dirty = EDITABLE_PARAMS.some(ep => {
+    const val = (vals[ep.code] ?? '').trim()
+    return !!val && val !== (initial[ep.code] ?? '')
+  })
 
   const mutation = useMutation({
     mutationFn: () => {
       const payload: Record<string, string> = {}
       for (const ep of EDITABLE_PARAMS) {
-        if ((vals[ep.code] ?? '') !== (initial[ep.code] ?? '')) payload[ep.code] = vals[ep.code] ?? ''
+        const val = (vals[ep.code] ?? '').trim()
+        // Пустое значение обязательного атрибута Okdesk отклоняет (422): стереть
+        // поле через API нельзя, только заменить — такие правки не отправляем.
+        if (val && val !== (initial[ep.code] ?? '')) payload[ep.code] = val
       }
       return api.updateIssueParameters(issueId, payload)
     },
@@ -615,14 +632,18 @@ function EditableParameters({ d, issueId }: { d: OkdeskDetail; issueId: number }
 }
 
 /**
- * Быстрая правка полей заявки, которые Okdesk разрешает менять через API:
- * тема, срок выполнения, приоритет, плановая продолжительность. Раньше из
- * карточки правились только тип, ответственный и три кастом-параметра — за
- * сроком и приоритетом оператор уходил в Okdesk.
+ * Поля заявки в Okdesk. Правится ТОЛЬКО тема — остальное на просмотр.
  *
- * Правка тихая (макет .inl): поле выглядит текстом, обводка появляется по клику,
- * сохранение по Enter / потере фокуса, отмена по Escape. Уходит РОВНО одно поле —
- * так ошибка в одном не откатывает остальные.
+ * Срок, приоритет и плановая продолжительность жили здесь как поля правки, но
+ * уходили общим `PATCH /issues/{id}`, который Okdesk молча игнорирует (200 и
+ * никаких изменений). У них есть свои эндпоинты (`/deadlines`, `/priorities`,
+ * `/planned_execution_in_minutes`), и бэкенд их уже умеет — но нашему API-ключу
+ * Okdesk отвечает на них 403: права даются роли сотрудника, к которому привязан
+ * ключ. Пока прав нет, поле правки только обманывает оператора, поэтому здесь
+ * оно показано текстом. Появятся права — вернуть правку (бэкенд менять не нужно).
+ *
+ * Правка темы тихая (макет .inl): поле выглядит текстом, обводка появляется по
+ * клику, сохранение по Enter / потере фокуса, отмена по Escape.
  *
  * Наблюдатели, оборудование и объект обслуживания тоже правятся через API, но
  * требуют выбора сущностей Okdesk (свои справочники) — заведём отдельно.
@@ -640,12 +661,12 @@ function EditableOkdeskFields({ d, issueId, subject }: {
   const [error, setError] = useState<string | null>(null)
   const cancelRef = useRef(false)
 
+  // Справочник нужен только для ИМЕНИ приоритета: в заявке лежит код.
   const { data: priorities = [] } = useQuery({
     queryKey: ['priorities'],
     queryFn: () => api.listPriorities(),
     staleTime: 30 * 60_000,
   })
-  const [priorityOpen, setPriorityOpen] = useState(false)
 
   const save = useMutation({
     mutationFn: (fields: Parameters<typeof api.updateIssueFields>[1]) =>
@@ -667,9 +688,10 @@ function EditableOkdeskFields({ d, issueId, subject }: {
     save.mutate(fields)
   }
 
-  // Okdesk отдаёт срок как ISO с зоной; input[datetime-local] хочет YYYY-MM-DDTHH:MM.
-  const deadlineLocal = d.deadline_at ? d.deadline_at.slice(0, 16) : ''
   const priorityName = priorities.find(p => p.code === d.priority_code)?.name ?? d.priority_code ?? '—'
+  // Почему эти три поля только на просмотр — одна подпись на все, чтобы оператор
+  // не искал кнопку правки и знал, куда идти.
+  const readOnlyHint = 'Правится только в Okdesk: у нашего API-ключа нет права менять это поле'
 
   const inlineClass = 'min-w-0 flex-1 -ml-2 rounded-pill border border-transparent bg-transparent px-2 py-[3px] text-xs leading-[18px] text-white outline-none transition-colors hover:border-line focus:border-accent focus:bg-frame disabled:cursor-not-allowed disabled:opacity-55'
 
@@ -701,90 +723,26 @@ function EditableOkdeskFields({ d, issueId, subject }: {
           {saving === 'title' && <Loader2 size={12} className="shrink-0 animate-spin text-muted" />}
         </div>
 
-        <div className="flex items-center gap-2.5 border-b border-line py-[7px]">
-          <span className="w-[148px] shrink-0 text-[9px] font-medium uppercase leading-3 tracking-[0.4px] text-muted">
-            Срок выполнения
-          </span>
-          <input
-            type="datetime-local"
-            defaultValue={deadlineLocal}
-            key={`dl-${deadlineLocal}`}
-            disabled={isDemo || saving === 'deadline_at'}
-            title={isDemo ? 'Недоступно в демо-режиме' : 'deadline_at — от него считается просрочка и сортировка списка'}
-            onChange={e => {
-              const val = e.target.value
-              if (!val || val === deadlineLocal) return
-              commit('deadline_at', { deadline_at: val })
-            }}
-            className={`${inlineClass} [color-scheme:dark]`}
-          />
-          {saving === 'deadline_at' && <Loader2 size={12} className="shrink-0 animate-spin text-muted" />}
-        </div>
-
-        <div className="relative flex items-center gap-2.5 border-b border-line py-[7px]">
-          <span className="w-[148px] shrink-0 text-[9px] font-medium uppercase leading-3 tracking-[0.4px] text-muted">
-            Приоритет
-          </span>
-          <span className="min-w-0 flex-1 text-xs leading-[18px] text-secondary">{priorityName}</span>
-          {saving === 'priority' && <Loader2 size={12} className="shrink-0 animate-spin text-muted" />}
-          <button
-            onClick={() => setPriorityOpen(v => !v)}
-            disabled={isDemo || priorities.length === 0}
-            title={isDemo ? 'Недоступно в демо-режиме' : 'Сменить приоритет заявки'}
-            className="shrink-0 rounded-pill border border-border bg-frame px-3 py-[3px] text-[11px] font-medium text-secondary transition-colors hover:border-accent hover:text-accent disabled:opacity-40"
-          >
-            Изменить
-          </button>
-          {priorityOpen && (
-            <>
-              <div className="fixed inset-0 z-40" onClick={() => setPriorityOpen(false)} />
-              <div className="absolute right-0 top-full z-50 mt-1 min-w-[180px] overflow-hidden rounded-md border border-border bg-card py-1 shadow-lg">
-                {priorities.map(p => (
-                  <button
-                    key={p.code}
-                    onClick={() => { setPriorityOpen(false); if (p.code !== d.priority_code) commit('priority', { priority: p.code }) }}
-                    className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-card-hover ${p.code === d.priority_code ? 'text-accent' : 'text-white'}`}
-                  >
-                    <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: p.color || '#7A8A7A' }} />
-                    {p.name}
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
-        </div>
-
-        <div className="flex items-center gap-2.5 border-b border-line py-[7px] last:border-b-0">
-          <span className="w-[148px] shrink-0 text-[9px] font-medium uppercase leading-3 tracking-[0.4px] text-muted">
-            Плановая продолжительность
-          </span>
-          <input
-            type="number"
-            min={0}
-            step={0.5}
-            defaultValue={d.planned_execution_in_hours ?? ''}
-            key={`peh-${d.planned_execution_in_hours ?? ''}`}
-            disabled={isDemo || saving === 'planned_execution_in_hours'}
-            placeholder="часов"
-            title={isDemo ? 'Недоступно в демо-режиме' : 'planned_execution_in_hours — плановая продолжительность работ, часов'}
-            onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
-            onBlur={e => {
-              const raw = e.target.value.trim()
-              if (!raw) return
-              const val = Number(raw)
-              if (!Number.isFinite(val) || val === (d.planned_execution_in_hours ?? null)) return
-              commit('planned_execution_in_hours', { planned_execution_in_hours: val })
-            }}
-            className={inlineClass}
-          />
-          {saving === 'planned_execution_in_hours' && <Loader2 size={12} className="shrink-0 animate-spin text-muted" />}
-        </div>
+        {/* Срок, приоритет и продолжительность — ТОЛЬКО просмотр: Okdesk не даёт
+            нашему ключу их менять (403), а поле правки, которое ничего не меняет,
+            хуже отсутствия поля. Кнопка «открыть в Okdesk» — в шапке карточки. */}
+        <MetaRow label="Срок выполнения" title={`deadline_at — от него считается просрочка и сортировка списка. ${readOnlyHint}`}>
+          {formatDate(d.deadline_at) || '—'}
+        </MetaRow>
+        <MetaRow label="Приоритет" title={`priority — код приоритета Okdesk. ${readOnlyHint}`}>
+          {priorityName}
+        </MetaRow>
+        <MetaRow label="Плановая продолжительность" title={`planned_execution_in_hours — плановая продолжительность работ. ${readOnlyHint}`}>
+          {d.planned_execution_in_hours != null ? `${d.planned_execution_in_hours} ч` : '—'}
+        </MetaRow>
       </div>
       {error && <p className="text-[11px] text-orange-400">{error}</p>}
       <p className="text-[10px] leading-4 text-muted">
-        Правки уходят в Okdesk сразу по одному полю: Enter или уход из поля сохраняет, Esc отменяет.
-        Наблюдатели, оборудование и объект обслуживания тоже правятся через API, но требуют выбора
-        из справочников Okdesk — сделаем отдельно. Компанию и контакт менять не даём: подмену клиента
+        Правится только тема: Enter или уход из поля сохраняет, Esc отменяет. Срок, приоритет и
+        плановую продолжительность Okdesk нашему API-ключу менять не даёт (403 — право выдаётся роли
+        сотрудника, к которому привязан ключ), поэтому они показаны на просмотр — менять их в Okdesk.
+        Наблюдатели, оборудование и объект обслуживания правятся через API, но требуют выбора из
+        справочников Okdesk — сделаем отдельно. Компанию и контакт менять не даём: подмену клиента
         у живой заявки не откатить.
       </p>
     </Section>
@@ -3855,10 +3813,19 @@ const FEEDBACK_CATEGORIES = [
   'Терминал подключился', 'Проверить',
 ]
 
-function AiFeedbackPanel({ issueId, aiAnswered, objectCount }: {
+function AiFeedbackPanel({ issueId, source, hasParse, objectCount }: {
   issueId: number
-  /** ИИ по заявке отвечал — иначе оценивать нечего: вердикт посчитан правилами. */
-  aiAnswered: boolean
+  /**
+   * Источник вердикта выбранной строки: 'rules' — посчитали правила бесплатно,
+   * 'ai' — отвечал DeepSeek, 'operator' — строку переписали руками. Раньше панель
+   * ждала именно 'ai' и на бесплатном разборе кнопок не показывала — сообщить о
+   * неверной дате или номере было НЕКУДА, хотя рождаются такие дефекты как раз в
+   * правилах. Источник теперь едет в оценку: дефект правил лечится лестницей
+   * вердиктов, промах модели — промптом.
+   */
+  source: VerdictSource | null
+  /** Разбор есть (хотя бы одна строка) — без него оценивать действительно нечего. */
+  hasParse: boolean
   objectCount: number
 }) {
   const queryClient = useQueryClient()
@@ -3891,11 +3858,13 @@ function AiFeedbackPanel({ issueId, aiAnswered, objectCount }: {
     },
   })
 
-  const saveGood = () => submit.mutate({ rating: 'good' })
+  const fbSource = source ?? 'rules'
+  const saveGood = () => submit.mutate({ rating: 'good', verdict_source: fbSource })
   const saveBad = () =>
     submit.mutate({
       rating: 'bad',
       error_kind: errorKind,
+      verdict_source: fbSource,
       ...(fbComment.trim() ? { comment: fbComment.trim() } : {}),
       ...(correctCategory.trim() ? { correct_category: correctCategory.trim() } : {}),
     })
@@ -3919,6 +3888,14 @@ function AiFeedbackPanel({ issueId, aiAnswered, objectCount }: {
             {feedback.rating === 'bad' && feedback.error_kind && (
               <span className="text-warning">{AI_ERROR_KIND_LABEL[feedback.error_kind] ?? feedback.error_kind}</span>
             )}
+            {feedback.verdict_source && feedback.verdict_source !== 'ai' && (
+              <span
+                className="text-muted"
+                title="Оценён разбор, посчитанный без модели — правилами или правкой оператора"
+              >
+                · {feedback.verdict_source === 'rules' ? 'правила' : 'правка оператора'}
+              </span>
+            )}
           </div>
           {feedback.comment && (
             <p className="text-white/80 leading-relaxed whitespace-pre-wrap">{feedback.comment}</p>
@@ -3935,19 +3912,28 @@ function AiFeedbackPanel({ issueId, aiAnswered, objectCount }: {
       )}
 
       {/* Вопрос + оценка в одну строку: без вопроса иконки 👍/👎 висели без
-          повода. Пока ИИ не звали, оценивать нечего — вердикт посчитан правилами. */}
+          повода. Без разбора оценивать нечего; в остальном оцениваем и бесплатный
+          разбор по правилам — дефекты даты, номера и пробега родом оттуда. */}
       <div className="flex items-center justify-between gap-2">
         <span className="min-w-0 text-[11px] leading-4 text-secondary">
-          {aiAnswered
-            ? `ИИ разобрал ${objectCount} ${pluralObjects(objectCount)} — разбор верный?`
-            : 'ИИ ещё не вызывали — оценивать нечего: вердикт посчитан правилами'}
+          {!hasParse
+            ? 'Разбора ещё нет — сначала разберите заявку'
+            : source === 'ai'
+              ? `ИИ разобрал ${objectCount} ${pluralObjects(objectCount)} — разбор верный?`
+              : source === 'operator'
+                ? 'Строку переписал оператор — оценка пойдёт как правка разбора'
+                : `Разбор по правилам, ${objectCount} ${pluralObjects(objectCount)} — факты и вердикт верные?`}
         </span>
-        {aiAnswered && (
+        {hasParse && (
           <div className="flex shrink-0 gap-2">
             <button
               onClick={saveGood}
               disabled={submit.isPending || isDemo}
-              title={isDemo ? 'Недоступно в демо-режиме' : 'Разобрано верно — заявка уйдёт в тренировочные образцы как удачный пример'}
+              title={isDemo
+                ? 'Недоступно в демо-режиме'
+                : source === 'ai'
+                  ? 'Разобрано верно — заявка уйдёт в тренировочные образцы как удачный пример'
+                  : 'Разбор по правилам верный — оценка попадёт в «Оценки ИИ» с пометкой «правила»'}
               className={`flex items-center justify-center p-1.5 rounded-md border transition-colors disabled:opacity-40 ${
                 feedback?.rating === 'good'
                   ? 'border-green-500/60 bg-green-500/10 text-green-400'
@@ -3959,7 +3945,11 @@ function AiFeedbackPanel({ issueId, aiAnswered, objectCount }: {
             <button
               onClick={() => setShowBadForm(v => !v)}
               disabled={submit.isPending || isDemo}
-              title={isDemo ? 'Недоступно в демо-режиме' : 'Ошибка разбора — указать, что именно ИИ понял неправильно'}
+              title={isDemo
+                ? 'Недоступно в демо-режиме'
+                : source === 'ai'
+                  ? 'Ошибка разбора — указать, что именно ИИ понял неправильно'
+                  : 'Ошибка разбора — указать, что именно правила поняли неправильно (дата, номер, пробег, вердикт)'}
               className={`flex items-center justify-center p-1.5 rounded-md border transition-colors disabled:opacity-40 ${
                 feedback?.rating === 'bad' || showBadForm
                   ? 'border-orange-500/60 bg-orange-500/10 text-orange-400'
@@ -4021,7 +4011,11 @@ function AiFeedbackPanel({ issueId, aiAnswered, objectCount }: {
             </div>
           </div>
           <div className="flex items-center justify-between gap-2">
-            <span className="text-[10px] leading-4 text-muted">Оценка видна в разделе «Оценки ИИ» и идёт в few-shot</span>
+            <span className="text-[10px] leading-4 text-muted">
+              {source === 'ai'
+                ? 'Оценка видна в разделе «Оценки ИИ» и идёт в few-shot'
+                : 'Оценка видна в разделе «Оценки ИИ» с пометкой «правила» — это заявка на правку разбора, а не на дообучение модели'}
+            </span>
             <div className="flex shrink-0 gap-2">
               <button
                 onClick={() => setShowBadForm(false)}
@@ -4238,8 +4232,12 @@ export function IssueDetail() {
   const typeMissing = !od?.type_code || od.type_code === 'inner'
   // Счётчик секции «Детали заявки»: тип и заполненность обязательной тройки
   // параметров — то, из-за чего заявка застревает. Видно, не разворачивая блок.
+  // Считаем по сырым значениям Okdesk: витрина `parameters` подставляет телефон из
+  // «Контактного лица» и счётчик показывал бы 3/3 у заявки с пустым атрибутом.
   const paramsFilled = od
-    ? EDITABLE_PARAMS.filter(ep => od.parameters.some(p => ep.match.test(p.name) && p.value?.trim())).length
+    ? (od.editable_parameters
+        ? od.editable_parameters.filter(p => p.value?.trim()).length
+        : EDITABLE_PARAMS.filter(ep => od.parameters.some(p => ep.match.test(p.name) && p.value?.trim())).length)
     : 0
   const detailsLabel = od
     ? `${typeMissing ? 'тип не указан' : od.type_name} · параметры ${paramsFilled}/${EDITABLE_PARAMS.length}`
@@ -4565,7 +4563,12 @@ export function IssueDetail() {
           count={feedbackLabel}
           right={<span>влияет на обучение ИИ</span>}
         >
-          <AiFeedbackPanel issueId={issue.id} aiAnswered={aiAnswered} objectCount={aiObjectCount} />
+          <AiFeedbackPanel
+            issueId={issue.id}
+            source={selectedSource}
+            hasParse={parseRows.length > 0}
+            objectCount={aiObjectCount}
+          />
         </Block>
 
         {/* Комментарии — только лента: составление ответа живёт в липком баре. */}

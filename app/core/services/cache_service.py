@@ -424,12 +424,17 @@ class CacheService:
                                error_kind: str | None = None, comment: str | None = None,
                                ai_category: str | None = None,
                                correct_category: str | None = None,
-                               created_by: str | None = None) -> dict[str, Any]:
-        """Сохранить оценку оператора качества ИИ-разбора (новая запись на каждую оценку)."""
+                               created_by: str | None = None,
+                               verdict_source: str | None = None) -> dict[str, Any]:
+        """Сохранить оценку оператора качества разбора (новая запись на каждую оценку).
+
+        ``verdict_source`` — чей разбор оценили ('rules' / 'ai' / 'operator'):
+        оценку ставят и бесплатному разбору по правилам, а лечится он не там, где
+        промахи модели."""
         row = AiFeedback(
             issue_external_id=external_id, rating=rating, error_kind=error_kind,
             comment=comment, ai_category=ai_category, correct_category=correct_category,
-            created_by=created_by,
+            created_by=created_by, verdict_source=verdict_source,
         )
         self.db.add(row)
         await self.db.commit()
@@ -446,6 +451,7 @@ class CacheService:
         return {
             "rating": row.rating, "error_kind": row.error_kind, "comment": row.comment,
             "ai_category": row.ai_category, "correct_category": row.correct_category,
+            "verdict_source": row.verdict_source,
             "created_by": row.created_by, "created_at": row.created_at.isoformat(),
         }
 
@@ -459,7 +465,8 @@ class CacheService:
             "id": r.id,
             "issue_external_id": r.issue_external_id, "rating": r.rating,
             "error_kind": r.error_kind, "comment": r.comment, "ai_category": r.ai_category,
-            "correct_category": r.correct_category, "created_by": r.created_by,
+            "correct_category": r.correct_category, "verdict_source": r.verdict_source,
+            "created_by": r.created_by,
             "created_at": r.created_at.isoformat(),
             "resolved": bool(r.resolved),
             "resolved_at": r.resolved_at.isoformat() if r.resolved_at else None,
