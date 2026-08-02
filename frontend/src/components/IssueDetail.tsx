@@ -1598,7 +1598,7 @@ function verdictCellHint(o: BatchObject): string {
 const VERDICT_ORDER = [
   'Глушение', 'Данные верны', 'Не было питания', 'Терминал подключился',
   'Изменили настройки', 'Проверить', 'Нет данных', 'Объект не найден',
-  'Номер не распознан', 'Нет номера/даты', 'Ошибка данных',
+  'Номер не распознан', 'Нет даты', 'Нет номера/даты', 'Ошибка данных',
 ]
 
 /**
@@ -1832,7 +1832,7 @@ function pluralObjects(n: number): string {
 const PARSE_COLUMNS: { label: string; title: string }[] = [
   { label: 'Номер', title: 'Гос.номер' },
   { label: 'Дата', title: 'Дата неисправности' },
-  { label: 'ПЛ', title: 'Пробег по путевому листу, км' },
+  { label: 'ПЛ', title: 'Пробег по путевому листу, км (у спецтехники вместо километров — моточасы, «м/ч»)' },
   { label: 'ГЛОНАСС', title: 'ГЛОНАСС заявл. — заявленный пробег по системе, км' },
   { label: 'Факт', title: 'По факту — пробег по треку, км' },
   { label: 'Вердикт', title: 'Вердикт ИИ — можно изменить' },
@@ -1949,6 +1949,24 @@ function manualEditedRows(objects: BatchObject[]): { obj: BatchObject; what: str
 }
 
 /**
+ * Моточасы по путевому листу рядом с колонкой «ПЛ». У спецтехники клиент пишет
+ * «ПЛ-1 м/ч» вместо километров — показываем это отдельной пометкой, чтобы м/ч
+ * никогда не читались как км и не попадали в поле правки пробега оператором
+ * (там по-прежнему только километры). Пусто — ничего не рисуем.
+ */
+function EngineHoursMark({ hours }: { hours?: number | null }) {
+  if (hours == null || !Number.isFinite(hours)) return null
+  return (
+    <span
+      title="Моточасы по путевому листу (спецтехника). Это не километры — в пробег они не подставляются"
+      className="shrink-0 whitespace-nowrap text-[10px] text-secondary"
+    >
+      {hours} м/ч
+    </span>
+  )
+}
+
+/**
  * Ячейка гос.номера, даты или пробега с правкой по карандашу (клик по карандашу,
  * а не по тексту — защита от случайного изменения; Enter применяет, Esc отменяет).
  *
@@ -1959,7 +1977,7 @@ function manualEditedRows(objects: BatchObject[]): { obj: BatchObject; what: str
  * запятую в точку и проверку на число делает обработчик таблицы. Пустой ввод для
  * пробега осмыслен — это «стереть значение», поэтому он тоже уходит в onApply.
  */
-function ParseEditCell({ kind, value, saving, edited, manual, readOnly, emptyLabel, editTitle, editedTitle, onApply }: {
+function ParseEditCell({ kind, value, saving, edited, manual, readOnly, emptyLabel, editTitle, editedTitle, suffix, onApply }: {
   kind: 'plate' | 'date' | 'number'
   value: string | null
   /** Идёт сохранение этой ячейки — поле блокируется, рядом крутится ↻. */
@@ -1973,6 +1991,11 @@ function ParseEditCell({ kind, value, saving, edited, manual, readOnly, emptyLab
   emptyLabel: string
   editTitle: string
   editedTitle: string
+  /**
+   * Пометка справа от значения — только для чтения (в правку не попадает).
+   * Нужна колонке «ПЛ»: у спецтехники рядом с километрами живут моточасы.
+   */
+  suffix?: React.ReactNode
   onApply: (val: string) => void
 }) {
   const [editing, setEditing] = useState(false)
@@ -1991,6 +2014,7 @@ function ParseEditCell({ kind, value, saving, edited, manual, readOnly, emptyLab
     return (
       <span className="inline-flex items-center gap-1">
         <span className={value ? '' : emptyClass}>{value ?? '—'}</span>
+        {suffix}
         {mark}
       </span>
     )
@@ -2029,6 +2053,7 @@ function ParseEditCell({ kind, value, saving, edited, manual, readOnly, emptyLab
   return (
     <span className="inline-flex items-center gap-1">
       <span className={value ? '' : emptyClass}>{value ?? emptyLabel}</span>
+      {suffix}
       <button
         onClick={e => { e.stopPropagation(); setEditing(true) }}
         title={editTitle}
@@ -2418,6 +2443,8 @@ function rowFromAutomate(res: AutomationResult): BatchObject {
   return {
     file: '', plate: res.parsed?.plate ?? null, date: res.parsed?.date ?? null,
     sheet_mileage_km: res.parsed?.sheet_mileage_km ?? null,
+    // Моточасы спецтехники: едут отдельным полем, в километры их не превращаем.
+    engine_hours: res.parsed?.engine_hours ?? null,
     declared_system_km: res.parsed?.declared_system_km ?? null,
     system_mileage_km: t?.system_mileage_km ?? null,
     flags: t?.flags ?? [], teleport_jumps: t?.teleport_jumps ?? 0,
@@ -2754,6 +2781,7 @@ function SingleParseTable({ issueId, issueTitle, companyName, onSelect }: {
                       emptyLabel="—"
                       editTitle={MILEAGE_FIELDS.sheet.editTitle}
                       editedTitle={MILEAGE_FIELDS.sheet.editedTitle}
+                      suffix={<EngineHoursMark hours={o.engine_hours} />}
                       onApply={val => applyMileage(idx, 'sheet', val)}
                     />
                   </td>
@@ -3440,6 +3468,7 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
                           emptyLabel="—"
                           editTitle={MILEAGE_FIELDS.sheet.editTitle}
                           editedTitle={MILEAGE_FIELDS.sheet.editedTitle}
+                          suffix={<EngineHoursMark hours={o.engine_hours} />}
                           onApply={val => handleMileageChange(o, 'sheet', val, idx)}
                         />
                       </td>

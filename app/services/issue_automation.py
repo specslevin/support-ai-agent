@@ -138,6 +138,18 @@ def _is_standard_plate(p: str | None) -> bool:
     return bool(re.fullmatch(rf"[{_L}]\d{{3}}[{_L}]{{2}}\d{{0,3}}", p or ""))
 
 
+def _plate_lacks_region(p: str | None) -> bool:
+    """Обычный номер БЕЗ кода региона («О613ТТ»). Такой номер приходит из имени
+    файла/OCR, где регион обрезан, и его можно достроить полным номером из темы
+    (65259: тема «Нет данных О613ТТ56», имя файла «65259_о613тт.jpeg»)."""
+    return bool(re.fullmatch(rf"[{_L}]\d{{3}}[{_L}]{{2}}", p or ""))
+
+
+def _plate_has_region(p: str | None) -> bool:
+    """Обычный номер С кодом региона («О613ТТ56»)."""
+    return bool(re.fullmatch(rf"[{_L}]\d{{3}}[{_L}]{{2}}\d{{2,3}}", p or ""))
+
+
 def _is_special_vehicle(plate: str | None, text: str | None = None) -> bool:
     """Спецтехника (без км-пробега): номер спецформата ИЛИ модель из списка."""
     if plate and not _is_standard_plate(plate):
@@ -477,25 +489,51 @@ _FAULT_DATE_RE = re.compile(
 # (_WAYBILL_KM_RE) и для разбора тела заявки в parse_issue — формулировки должны
 # пониматься ОДИНАКОВО в обоих местах, иначе один и тот же текст даёт разный
 # результат в зависимости от того, пришёл он вложением или письмом.
-# _WAYBILL_KEY_FULL — развёрнутые формулировки дочерних Россетей: «Пробег по
-# путевому листу (км) 251», «по одометру 110 км», «показаний одометра 60 км».
-_WAYBILL_KEY_FULL = r"(?:путев\w*\s+лист\w*|одометр\w*)"
-# _WAYBILL_KEY_SHORT — живые сокращения из писем: «по пут,л 96км» (65918),
-# «по пут л. 118км» (65917), «по пут.л 67 км» (65912), «по пут л.155км» (65919),
-# «по 1С 70км» (65987/65984), «по 1С 58км» (65913), «по спидометру 90км» (65780).
-# Ключи короткие и оттого неоднозначные («1С» — ещё и название ПО), поэтому
-# принимаются ТОЛЬКО вместе с единицей измерения (см. ниже).
-_WAYBILL_KEY_SHORT = (r"(?:пут\s*[.,]?\s*л\.?(?![а-яё])|спидометр\w*"
+# _WAYBILL_KEY_FULL — ОДНОЗНАЧНЫЕ ключи путевого листа: «Пробег по путевому
+# листу (км) 251», «пробег по путевому 10 км» (слово «лист» клиент опускает),
+# «по пут,л 96км» (65918), «по пут л. 118км» (65917), «по пут.л 67 км» (65912),
+# «по путл 97» (без разделителя), «ПЛ 43км» / «ПЛ-35 км» в строках актов.
+# Ключ явный, поэтому единица измерения при числе НЕ обязательна: в табличном
+# акте она стоит в шапке колонки, а в письмах её просто забывают.
+# Голое «ПЛ» ограничено с ОБЕИХ сторон: слева (?<![а-яёa-z]) — чтобы не цеплять
+# хвосты слов, справа (?![а-яё.]) — чтобы не читать «площадь»/«план»/«пломба» и
+# адресное «пл. Ленина, 5» (точка отсекает сокращение «площадь», как у «гл.»).
+_WAYBILL_KEY_FULL = (r"(?:путев\w*(?:\s+лист\w*)?|пут\s*[.,]?\s*л\.?(?![а-яё])"
+                     r"|(?<![а-яёa-z])пл(?![а-яё.]))")
+# _WAYBILL_KEY_SHORT — НЕОДНОЗНАЧНЫЕ ключи: «по 1С 70км» (65987/65984), «по 1С
+# 58км» (65913), «по спидометру 90км» (65780), «по одометру 110 км», «показаний
+# одометра 60 км». «1С» — ещё и название ПО, «одометр»/«спидометр» встречаются в
+# свободном тексте, поэтому здесь единица измерения ОБЯЗАТЕЛЬНА (см. ниже).
+_WAYBILL_KEY_SHORT = (r"(?:одометр\w*|спидометр\w*"
                       r"|(?<![\w])1\s*[сc](?![а-яёa-z]))")
-# Пробег по путевому листу / одометру ОТ КЛИЕНТА. Используется и в актах, и в
-# теле-списках. Первая ветка (развёрнутый ключ) единицу НЕ требует: в табличном
-# акте она стоит в шапке колонки — «Пробег по путевому листу (км) 251».
-# Вторая ветка (короткий ключ) требует «км/м» сразу после числа — иначе «1С»
-# цепляла бы номера версий и даты. Число — в group(1) ЛИБО group(2).
+# Моточасы — НЕ километры (решение: пишем в своё поле, в км-пробег не
+# подставляем). Живые написания: «ПЛ-1 м/ч», «ПЛ-1 м-ч», «ПЛ 5 мч»,
+# «Пробег по 1С 7км(моточасы)».
+_ENGINE_UNIT = r"м\s*[/\-.]?\s*ч(?:ас\w*)?"
+# Два нулевой ширины стража СРАЗУ после числа (не потребляют текст, поэтому
+# бэктрекинг не может их обойти):
+#   1. единица моточасов вместо километров — «1 м/ч» больше не 1 метр;
+#   2. слово «моточас…» рядом с числом, даже когда единица написана как «км» —
+#      «7км(моточасы)» это 7 моточасов, а не 7 км.
+_NOT_ENGINE = rf"(?!\s*{_ENGINE_UNIT})(?![^\d\n]{{0,8}}моточас)"
+# Единица километров. «м» НЕ должна матчиться, если за ней идёт «/ч», «-ч»,
+# «.ч» или «ч» — иначе моточасы читались как метры («ПЛ-1 м/ч» → 0.001 км).
+_KM_UNIT = r"(?:км|м(?!\s*[/\-.]?\s*ч))"
+# Пробег по путевому листу ОТ КЛИЕНТА. Используется и в актах, и в теле-списках.
+# Первая ветка (явный ключ ПЛ) единицу НЕ требует, вторая (короткий ключ) требует
+# «км/м» сразу после числа. Число — в group(1) ЛИБО group(2).
 _WAYBILL_KM_RE = re.compile(
-    rf"{_WAYBILL_KEY_FULL}[^\d]{{0,25}}?(\d+(?:[.,]\d+)?)(?![\d.,])"
-    rf"|{_WAYBILL_KEY_SHORT}[^\d\n]{{0,18}}?(\d+(?:[.,]\d+)?)\s*(?:км|м)\b",
+    rf"{_WAYBILL_KEY_FULL}[^\d]{{0,25}}?(\d+(?:[.,]\d+)?)(?![\d.,]){_NOT_ENGINE}"
+    rf"|{_WAYBILL_KEY_SHORT}[^\d\n]{{0,18}}?(\d+(?:[.,]\d+)?)\s*{_KM_UNIT}\b"
+    rf"(?![^\d\n]{{0,8}}моточас)",
     re.I | re.S)
+# Моточасы по путевому листу — отдельное поле (engine_hours), оператору
+# показываем, в километровый пробег НЕ подставляем.
+_ENGINE_HOURS_RE = re.compile(
+    rf"(?:{_WAYBILL_KEY_FULL}|{_WAYBILL_KEY_SHORT})[^\d\n]{{0,18}}?"
+    rf"(\d+(?:[.,]\d+)?)(?![\d.,])"
+    rf"(?:\s*{_ENGINE_UNIT}|[^\d\n]{{0,8}}моточас\w*)",
+    re.I)
 # Ключи «пробег, который клиент видит В СИСТЕМЕ» (declared_system_km) — общая
 # константа для построчного разбора актов (_DECLARED_KM_RE) и для разбора тела
 # заявки в parse_issue. Раньше наборы РАСХОДИЛИСЬ: parse_issue знал только
@@ -533,9 +571,17 @@ _DECLARED_KEY = rf"(?:{_DECLARED_KEY_FULL}|{_DECLARED_KEY_SHORT})"
 # «<число> км» — «Акт Глонасс Н082КМ» (62625) давало заявленный пробег 82 км.
 # Запрещаем и букву («Н082КМ» → «082»), и цифру («Н082КМ» → «82»).
 _DECLARED_NUM = r"(?<![A-Za-zА-Яа-яЁё0-9])(\d+(?:[.,]\d+)?)\s*(?:км|м)\b"
+# _DECLARED_GLUED — ключ СЛИПСЯ с числом: «Расхождение пробегов ССМ280,78км»
+# (65943) давало None, потому что lookbehind в _DECLARED_NUM видел слева букву
+# «М» самого ключа. Здесь ключ уже сматчен непосредственно перед числом (между
+# ними только пробелы/табы в той же строке), значит слева гарантированно НЕ
+# гос.номер — lookbehind не нужен. Свободный поиск числа (ветка с _DECLARED_NUM)
+# защиту от «Н082КМ» сохраняет.
+_DECLARED_GLUED = r"[ \t]*(\d+(?:[.,]\d+)?)\s*(?:км|м)\b"
 _DECLARED_KM_RE = re.compile(
     rf"{_DECLARED_KEY}(?:"
     r"[^\d№]{0,25}?\b(?:км|м)\b[^\d\w]{0,4}(\d+(?:[.,]\d+)?)(?![\d.,])"
+    rf"|{_DECLARED_GLUED}"
     rf"|[^\d№]{{0,25}}?{_DECLARED_NUM})",
     re.I | re.S)
 
@@ -1103,6 +1149,81 @@ def _scan_comment_for_new_date(comments: str | None, base_date: str | None,
         return None
 
 
+# Любой токен даты в тексте сообщения. ISO-альтернатива стоит ПЕРВОЙ: иначе в
+# «2026-07-27» сработала бы вторая ветка и прочитала «07-27» как 7 июля.
+_DATE_TOKEN_RE = re.compile(
+    r"(?P<iso>\b(?P<iy>\d{4})-(?P<im>\d{1,2})-(?P<idd>\d{1,2})\b)"
+    r"|(?P<dmy>(?<![\d.\-/])(?P<dd>\d{1,2})[.\-/](?P<mm>\d{1,2})"
+    r"(?:[.\-/](?P<yy>\d{2,4}))?(?![.\-/]?\d))"
+)
+
+
+def _token_date(m: "re.Match[str]", limit: _dt.date) -> _dt.date | None:
+    """Дата токена. Без года («за 29.07») год подбирается ТЕМ ЖЕ правилом, что в
+    ``parse_issue`` (``_date_near_created``) — иначе фильтр и парсер разошлись бы."""
+    try:
+        if m.group("iso"):
+            return _dt.date(int(m.group("iy")), int(m.group("im")), int(m.group("idd")))
+        dd, mm = int(m.group("dd")), int(m.group("mm"))
+        yy = m.group("yy")
+        if yy:
+            return _dt.date(_norm_typo_year(int(yy)), mm, dd)
+        return _date_near_created(dd, mm, limit)
+    except (ValueError, IndexError, TypeError):
+        return None
+
+
+def _drop_dates_after(text: str, limit: _dt.date) -> str:
+    """Вырезать из текста даты ПОЗЖЕ ``limit`` (дата самого сообщения).
+
+    Правило: «дата неисправности не позже сообщения, в котором она названа».
+    65781: описание «Отсутствуют данные» (даты нет), а в НАШЕМ ответе поддержки
+    стояло «27.07.2026 питание было восстановлено» — разбор брал 27.07 датой
+    неисправности, считал телеметрию за чужой день и выдавал «Глушение».
+    Дата, ушедшая вперёд относительно своего сообщения, датой уже случившейся
+    неисправности быть не может."""
+    def _sub(m: "re.Match[str]") -> str:
+        d = _token_date(m, limit)
+        return " " if (d is None or d > limit) else m.group(0)
+    return _DATE_TOKEN_RE.sub(_sub, text or "")
+
+
+# Служебные ярлыки строки разбора: их НЕЛЬЗЯ показывать клиенту как вердикт —
+# это сообщение ОПЕРАТОРУ о том, чего не хватает для анализа.
+_SERVICE_VERDICTS = frozenset({
+    "Нет номера/даты", "Нет даты", "Номер не распознан", "Ошибка данных",
+})
+
+
+def _missing_facts_verdict(plate: str | None, date: str | None) -> str:
+    """Честный ярлык строки, которую разобрать не удалось: чего именно не хватает.
+
+    Раньше «есть номер, даты нет» получало «Нет номера/даты» — оператор видел
+    ложное «номер не распознан» и лез перепроверять исправно разобранный номер
+    (65781: номер У700ЕЕ распознан, не хватало только даты)."""
+    if plate and not date:
+        return "Нет даты"
+    if date and not plate:
+        return "Номер не распознан"
+    return "Нет номера/даты"
+
+
+def _client_comments_text(client_comments: "list[tuple[str, str]] | None") -> str:
+    """Текст ТОЛЬКО клиентских комментариев с вырезанными «будущими» датами.
+
+    Из него разбор добирает дату/пробег неисправности. Комментарии СОТРУДНИКОВ
+    для этого негодны: там наши сроки и наши даты работ (65781). Строковый
+    дайджест всей переписки при этом остаётся прежним — модель должна видеть всё.
+    ``client_comments`` — список ``(дата комментария ISO, текст)``."""
+    parts: list[str] = []
+    for raw_date, text in client_comments or []:
+        if not text or not text.strip():
+            continue
+        limit = _created_date(raw_date)
+        parts.append(_drop_dates_after(text, limit) if limit else text)
+    return "\n".join(p for p in parts if p.strip())
+
+
 def _strip_html(text: str | None) -> str:
     if not text:
         return ""
@@ -1156,6 +1277,9 @@ class ParsedIssue:
     date_to: str | None = None  # ISO: конец интервала неисправности (15.06-16.06)
     sheet_mileage_km: float | None = None  # по путевому листу
     declared_system_km: float | None = None  # «в ПК», то что увидел клиент
+    # Моточасы по путевому листу («ПЛ-1 м/ч», «7км(моточасы)») — ОТДЕЛЬНОЕ поле:
+    # в километровый пробег их подставлять нельзя, но оператор должен их видеть.
+    engine_hours: float | None = None
     llm_extracted: bool = False  # часть полей восстановлена ИИ (regex не справился)
 
 
@@ -1411,6 +1535,15 @@ class IssueAutomationService:
         # по-разному — «неисправность», «сбой», «ошибка», «отказ».
         _fault = r"дат\w*\s+(?:неисправност\w*|сбо\w*|ошибк\w*|отказ\w*)[^\d]{0,30}"
         _fault_near = r"дат\w*\s+(?:неисправност\w*|сбо\w*|ошибк\w*|отказ\w*)[^\d]{0,12}"
+        # Предлог «с/со» перед датой: «Отсутствуют данные с 02.07» (64948) — тот
+        # же смысл, что «за», но «с» — частое слово, поэтому границы жёстче:
+        #  • дата идёт СРАЗУ за предлогом, без зазора «[^\d]{0,20}»;
+        #  • слева не буква (не хвост слова «нас», «плюс») и не «период »
+        #    («за период с 01.03 по 31.03» — отчётное окно, не дата сбоя);
+        #  • справа не «по <число>» — это интервал (отчётный период либо реальный
+        #    интервал неисправности, который ловит _detect_date_range).
+        _since = r"(?<!период\s)(?<![а-яёa-z])с(?:о)?\s{0,2}"
+        _not_range = r"(?!\s*по\s+\d)"
         parsed.date = (
             # Высокий приоритет: маркеры с 2- или 4-значным годом (акты Волжского ПО:
             # «Дата неисправности | 10.06.26», «в системе с 10.06.26»). Без этого
@@ -1429,6 +1562,10 @@ class IssueAutomationService:
             # выше); общий скан по всему тексту дал бы ложную дату отчёта.
             or _from_flex(re.search(r"(?<!период\s)за\s*" + d2, text, re.I))
             or _from_iso(re.search(r"(?<!период\s)за\s*" + iso, text, re.I))
+            # «с/со <дата>» — приоритет сразу за «за» (см. _since выше).
+            or _from_match(re.search(_since + d + _not_range, text, re.I))
+            or _from_flex(re.search(_since + d2 + _not_range, text, re.I))
+            or _from_iso(re.search(_since + iso + _not_range, text, re.I))
             # Дата БЕЗ года, но с тем же маркером. Приоритет ниже любой даты С
             # годом и выше «первой даты в тексте»: маркер надёжнее, чем дата
             # акта/письма, попавшаяся раньше всех. Активно только с created_at.
@@ -1440,6 +1577,7 @@ class IssueAutomationService:
             or _from_ddmm(re.search(_fault_near + dm, text, re.I | re.S))
             or _from_ddmm(re.search(r"в\s+системе(?:\s+с)?[^\d]{0,8}" + dm, text, re.I))
             or _from_ddmm(re.search(r"(?<!период\s)за\s*" + dm, text, re.I))
+            or _from_ddmm(re.search(_since + dm + _not_range, text, re.I))
             or _from_match(_DATE_RE.search(title))
             or _from_match(_DATE_RE.search(text))
             or _from_iso(re.search(iso, text))
@@ -1461,22 +1599,36 @@ class IssueAutomationService:
             if parsed.date and parsed.date_to and parsed.date_to < parsed.date:
                 parsed.date_to = None
 
-        # по путевому листу / по ПЛ / по пут.л / по 1С / по одометру <num> <unit>.
+        # Моточасы по путевому листу («ПЛ-1 м/ч», «Пробег по 1С 7км(моточасы)») —
+        # СВОЁ поле. В км-пробег их подставлять нельзя: раньше «1 м/ч» читалось
+        # как 1 метр и давало sheet_mileage_km=0.001, а «7км(моточасы)» — 7 км.
+        em = _ENGINE_HOURS_RE.search(text)
+        if em:
+            parsed.engine_hours = _parse_number(em.group(1))
+
+        # по путевому листу / по ПЛ / по пут.л / по путл / по 1С / по одометру.
         # Ключи — общие с _WAYBILL_KM_RE (см. _WAYBILL_KEY_FULL/_SHORT), чтобы акт
         # и тело письма понимались одинаково.
-        # Единица (км/м) ОБЯЗАТЕЛЬНА — иначе регулярка цепляет даты (10.05.2026)
-        # и прочие числа. Допускаем «составил – », «равен» между словом и числом.
-        sm = re.search(rf"(?:{_WAYBILL_KEY_FULL}|{_WAYBILL_KEY_SHORT}|по\s*ПЛ|ПЛ)"
-                       rf"[^\d\n]{{0,18}}(\d+(?:[.,]\d+)?)\s*(км|м)\b", text, re.I)
+        # Ветка 1 (явный ключ ПЛ) единицу НЕ требует — клиент её часто опускает
+        # («Пробег по путл 97»); от дат защищает `(?![\d.,])`, от моточасов —
+        # _NOT_ENGINE. Ветка 2 (короткий/неоднозначный ключ: 1С, одометр,
+        # спидометр) единицу требует, иначе цепляются номера версий и даты.
+        # Допускаем «составил – », «равен» между словом и числом.
+        sm = re.search(
+            rf"{_WAYBILL_KEY_FULL}[^\d\n]{{0,18}}(\d+(?:[.,]\d+)?)(?![\d.,])"
+            rf"{_NOT_ENGINE}(?:\s*(км|м)\b)?"
+            rf"|{_WAYBILL_KEY_SHORT}[^\d\n]{{0,18}}(\d+(?:[.,]\d+)?)\s*(км|м(?!\s*[/\-.]?\s*ч))\b"
+            rf"(?![^\d\n]{{0,8}}моточас)",
+            text, re.I)
         if sm:
-            parsed.sheet_mileage_km = _to_km(_parse_number(sm.group(1)), sm.group(2))
+            parsed.sheet_mileage_km = _to_km(
+                _parse_number(sm.group(1) or sm.group(3)), sm.group(2) or sm.group(4))
         else:
             # Fallback: табличный акт Самары — единица в скобках ПЕРЕД числом,
             # без единицы после: «Пробег по путевому листу (км) 367» (см. 64253).
             # Единица «(км)» — обязательный якорь сразу перед числом, поэтому даты
-            # (16.06.2026) и прочие числа не цепляются. Без bare «ПЛ», чтобы не ловить
-            # лишнее: таблица всегда пишет полное «путевому листу»/«по ПЛ».
-            sm = re.search(rf"(?:{_WAYBILL_KEY_FULL}|по\s*ПЛ)"
+            # (16.06.2026) и прочие числа не цепляются.
+            sm = re.search(rf"(?:{_WAYBILL_KEY_FULL}|{_WAYBILL_KEY_SHORT})"
                            rf"[^\d\n]{{0,12}}\((км|м)\)[^\d\n]{{0,4}}(\d+(?:[.,]\d+)?)", text, re.I)
             if sm:
                 parsed.sheet_mileage_km = _to_km(_parse_number(sm.group(2)), sm.group(1))
@@ -1493,11 +1645,15 @@ class IssueAutomationService:
         # Граница слева у числа обязательна (см. _DECLARED_NUM): иначе гос.номер
         # на «…КМ» читается как «<число> км» — «Акт Глонасс Н082КМ» (62625).
         # Здесь единица в ГРУППЕ (нужна для _to_km: «м» → км), поэтому свой шаблон.
-        _tail = r"[^\d№\n]{0,18}?(?<![A-Za-zА-Яа-яЁё0-9])(\d+(?:[.,]\d+)?)\s*(км|м)\b"
+        # Первая ветка — ключ СЛИПСЯ с числом («ССМ280,78км», см. _DECLARED_GLUED):
+        # слева от числа стоит сам ключ, а не гос.номер, поэтому lookbehind не нужен.
+        _tail = (r"(?:[ \t]*(\d+(?:[.,]\d+)?)\s*(км|м)\b"
+                 r"|[^\d№\n]{0,18}?(?<![A-Za-zА-Яа-яЁё0-9])(\d+(?:[.,]\d+)?)\s*(км|м)\b)")
         cm = (re.search(rf"в\s*ПК{_tail}", text, re.I)
               or re.search(rf"{_DECLARED_KEY}{_tail}", text, re.I))
         if cm:
-            parsed.declared_system_km = _to_km(_parse_number(cm.group(1)), cm.group(2))
+            parsed.declared_system_km = _to_km(
+                _parse_number(cm.group(1) or cm.group(3)), cm.group(2) or cm.group(4))
         else:
             # Тот же табличный фолбэк: единица в шапке колонки ПЕРЕД числом —
             # «Пробег в системе ГЛОНАСС (км) 318». Якорь «(км)» защищает от
@@ -1911,6 +2067,7 @@ class IssueAutomationService:
             "гос_номер": parsed.plate,
             "дата": parsed.date,
             "пробег_по_путевому_листу_км": parsed.sheet_mileage_km,
+            "моточасы_по_путевому_листу": parsed.engine_hours,
             "пробег_заявленный_клиентом_км": parsed.declared_system_km,
             "реальный_пробег_системы_км": f.system_mileage_km,
             "макс_скорость": f.max_speed,
@@ -2457,7 +2614,9 @@ class IssueAutomationService:
                        ] | None = None,
                        plate_override: str | None = None,
                        date_override: str | None = None,
-                       created_at: str | _dt.date | None = None) -> AutomationResult:
+                       created_at: str | _dt.date | None = None,
+                       client_comments: list[tuple[str, str]] | None = None,
+                       ) -> AutomationResult:
         # 64871: у форвард-писем description пуст — тело письма лежит в ПЕРВОМ
         # комментарии; добавляем дайджест комментариев к тексту для парсинга
         # (без ISO-таймштампов публикации — см. _scrub_iso_dates).
@@ -2466,16 +2625,23 @@ class IssueAutomationService:
             parse_extra = _extra_with_comments(attachments_text, comments)
         parsed = self.parse_issue(title, description, params, extra_text=parse_extra,
                                   created_at=created_at)
-        if comments and not parsed.date:
+        # Дату неисправности добираем ТОЛЬКО из слов клиента и только не позже его
+        # сообщения (65781: «27.07 питание восстановлено» в НАШЕМ ответе поддержки
+        # становилось датой неисправности). Модель ниже по-прежнему видит полный
+        # дайджест переписки (comments) — фильтр касается только разбора дат.
+        comments_for_dates = (_client_comments_text(client_comments)
+                              if client_comments is not None else comments)
+        if comments_for_dates and not parsed.date:
             # Дату клиент дописал КОММЕНТАРИЕМ, а описание при этом не пустое
             # (65780: «по спидометру 90км» в теле, «Извините, что не написала
             # дату. за 22.07.226г» — в комментарии) — ветка выше комментарии не
             # подмешивала, и разбор отдавал date=None. Комментарии тут ТОЛЬКО
             # добирают ПУСТУЮ дату: в переписке дат много (ответ оператора,
             # сроки), перебивать ими дату из темы/тела нельзя.
-            alt = self.parse_issue(title, description, params,
-                                   extra_text=_extra_with_comments(parse_extra, comments),
-                                   created_at=created_at)
+            alt = self.parse_issue(
+                title, description, params,
+                extra_text=_extra_with_comments(parse_extra, comments_for_dates),
+                created_at=created_at)
             if alt.date:
                 parsed.date, parsed.date_to = alt.date, alt.date_to
         # Ручное переопределение (оператор): клиент указал номер с опечаткой,
@@ -2598,7 +2764,9 @@ class IssueAutomationService:
         # (64228: решили за 16.06, затем открыли заново «За 24.06 пробег не
         # выгрузился. Прошу возобновить заявку»). Делаем свежую дату ОСНОВНОЙ:
         # переснимаем телеметрию, и весь дальнейший разбор идёт по ней.
-        _fresh = _scan_comment_for_new_date(comments, parsed.date)
+        # Ищем новую дату ТОЛЬКО в словах клиента (comments_for_dates): дата из
+        # нашего же ответа поддержки не может переопределить дату неисправности.
+        _fresh = _scan_comment_for_new_date(comments_for_dates, parsed.date)
         if _fresh and _fresh != parsed.date:
             try:
                 ct0 = await self.gather_telemetry(parsed.plate, _fresh)
@@ -2644,7 +2812,7 @@ class IssueAutomationService:
         # differs from the body's fault date, gather telemetry for that date too
         # and pass it as a fact so the LLM answers by the freshest comment date.
         comment_date_facts: dict[str, Any] | None = None
-        comment_date = _scan_comment_for_new_date(comments, parsed.date)
+        comment_date = _scan_comment_for_new_date(comments_for_dates, parsed.date)
         if comment_date:
             try:
                 ct = await self.gather_telemetry(parsed.plate, comment_date)
@@ -2870,6 +3038,33 @@ class IssueAutomationService:
             берётся/прижимается по ней одинаково во ВСЕХ ветках разбора."""
             return self.parse_issue(t, body, None, extra_text=extra, created_at=created)
 
+        # Полные номера (с кодом региона) из ТЕМЫ заявки — по ключу без региона.
+        # Тема — самый надёжный источник региона: имя файла и OCR его часто теряют
+        # (65259: тема «Нет данных О613ТТ56», вложение «65259_о613тт.jpeg» —
+        # разбор отдавал О613ТТ, и оператор терял регион).
+        title_region_plates: dict[str, str] = {}
+        for _tp in extract_all_plates(issue_title or "", include_special=True):
+            if _plate_has_region(_tp):
+                title_region_plates.setdefault(_plate_dedup_key(_tp), _tp)
+
+        def _restore_region(
+            rows: list[tuple[Any, Any, Any, Any]],
+        ) -> list[tuple[Any, Any, Any, Any]]:
+            """Достроить регион номерам, у которых его нет, полным номером из ТЕМЫ.
+            Единая точка для ВСЕХ целей разбора: и для «номер из имени файла», и
+            для табличных/актовых строк. Подменяем только тот же самый ТС —
+            совпадение по ``_plate_dedup_key`` (номер без региона)."""
+            if not title_region_plates:
+                return rows
+            out: list[tuple[Any, Any, Any, Any]] = []
+            for pl, dt_, s_, g_ in rows:
+                if pl and _plate_lacks_region(str(pl)):
+                    full = title_region_plates.get(_plate_dedup_key(str(pl)))
+                    if full:
+                        pl = full
+                out.append((pl, dt_, s_, g_))
+            return out
+
         results: list[dict[str, Any]] = []
         try:
             attachments = list(attachments or [])
@@ -2928,6 +3123,8 @@ class IssueAutomationService:
             if p0_date:
                 targets_subj = [(pl, dt or p0_date, s, g)
                                 for pl, dt, s, g in targets_subj]
+            # Регион номера — из темы (см. _restore_region).
+            targets_subj = _restore_region(targets_subj)
             # Год строк тела прижимаем к дате создания — см. такой же кламп для
             # табличных/актовых строк ниже.
             if created is not None:
@@ -3164,6 +3361,11 @@ class IssueAutomationService:
                 if doc_date:
                     targets = [(p, d or doc_date, s, g) for p, d, s, g in targets]
 
+            # Регион номера — из темы, ЕДИНЫМ местом для всех ветвей выше
+            # (имя файла, таблицы, акты, страховка мульти-документа): иначе
+            # усечённый номер из OCR/имени файла уходил в разбор без региона.
+            targets = _restore_region(targets)
+
             # Год строк, пришедших из ТАБЛИЦ/АКТОВ (_parse_act_blocks,
             # _parse_summary_table, _parse_grouping_table, _parse_body_vehicles),
             # прижимаем к дате создания заявки в одном месте: эти парсеры берут
@@ -3177,10 +3379,10 @@ class IssueAutomationService:
                 results.append({
                     "file": name, "plate": None, "date": base_date,
                     "sheet_mileage_km": None, "system_mileage_km": None,
-                    "declared_system_km": None,
+                    "declared_system_km": None, "engine_hours": None,
                     "address": address, "flags": [], "teleport_jumps": 0,
                     "telemetry": None,
-                    "verdict": "Нет номера/даты",
+                    "verdict": _missing_facts_verdict(None, base_date),
                 })
                 continue
 
@@ -3264,8 +3466,8 @@ class IssueAutomationService:
         for o in objects:
             plate = o.get("plate")
             verdict = o.get("verdict")
-            if not plate or verdict not in phrasing:
-                continue  # «Нет номера/даты» и т.п. в сводку не включаем
+            if not plate or verdict in _SERVICE_VERDICTS or verdict not in phrasing:
+                continue  # «Нет номера/даты», «Нет даты» и т.п. в сводку не включаем
             groups.setdefault(verdict, [])
             if plate not in groups[verdict]:
                 groups[verdict].append(plate)
@@ -3297,6 +3499,7 @@ class IssueAutomationService:
             "гос_номер": o.get("plate"),
             "дата": o.get("date"),
             "пробег_по_путевому_листу_км": o.get("sheet_mileage_km"),
+            "моточасы_по_путевому_листу": o.get("engine_hours"),
             "пробег_заявленный_клиентом_км": o.get("declared_system_km"),
             "реальный_пробег_системы_км": o.get("system_mileage_km"),
             "мин_напряжение_В": t.get("min_power_v"),
@@ -3491,6 +3694,12 @@ class IssueAutomationService:
         """
         verdict = str(obj.get("verdict") or "")
         plate = obj.get("plate") or "—"
+        if verdict in _SERVICE_VERDICTS:
+            # Служебный ярлык («Нет даты», «Номер не распознан», …) — это НЕ
+            # причина расхождения, а сообщение оператору. В текст клиенту такой
+            # ярлык просачиваться не должен ни через каталог, ни через фразы.
+            return (f"Здравствуйте! По ТС {plate} не удалось однозначно определить причину "
+                    "расхождения по имеющимся данным. Уточните, пожалуйста, гос.номер и дату.")
         iso = str(obj.get("date") or "")
         date = _iso_to_ru(iso) or iso or "указанную дату"
         system = obj.get("system_mileage_km")
@@ -3510,13 +3719,17 @@ class IssueAutomationService:
 
     async def _analyze_object(self, plate: str, date: str | None, sheet: float | None,
                               address: str | None, file: str,
-                              declared: float | None = None) -> dict[str, Any]:
+                              declared: float | None = None,
+                              engine_hours: float | None = None) -> dict[str, Any]:
         item: dict[str, Any] = {
             "file": file, "plate": plate, "date": date,
             # sheet — пробег по путевому листу (ПЛ) от клиента; declared — пробег по
             # системе ГЛОНАСС со слов клиента (то, что он видит в ПК); system — РЕАЛЬНЫЙ
             # пробег из телеметрии geo.gpspos.ru (ниже).
             "sheet_mileage_km": sheet, "declared_system_km": declared,
+            # Моточасы по ПЛ — отдельно от километров, в лестницу вердиктов не идут
+            # (спецтехника как и раньше остаётся «Проверить»), но видны оператору.
+            "engine_hours": engine_hours,
             "system_mileage_km": None,
             "address": address, "flags": [], "teleport_jumps": 0,
             # Полная телеметрия объекта (как в одиночном анализе, asdict(TelemetryFacts))
@@ -3524,7 +3737,7 @@ class IssueAutomationService:
             # разобран (нет номера/даты) или телеметрия не собралась.
             "telemetry": None,
             "spec_vehicle": _is_special_vehicle(plate, file),
-            "verdict": "Нет номера/даты",
+            "verdict": _missing_facts_verdict(plate, date),
             # Вердикт строки получен ПРАВИЛАМИ (детерминированно, без DeepSeek).
             # Оператор может переписать его через /batch/verdict — тогда рядом
             # проставляется verdict_edited=True.
@@ -3533,10 +3746,9 @@ class IssueAutomationService:
             # наружу, чтобы было видно расхождение двух детерминированных оценок.
             "heuristic_category": None,
         }
-        # Акт распознан (есть дата/пробег), но OCR не прочитал гос.номер — отдельный
-        # вердикт, чтобы оператор увидел такую строку и вписал номер вручную (64725).
-        if not plate and date:
-            item["verdict"] = "Номер не распознан"
+        # Ярлык «чего не хватает» уже проставлен выше (_missing_facts_verdict):
+        # акт распознан, но OCR не прочитал номер (64725) → «Номер не распознан»;
+        # номер есть, а даты в заявке нет (65781) → «Нет даты».
         if plate and date:
             try:
                 t = await self.gather_telemetry(plate, date)
@@ -3623,13 +3835,14 @@ class IssueAutomationService:
             "file": file, "plate": parsed.plate, "date": parsed.date,
             "sheet_mileage_km": parsed.sheet_mileage_km,
             "declared_system_km": parsed.declared_system_km,
+            "engine_hours": parsed.engine_hours,
             "system_mileage_km": t.system_mileage_km,
             "address": None, "flags": list(t.flags), "teleport_jumps": t.teleport_jumps,
             "telemetry": asdict(t) if has_facts else None,
             "spec_vehicle": spec,
             "verdict": (self._verdict_from_facts(
                 t, parsed.sheet_mileage_km, parsed.declared_system_km, spec)
-                if has_facts else "Нет номера/даты"),
+                if has_facts else _missing_facts_verdict(parsed.plate, parsed.date)),
             "verdict_source": "rules",
             "heuristic_category": (self._heuristic_category(parsed, t)
                                    if has_facts else None),
@@ -3663,6 +3876,78 @@ class IssueAutomationService:
             payload["ocr_progress"] = ocr_progress
         return payload
 
+    def client_comment_faults(
+        self, client_comments: list[tuple[str, str]] | None,
+    ) -> list[tuple[str, float | None, float | None, float | None]]:
+        """Жалобы, дописанные КЛИЕНТОМ в переписке: ``(дата, ПЛ, система, м/ч)``.
+
+        Вторая жалоба в комментарии — ОТДЕЛЬНЫЙ случай, а не уточнение первого:
+        65918 — тело «Расхождение за 27.07 Пробег по пут,л 96км», комментарий
+        клиента от 30.07 «Расхождение за 29.07 Пробег по пут.л 69км». У каждой
+        даты своя телеметрия и свой вердикт, поэтому вторая жалоба заслуживает
+        своей строки разбора, а не молчаливой потери.
+
+        Берём только комментарии с числом км ЛИБО фразой-признаком (тот же гейт,
+        что в ``_scan_comment_for_new_date``) — иначе «спасибо, ждём» дало бы
+        строку по случайному числу. Каждый комментарий разбираем ТЕМ ЖЕ
+        ``parse_issue`` с ``created_at`` = датой комментария: год даты без года
+        берётся по ней, а «будущие» даты уже вырезаны ``_drop_dates_after``.
+        Никогда не бросает: пустой список — просто нет дополнительных жалоб.
+        """
+        out: list[tuple[str, float | None, float | None, float | None]] = []
+        for raw_date, text in client_comments or []:
+            if not text or not text.strip():
+                continue
+            if not (_COMMENT_MILEAGE_RE.search(text) or _COMMENT_FAULT_RE.search(text)):
+                continue
+            limit = _created_date(raw_date)
+            if limit is None:
+                continue  # без даты комментария правило «не позже» не проверить
+            try:
+                p = self.parse_issue(None, _drop_dates_after(text, limit), None,
+                                     created_at=limit)
+            except Exception:  # pragma: no cover - разбор комментария best-effort
+                continue
+            if not p.date:
+                continue
+            pd = _created_date(p.date)
+            if pd is None or pd > limit:
+                continue
+            out.append((p.date, p.sheet_mileage_km, p.declared_system_km,
+                        p.engine_hours))
+        return out
+
+    async def _append_client_comment_rows(
+        self, objects: list[dict[str, Any]],
+        client_comments: list[tuple[str, str]] | None,
+    ) -> list[dict[str, Any]]:
+        """Добавить строки разбора по жалобам из клиентских комментариев (B3).
+
+        Только когда в заявке ОДИН ТС: у мульти-ТС заявки непонятно, к какой
+        машине относится дата из переписки, и строка вышла бы наугад (65847).
+        Дедуп по паре (номер без региона, дата) — как в ``analyze_batch``.
+        """
+        plates = {_plate_dedup_key(str(o.get("plate"))): str(o.get("plate"))
+                  for o in objects if o.get("plate")}
+        if len(plates) != 1:
+            return objects
+        plate = next(iter(plates.values()))
+        have = {(_plate_dedup_key(str(o.get("plate") or "")), o.get("date"))
+                for o in objects}
+        extra: list[dict[str, Any]] = []
+        for date, sheet, declared, hours in self.client_comment_faults(client_comments):
+            key = (_plate_dedup_key(plate), date)
+            if key in have:
+                continue
+            have.add(key)
+            try:
+                extra.append(await self._analyze_object(
+                    plate, date, sheet, None, "(из комментария клиента)",
+                    declared=declared, engine_hours=hours))
+            except Exception:  # pragma: no cover - телеметрия best-effort
+                log.warning("comment_row_failed", plate=plate, date=date)
+        return objects + extra
+
     async def parse_facts(self, issue_external_id: int,
                           title: str | None, description: str | None,
                           params: list[dict[str, Any]] | None = None,
@@ -3673,13 +3958,20 @@ class IssueAutomationService:
                           date_override: str | None = None,
                           ocr_cache: Any = None,
                           progress_out: dict[str, Any] | None = None,
-                          created_at: str | _dt.date | None = None) -> dict[str, Any]:
+                          created_at: str | _dt.date | None = None,
+                          client_comments: list[tuple[str, str]] | None = None,
+                          ) -> dict[str, Any]:
         """ДЕТЕРМИНИРОВАННЫЙ разбор заявки: факты + предварительный вердикт.
 
         Ни одного обращения к DeepSeek: только regex-парсер, телеметрия из гео и
         лестница правил ``_verdict_from_facts``. ``attachments=None`` (по умолчанию)
         — вложения НЕ читаются и OCR не запускается; список вложений передаёт
         только «кнопочный» разбор, который сознательно платит за OCR.
+
+        ``client_comments`` — комментарии КЛИЕНТА как ``(дата ISO, текст)``.
+        Отдельно от строкового ``comments`` (дайджеста всей переписки для модели),
+        потому что дату/пробег неисправности брать можно ТОЛЬКО из слов клиента и
+        только не позже его сообщения (65781). Не передали — прежнее поведение.
         """
         parse_extra = attachments_text
         if comments and not _strip_html(description).strip():
@@ -3690,10 +3982,15 @@ class IssueAutomationService:
         # Тот же текст, что видела шапка разбора, отдаём построчному движку —
         # иначе строка таблицы остаётся без даты, хотя в шапке дата есть.
         batch_extra = parse_extra
-        if comments and not parsed.date:
+        # Текст для ДОБОРА ДАТЫ: только слова клиента, без «будущих» дат.
+        # Передали client_comments (даже пустым списком) — верим им, а не полному
+        # дайджесту: пустой список значит «клиент в переписке ничего не писал».
+        comments_for_dates = (_client_comments_text(client_comments)
+                              if client_comments is not None else comments)
+        if comments_for_dates and not parsed.date:
             # Дата дописана КОММЕНТАРИЕМ при непустом описании (65780, см. такой
             # же добор в analyze_issue): комментарии добирают только ПУСТУЮ дату.
-            extra_c = _extra_with_comments(parse_extra, comments)
+            extra_c = _extra_with_comments(parse_extra, comments_for_dates)
             alt = self.parse_issue(title, description, params,
                                    extra_text=extra_c, created_at=created_at)
             if alt.date:
@@ -3722,7 +4019,8 @@ class IssueAutomationService:
             # строка строго по заданным номеру/дате.
             objects = [await self._analyze_object(
                 parsed.plate or "", parsed.date, parsed.sheet_mileage_km, None,
-                "(из текста заявки)", declared=parsed.declared_system_km)]
+                "(из текста заявки)", declared=parsed.declared_system_km,
+                engine_hours=parsed.engine_hours)]
         else:
             try:
                 objects = await self.analyze_batch(
@@ -3739,7 +4037,8 @@ class IssueAutomationService:
             # (нестандартная разметка): всё равно отдаём одну строку.
             objects = [await self._analyze_object(
                 parsed.plate, parsed.date, parsed.sheet_mileage_km, None,
-                "(из текста заявки)", declared=parsed.declared_system_km)]
+                "(из текста заявки)", declared=parsed.declared_system_km,
+                engine_hours=parsed.engine_hours)]
         # Одна строка — синхронизируем сводный parsed с тем, что реально разобрано
         # (номер/дата могли прийти из построчного разбора тела, а не из parse_issue).
         if len(objects) == 1:
@@ -3749,6 +4048,16 @@ class IssueAutomationService:
                 parsed_out["plate_format_suspect"] = _plate_format_suspect(row.get("plate"))
             if not parsed_out.get("date") and row.get("date"):
                 parsed_out["date"] = row.get("date")
+            # Моточасы построчный движок не носит (его строки — кортежи из
+            # четырёх полей), а из тела заявки они разобраны: у одиночной
+            # заявки строка описывает тот же ТС, что и шапка, — переносим,
+            # иначе оператор моточасов не увидит (64742: «по 1С 7км(моточасы)»).
+            if row.get("engine_hours") is None and parsed.engine_hours is not None:
+                row["engine_hours"] = parsed.engine_hours
+        # Вторая жалоба клиента в переписке — ОТДЕЛЬНАЯ строка разбора (65918).
+        # После синхронизации шапки: шапка описывает жалобу ИЗ ТЕЛА заявки.
+        if client_comments and not (plate_override or date_override):
+            objects = await self._append_client_comment_rows(objects, client_comments)
         return self._facts_payload(
             parsed_out, objects, spec_vehicle=spec,
             needs_remote_diagnostics=awaiting_diag,

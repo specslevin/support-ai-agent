@@ -115,6 +115,12 @@ export interface AutomationParsed {
   plate: string | null
   date: string | null
   sheet_mileage_km: number | null
+  /**
+   * Моточасы по путевому листу — у спецтехники клиент пишет «ПЛ-1 м/ч» вместо
+   * километров. Это НЕ километры: в `sheet_mileage_km` их подставлять нельзя
+   * (раньше такое значение приезжало туда как 0.001 км).
+   */
+  engine_hours?: number | null
   declared_system_km: number | null
   llm_extracted?: boolean
   plate_format_suspect?: boolean
@@ -205,6 +211,8 @@ export interface BatchObject {
   plate: string | null
   date: string | null
   sheet_mileage_km: number | null
+  /** Моточасы по путевому листу (спецтехника): показываем как «м/ч», не как км. */
+  engine_hours?: number | null
   declared_system_km?: number | null
   system_mileage_km: number | null
   address?: string | null

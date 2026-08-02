@@ -31,6 +31,8 @@ export const VERDICT_TEXT_STYLE: Record<string, string> = {
   'Объект не найден': 'text-red-400',
   'Нет данных': 'text-muted',
   'Нет номера/даты': 'text-muted',
+  // Номер нашли, а даты неисправности нет — родня «Нет номера/даты», тот же цвет.
+  'Нет даты': 'text-muted',
   'Номер не распознан': 'text-warning',
   'Ошибка данных': 'text-orange',
   'Проверить': 'text-info',

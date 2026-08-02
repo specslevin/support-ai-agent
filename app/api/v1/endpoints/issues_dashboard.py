@@ -226,15 +226,36 @@ async def _build_comments_digest(external_id: int, okdesk: OkdeskService,
     Each line: «author • date • text» (html stripped). Bounded to ~max_chars.
     Best-effort: any failure returns "" so the analysis still proceeds.
     """
+    digest, _ = await _build_comments_context(external_id, okdesk, max_chars)
+    return digest
+
+
+async def _build_comments_context(
+    external_id: int, okdesk: OkdeskService, max_chars: int = 6000,
+) -> tuple[str, list[tuple[str, str]] | None]:
+    """Дайджест переписки для МОДЕЛИ + комментарии КЛИЕНТА для РАЗБОРА.
+
+    Возвращает ``(digest, client_comments)``, где ``client_comments`` —
+    ``[(дата комментария ISO, текст), …]`` только по авторам-контактам
+    (``author.type == "contact"`` в сыром payload).
+
+    Зачем отдельный список: дату/пробег неисправности можно брать ТОЛЬКО из слов
+    клиента и только не позже его сообщения (65781 — «27.07.2026 питание было
+    восстановлено» в НАШЕМ ответе поддержки становилось датой неисправности).
+    Из строкового дайджеста этого не вытащить: роль и дату в нём не отличить от
+    текста, а ISO-таймштампы разбор вычищает (``_scrub_iso_dates``).
+    Дайджест для модели остаётся ПОЛНЫМ — она должна видеть всю переписку.
+    """
     from app.services.issue_automation import _strip_html
 
     try:
         comments = await okdesk.get_issue_comments(external_id)
     except Exception:
         log.warning("automate_comments_fetch_failed", external_id=external_id)
-        return ""
+        return "", []
     if not comments:
-        return ""
+        return "", []
+
     # Recover timestamps from the raw payload (the parsed model drops them, same
     # as the /comments endpoint).
     raw_dates: dict[int, str] = {}
@@ -242,6 +263,8 @@ async def _build_comments_digest(external_id: int, okdesk: OkdeskService,
     _role_tags = {"contact": "клиент", "client": "клиент",
                   "employee": "сотрудник", "staff": "сотрудник",
                   "user": "сотрудник", "operator": "сотрудник"}
+    _CLIENT_ROLE = "клиент"
+    meta_ok = True
     try:
         raw = await okdesk._client.get_issue_comments(external_id)
         raw_rows = raw if isinstance(raw, list) else (
@@ -258,8 +281,14 @@ async def _build_comments_digest(external_id: int, okdesk: OkdeskService,
                         raw_roles[r["id"]] = tag
     except Exception:
         log.warning("automate_comments_meta_failed", external_id=external_id)
+        # Роли авторов не восстановились — отличить клиента от сотрудника нечем.
+        # Отдаём None (а не пустой список): вызывающий разбор в этом случае
+        # работает по прежней схеме (весь дайджест), а не считает, что клиент
+        # молчал. Иначе сбой Okdesk молча ломал бы добор даты из переписки.
+        meta_ok = False
 
     rows: list[tuple[str, str]] = []
+    client_rows: list[tuple[str, str]] = []
     for c in comments:
         text = _strip_html(getattr(c, "content", None))
         if not text:
@@ -268,18 +297,23 @@ async def _build_comments_digest(external_id: int, okdesk: OkdeskService,
         role = raw_roles.get(getattr(c, "id", None))
         if role:
             author = f"{author} [{role}]"
-        date = (getattr(c, "created_at", None) or raw_dates.get(getattr(c, "id", None)) or "")
-        date = str(date)[:16].replace("T", " ")
+        raw_date = (getattr(c, "created_at", None)
+                    or raw_dates.get(getattr(c, "id", None)) or "")
+        date = str(raw_date)[:16].replace("T", " ")
         rows.append((date, f"{author} • {date} • {text}"))
+        # Для разбора дат: только клиент и только с известной датой сообщения.
+        if role == _CLIENT_ROLE and raw_date:
+            client_rows.append((str(raw_date), text))
     if not rows:
-        return ""
+        return "", ([] if meta_ok else None)
     # Chronological order (empty dates sort first, then ascending by timestamp).
     rows.sort(key=lambda r: r[0])
+    client_rows.sort(key=lambda r: r[0])
     lines = [line for _, line in rows]
     digest = "\n".join(lines)
     if len(digest) > max_chars:
         digest = digest[:max_chars].rstrip() + "…"
-    return digest
+    return digest, (client_rows if meta_ok else None)
 
 
 def _build_parameters(params: list) -> list[dict[str, str]]:
@@ -677,7 +711,11 @@ async def automate_issue(
         # учитывает их: восстановленное питание → ответ о восстановлении (не
         # диагностика); ранее выданная диагностика без данных → выезд бригады.
         # Best-effort: любой сбой получения комментариев не должен ломать разбор.
-        comments_digest = await _build_comments_digest(external_id, okdesk)
+        # client_comments — те же комментарии, но ТОЛЬКО клиентские и со своими
+        # датами: из них разбор добирает дату неисправности (см.
+        # _build_comments_context). Модель получает полный дайджест.
+        comments_digest, client_comments = await _build_comments_context(
+            external_id, okdesk)
         # Отправитель: даёт LLM контекст формата письма (разные дочерние Россети
         # оформляют акты по-разному).
         cached_issue = issue_data["issue"]
@@ -735,6 +773,7 @@ async def automate_issue(
             attachments_text=attachments_text or None,
             sender=sender,
             comments=comments_digest or None,
+            client_comments=client_comments,
             example_provider=_example_provider,
             plate_override=plate,
             date_override=date,
@@ -850,11 +889,13 @@ async def parse_issue_facts(
         params = _build_parameters(live.parameters)
         # Комментарии — бесплатный (для токенов) источник: у форвард-писем тело
         # лежит в первом комментарии, иначе номер/дата не найдутся.
-        comments_digest = await _build_comments_digest(external_id, okdesk)
+        comments_digest, client_comments = await _build_comments_context(
+            external_id, okdesk)
         payload = await automation.parse_facts(
             external_id, live.title, live.description, params,
             attachments=(live.attachments if attachments else None),
             comments=comments_digest or None,
+            client_comments=client_comments,
             plate_override=plate, date_override=date,
             created_at=live.created_at,
             ocr_cache=cache,
