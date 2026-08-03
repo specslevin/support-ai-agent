@@ -984,6 +984,21 @@ _BARE_MILEAGE_AFTER_PLATE_RE = re.compile(
     r"^\s*[-–—]?\s*(\d+(?:[.,]\d+)?)\s*(км|м)(?![а-яё])", re.I)
 
 
+# Код региона, УНЕСЁННЫЙ на следующую строку вёрсткой таблицы/письма:
+# «АГП Т309УС \n164 \n07.04.2026» (63317, Приволжское ПО), «А 818 МЕ\n73
+# Барышское ПО» (65772). Пока `_parse_body_vehicles` склеивал весь текст в одну
+# строку, такой регион подхватывался; после сохранения переводов строк (см. ниже)
+# он бы потерялся — диф по корпусу нашёл ровно 6 таких номеров.
+# Приклеиваем обратно ТОЛЬКО когда:
+#   - слева ровно буква гос.номера (`(?<=[_L])`) — то есть строка кончается тем,
+#     чему региона и не хватает;
+#   - справа НЕ маркер пункта списка (`10.`, `10)`, а также «29 .» — OCR ставит
+#     пробел перед точкой, 66087) и не продолжение числа: иначе вернулся бы сам
+#     дефект «М244ХО10».
+_ORPHAN_REGION_RE = re.compile(
+    rf"(?<=[{_L}])[ \t]*\n[ \t]*(\d{{2,3}})(?!\d)(?![ \t]*[.)])", re.I)
+
+
 def _parse_body_vehicles(text: str | None, bare_mileage_ok: bool = False,
                          ) -> list[tuple[str, str | None, float | None, float | None]]:
     """Нумерованный тело-список «1. <номер> <модель>, … за <дата> … ГЛОНАСС X км,
@@ -993,7 +1008,10 @@ def _parse_body_vehicles(text: str | None, bare_mileage_ok: bool = False,
     (номер без региона, дата) — см. ниже про строки без даты."""
     if not text:
         return []
-    body = _strip_html(text)
+    # Переводы строк СОХРАНЯЕМ (_strip_html их убивал): в нумерованном списке
+    # это единственная граница пунктов, без неё «М244ХО \n 10.» давало номер
+    # «М244ХО10» — номер пункта уезжал в код региона (C4, класс 1).
+    body = _ORPHAN_REGION_RE.sub(r" \1", _strip_html_keep_lines(text))
     matches = list(_PLATE_RE.finditer(body))
     rows: list[list[Any]] = []                      # [plate, date, sheet, glonass]
     idx_by_key: dict[tuple[str, str | None], int] = {}
@@ -1713,6 +1731,42 @@ def _strip_html(text: str | None) -> str:
     if not text:
         return ""
     return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", text)).strip()
+
+
+# Блочные HTML-теги = граница СТРОКИ, а не пробел. Описания из Okdesk приходят
+# HTML-ом («<p>9.&nbsp;ГАЗ, М244ХО</p><p>10.&nbsp;ГАЗ, Н896НУ</p>»), и если снять
+# теги пробелом, границы пунктов нумерованного списка не останется вовсе.
+# `</td>`/`</th>` СОЗНАТЕЛЬНО не здесь: ячейки одной строки таблицы должны
+# остаться на одной строке, иначе ключ пробега и число разъезжаются по строкам.
+_HTML_BLOCK_RE = re.compile(
+    r"(?i)</?\s*(?:br|p|div|tr|li|h[1-6]|blockquote|hr|pre)\b[^>]*>")
+
+
+def _strip_html_keep_lines(text: str | None) -> str:
+    """`_strip_html`, но ПЕРЕВОДЫ СТРОК СОХРАНЯЮТСЯ.
+
+    Нужен только `_parse_body_vehicles`: там перевод строки — единственная
+    граница между пунктами нумерованного списка, и на неё прямо опираются обе
+    ветви региона в регулярках номера (`[ \\t]{1,2}\\d{2,3}`, см. `_PLATE_RE`).
+    Через обычный `_strip_html` («\\s+» → пробел) граница исчезала, и в списке
+    «9.\\tГАЗ, М244ХО \\n 10.\\tГАЗ, Н896НУ» номер пункта «10» уезжал в код
+    региона: получались выдуманные «М244ХО10», «Н896НУ11» — формально валидные
+    номера, поэтому и `plate_format_suspect` их не помечал (C4, класс 1; ломалось
+    ровно с пункта 10, когда нумерация становится двузначной).
+
+    Сам `_strip_html` не меняем: он работает в десятке других ветвей разбора.
+
+    Результат посимвольно совпадает с `_strip_html`, кроме того, что на месте
+    перевода строки стоит «\\n», а не пробел: горизонтальные пробелы схлопнуты,
+    подряд идущие переводы строк — в один. Это важно для окон вида
+    `[^\\d]{0,25}` — их длины остаются прежними."""
+    if not text:
+        return ""
+    t = _HTML_BLOCK_RE.sub("\n", text)
+    t = re.sub(r"<[^>]+>", " ", t)
+    t = re.sub(r"[^\S\n]+", " ", t)
+    t = re.sub(r"[^\S\n]*\n\s*", "\n", t)
+    return t.strip()
 
 
 _MD_NOISE_RE = re.compile(r"\*\*|\*|__|`|#+|^\s*[-•]\s+", re.M)
@@ -3534,10 +3588,15 @@ class IssueAutomationService:
             "teleports": [index_map[i] for i in teleports if i in index_map],
         }
 
-    # Hard cap on attachments processed per batch. Without it, issues like
-    # ОДКРА «письма» (9+ scanned letter-PDFs) trigger minutes of Tesseract OCR
-    # per request — the call never returns and the UI shows «Ошибка разбора».
-    _BATCH_MAX_ATTACHMENTS = 25
+    # Страховка от бесконечного списка вложений. От тяжёлого OCR защищает НЕ она,
+    # а бюджет ВРЕМЕНИ ниже (`_BATCH_REQUEST_BUDGET_S`): что не успели — доедается
+    # следующим проходом «Обновить разбор», прогресс копится в кэше `ocr:<att_id>`.
+    # Было 25, и на заявке с 28 актами (4880, Жигулевское) три Word-акта не
+    # читались ВООБЩЕ, а оператор видел «25 из 25, готово» — числа трёх машин
+    # просто не существовало в вердикте (C4, класс 4). Word читается быстро
+    # (28 файлов за ~8 с), поэтому лимит поднят с запасом; он остаётся только
+    # предохранителем от выгрузок по всему парку.
+    _BATCH_MAX_ATTACHMENTS = 100
     # Бюджет времени на ОДИН запрос разбора (сервер 1 ядро/1 ГБ — большой
     # многоактный PDF не успевает целиком за окно фронт-таймаута 90 с). Новые
     # вложения перестаём начинать после дедлайна; распознанное копится в кэше
@@ -3769,9 +3828,14 @@ class IssueAutomationService:
             return acc, done, next_page
 
         batch_atts = extractable[: self._BATCH_MAX_ATTACHMENTS]
+        # Знаменатель прогресса считаем по ПОЛНОМУ списку пригодных вложений, а не
+        # по обрезанному: иначе обрезка была невидимой и «25 из 25, готово» врало
+        # (C4, класс 4). Отрезанные показываем отдельным числом и НЕ даём
+        # выставить complete=true — «готово» не должно значить «часть потеряли».
+        prog_cut = max(len(extractable) - len(batch_atts), 0)
         prog_done = 0       # вложений распознано полностью
         prog_pages = 0      # суммарно страниц распознано (курсоры)
-        prog_complete = True
+        prog_complete = not prog_cut
         for a in batch_atts:
             name = getattr(a, "attachment_file_name", None) or ""
             # Картинка из ПОДПИСИ письма (Outlook нумерует их image001.png,
@@ -4057,9 +4121,20 @@ class IssueAutomationService:
 
             chunk = await asyncio.gather(*(_one(p, d, s, g) for p, d, s, g in uniq))
             results.extend(r for r in chunk if r is not None)
-        # Глобальный дедуп по (номер без региона, дата) ПОВЕРХ всех вложений: один
-        # и тот же ТС на одну дату мог прийти в РАЗНЫХ вложениях/актах либо как
-        # вариант номера с регионом и без (64513). Строки без номера сохраняем.
+        # Глобальный дедуп ПОВЕРХ всех вложений. Ключ — (номер без региона, дата,
+        # ФАЙЛ): у одного ТС за один день бывает ДВА РАЗНЫХ путевых листа, и это
+        # разные акты в разных файлах (Жигулевское ПО, 4915: №ТР150 «203/157» и
+        # №ТР151 «157/47»). По ключу (номер, дата) второй акт молча выбрасывался —
+        # счётчик не уменьшался, warning не ставился, и оператор видел цифры
+        # ЧУЖОГО акта (C4, класс 5). Разные акты = разные строки со своими
+        # цифрами и вердиктами (решение пользователя, интервью 4).
+        # Настоящий дубль по-прежнему схлопываем ДВУМЯ способами:
+        #   - мульти-акт PDF (64513) — там оба акта пришли из ОДНОГО файла, и их
+        #     сводит дедуп по (номер, дата) внутри вложения (см. `seen_pairs` выше);
+        #   - один и тот же акт, приложенный ДВАЖДЫ разными файлами (дубль-PDF
+        #     письма, 3900/1591): цифры у таких строк совпадают до знака, поэтому
+        #     схлопываем по (номер, дата, ПЛ, заявленный, моточасы) — оператору
+        #     такие две строки всё равно неразличимы, а данных в них не больше.
         # Строка БЕЗ даты, у которой есть та же машина С датой, — артефакт
         # страховки мульти-документа (номер добран из имени файла с date=None),
         # а не отдельный выезд: 61292 давал три строки на два ТС — Т185ТН73 с
@@ -4067,7 +4142,8 @@ class IssueAutomationService:
         dated_keys = {_plate_dedup_key(str(r.get("plate")))
                       for r in results if r.get("plate") and r.get("date")}
         final: list[dict[str, Any]] = []
-        seen_final: set[tuple[str, str | None]] = set()
+        seen_final: set[tuple[Any, ...]] = set()
+        seen_facts: set[tuple[Any, ...]] = set()
         for r in results:
             plate = r.get("plate")
             if not plate:
@@ -4075,10 +4151,14 @@ class IssueAutomationService:
                 continue
             if not r.get("date") and _plate_dedup_key(str(plate)) in dated_keys:
                 continue
-            key = (_plate_dedup_key(str(plate)), r.get("date"))
-            if key in seen_final:
+            pkey = (_plate_dedup_key(str(plate)), r.get("date"))
+            key = (*pkey, r.get("file"))
+            facts = (*pkey, r.get("sheet_mileage_km"), r.get("declared_system_km"),
+                     r.get("engine_hours"))
+            if key in seen_final or facts in seen_facts:
                 continue
             seen_final.add(key)
+            seen_facts.add(facts)
             final.append(r)
         # Один и тот же ТС пришёл с РАЗНЫМИ датами из разных вложений: 65484 —
         # заявка-PDF даёт 16.07, акт того же ТС 15.07, и разбор проверял ПУСТОЙ
@@ -4111,8 +4191,9 @@ class IssueAutomationService:
         if progress_out is not None:
             progress_out.update({
                 "complete": prog_complete,
-                "attachments_total": len(batch_atts),
+                "attachments_total": len(extractable),
                 "attachments_done": prog_done,
+                "attachments_skipped": prog_cut,
                 "pages_done": prog_pages,
             })
         return final

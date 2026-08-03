@@ -1255,6 +1255,12 @@ def _discount_signature_attachments(progress: dict[str, object],
     ``attachments_skipped``, а знаменатель никогда не опускается ниже уже
     сделанного (в сервисе список вложений ещё и обрезан лимитом
     ``_BATCH_MAX_ATTACHMENTS``, так что вычитать «в слепую» нельзя).
+
+    ``attachments_skipped`` значит «вложение в разбор не пошло» и складывается из
+    ДВУХ причин, поэтому число здесь ПРИБАВЛЯЕМ, а не перезаписываем: сервис уже
+    мог положить туда файлы, отрезанные лимитом (П4, класс 4). Отличить одно от
+    другого можно по ``complete``: картинка подписи его не сбрасывает, а вот
+    отрезанный лимитом файл — сбрасывает, потому что данные реально потеряны.
     """
     skipped = 0
     for att in attachments or []:
@@ -1265,7 +1271,8 @@ def _discount_signature_attachments(progress: dict[str, object],
         return
     total = progress.get("attachments_total")
     done = progress.get("attachments_done")
-    progress["attachments_skipped"] = skipped
+    prev = progress.get("attachments_skipped")
+    progress["attachments_skipped"] = skipped + (prev if isinstance(prev, int) else 0)
     if isinstance(total, int) and isinstance(done, int):
         progress["attachments_total"] = max(total - skipped, done, 0)
 
