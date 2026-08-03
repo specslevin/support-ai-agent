@@ -7,13 +7,13 @@ import json
 import re
 import urllib.parse
 # Алиас: имя `fields` уже занято локальной переменной в /issues/{id}/fields.
-from dataclasses import fields as _dc_fields
+from dataclasses import asdict, fields as _dc_fields
 
 import httpx
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from app.services import attachment_reader
 
@@ -36,7 +36,8 @@ from app.core.okdesk.client import OkdeskAPIError
 from app.core.okdesk.models import Employee
 from app.core.okdesk.service import OkdeskService
 from app.core.services.cache_service import CacheService
-from app.services.issue_automation import IssueAutomationService, ParsedIssue, TelemetryFacts
+from app.services.issue_automation import (IssueAutomationService, ParsedIssue,
+                                           TelemetryFacts, _plate_format_suspect)
 
 log = structlog.get_logger(__name__)
 router = APIRouter(prefix="/issues", tags=["dashboard:issues"])
@@ -51,12 +52,105 @@ def _is_aggregate(company_name: str | None, description: str | None,
     """
     if company_name and "одкр" in company_name.lower():
         return True
+    plates = {o.get("plate") for o in objects if o.get("plate")}
+    # Очень много ТС — сводная выгрузка по всему парку, а не письмо про
+    # конкретные машины: 62959 приложил два XLSX на ~91 строку каждый (182 строки,
+    # весь парк ПО) как ДОКАЗАТЕЛЬСТВО сбоя списка, и разбор трактовал это как 91
+    # отдельную претензию по пробегу. Порог 25 — та же граница, за которой модель
+    # перестаёт держать объекты по отдельности (_AI_BATCH_MAX_OBJECTS), и он
+    # заведомо выше самых больших РЕАЛЬНЫХ писем-заявок (11-13 ТС).
+    if len(plates) >= 25:
+        return True
     body = (description or "").strip()
-    if not body:
-        plates = {o.get("plate") for o in objects if o.get("plate")}
-        if len(plates) >= 5:
-            return True
+    if not body and len(plates) >= 5:
+        return True
     return False
+
+
+# Заявка, удалённая или слитая в Okdesk. Okdesk отдаёт на неё HTTP 200 с телом
+# {"errors": "Записи не существует"} — без ключа `id`, поэтому Issue.model_validate
+# падает ValidationError, а эндпоинты валились в 500 / показывали общую ноту.
+_GONE_DETAIL = "Заявка удалена или слита в Okdesk — разбор невозможен"
+_GONE_NOTE = "Заявка удалена или слита в Okdesk"
+
+
+async def _live_issue(okdesk: OkdeskService, external_id: int,
+                      issue_id: int | None = None):
+    """``okdesk.get_issue`` + распознавание «мёртвой» заявки.
+
+    Уточняющий запрос (``issue_exists``) делаем ТОЛЬКО после ValidationError:
+    у здоровой заявки (подавляющее большинство) поход в Okdesk по-прежнему один.
+
+    Поднимает ``HTTPException(410)``, когда заявка точно слита/удалена. Если
+    ``issue_exists`` вернул ``None`` (сеть/5xx — неопределённо) или ``True``
+    (валидация упала по другой причине), пробрасываем исходную ошибку и ведём
+    себя как раньше.
+    """
+    try:
+        return await okdesk.get_issue(external_id)
+    except httpx.HTTPStatusError as exc:
+        # Честный 404 от Okdesk — тот же случай, уточняющий запрос не нужен.
+        if exc.response is not None and exc.response.status_code == 404:
+            log.warning("okdesk_issue_gone", issue_id=issue_id,
+                        external_id=external_id, http_status=404)
+            raise HTTPException(status_code=410, detail=_GONE_DETAIL) from None
+        raise
+    except ValidationError:
+        alive = await okdesk.issue_exists(external_id)
+        if alive is False:
+            log.warning("okdesk_issue_gone", issue_id=issue_id,
+                        external_id=external_id)
+            raise HTTPException(status_code=410, detail=_GONE_DETAIL) from None
+        raise
+
+
+def _is_gone(exc: HTTPException) -> bool:
+    """Это наш 410 «заявки больше нет»?"""
+    return exc.status_code == 410
+
+
+def _empty_parse_payload(note: str) -> dict[str, object]:
+    """Валидный пустой разбор по фактам — контракт /parse не меняется."""
+    return {
+        "parsed": {}, "objects": [], "total": 0,
+        "jamming_count": 0, "ok_count": 0,
+        "telemetry": None, "verdict": None, "heuristic_category": None,
+        "verdict_source": None, "spec_vehicle": False,
+        "needs_remote_diagnostics": False, "is_aggregate": False,
+        "note": note,
+    }
+
+
+def _empty_batch_payload(note: str) -> dict[str, object]:
+    """Валидный пустой разбор по объектам — контракт /automate_batch не меняется."""
+    return {
+        "total": 0,
+        "jamming_count": 0,
+        "ok_count": 0,
+        "is_aggregate": False,
+        "objects": [],
+        "note": note,
+    }
+
+
+def _failed_automate_payload(reasoning: str) -> dict[str, object]:
+    """Валидный результат ИИ-разбора с needs_review — контракт /automate не меняется."""
+    return {
+        "parsed": {
+            "plate": None, "date": None, "sheet_mileage_km": None,
+            "declared_system_km": None, "llm_extracted": False,
+        },
+        "telemetry": {},
+        "category": "Общий разбор",
+        "confidence": 0.0,
+        "draft_answer": "",
+        "reasoning": reasoning,
+        "needs_review": True,
+        "error": "automation_failed",
+        # Вердикта нет вообще — источник не указываем (не «rules» и не «ai»).
+        "verdict_source": None,
+        "heuristic_category": None,
+    }
 
 
 @router.get("", response_model=PaginatedIssuesResponse)
@@ -594,7 +688,7 @@ async def installer_export(
             raise HTTPException(status_code=404, detail="Issue not found")
         cached_issue = issue_data["issue"]
         external_id = cached_issue.external_id
-        live = await okdesk.get_issue(external_id)
+        live = await _live_issue(okdesk, external_id, issue_id)
 
         # Приоритет — ПАРАМЕТРЫ заявки (у структурированных заявок есть «Номер
         # телефона»/«Контактное лицо»/«Местоположение техники» — ровно то, что нужно
@@ -702,7 +796,7 @@ async def automate_issue(
         if not issue_data:
             raise HTTPException(status_code=404, detail="Issue not found")
         external_id = issue_data["issue"].external_id
-        live = await okdesk.get_issue(external_id)
+        live = await _live_issue(okdesk, external_id, issue_id)
         params = _build_parameters(live.parameters)
         attachments_text = ""
         if live.attachments:
@@ -807,7 +901,13 @@ async def automate_issue(
         except Exception:
             log.warning("automate_facts_cache_save_failed", issue_id=issue_id)
         return result_dict
-    except HTTPException:
+    except HTTPException as exc:
+        if _is_gone(exc):
+            # Заявки в Okdesk больше нет: разбирать нечего, но 410 здесь означал
+            # бы для фронта «Ошибка анализа». Отдаём валидный пустой результат с
+            # честной причиной. Кэш НЕ перезаписываем — прежний разбор ценнее.
+            return _failed_automate_payload(
+                f"{_GONE_NOTE}. Автоматический разбор невозможен.")
         raise
     except Exception:
         # Не валим запрос в 500 (фронт показывает «Ошибка анализа. Попробуйте
@@ -816,26 +916,11 @@ async def automate_issue(
         # что произошло, и мог разобрать заявку вручную. Кейс 64196: непредвиденный
         # сбой в одном из вызовов (Okdesk/LLM/инструмент) ронял весь разбор.
         log.exception("automate_issue_failed", issue_id=issue_id)
-        return {
-            "parsed": {
-                "plate": None, "date": None, "sheet_mileage_km": None,
-                "declared_system_km": None, "llm_extracted": False,
-            },
-            "telemetry": {},
-            "category": "Общий разбор",
-            "confidence": 0.0,
-            "draft_answer": "",
-            "reasoning": (
-                "Не удалось выполнить автоматический разбор заявки из-за "
-                "внутренней ошибки (сбой обращения к Okdesk/телеметрии/ИИ). "
-                "Разберите заявку вручную или повторите попытку позже."
-            ),
-            "needs_review": True,
-            "error": "automation_failed",
-            # Вердикта нет вообще — источник не указываем (не «rules» и не «ai»).
-            "verdict_source": None,
-            "heuristic_category": None,
-        }
+        return _failed_automate_payload(
+            "Не удалось выполнить автоматический разбор заявки из-за "
+            "внутренней ошибки (сбой обращения к Okdesk/телеметрии/ИИ). "
+            "Разберите заявку вручную или повторите попытку позже."
+        )
 
 
 @router.get("/{issue_id}/automate")
@@ -885,7 +970,7 @@ async def parse_issue_facts(
         if not issue_data:
             raise HTTPException(status_code=404, detail="Issue not found")
         external_id = issue_data["issue"].external_id
-        live = await okdesk.get_issue(external_id)
+        live = await _live_issue(okdesk, external_id, issue_id)
         params = _build_parameters(live.parameters)
         # Комментарии — бесплатный (для токенов) источник: у форвард-писем тело
         # лежит в первом комментарии, иначе номер/дата не найдутся.
@@ -915,20 +1000,19 @@ async def parse_issue_facts(
         except Exception:
             log.warning("parse_cache_save_failed", issue_id=issue_id)
         return payload
-    except HTTPException:
+    except HTTPException as exc:
+        if _is_gone(exc):
+            # Причина — в самой ноте, а не в общем «обработайте вручную».
+            # В result_cache ничего не пишем: пустышка затёрла бы прежний разбор.
+            return _empty_parse_payload(
+                f"{_GONE_NOTE} — разбирать нечего.")
         raise
     except Exception:
         # Как и в automate_batch: отдаём валидный пустой разбор с пояснением,
         # а не 500 — оператор видит причину и работает вручную.
         log.exception("parse_issue_facts_failed", issue_id=issue_id)
-        return {
-            "parsed": {}, "objects": [], "total": 0,
-            "jamming_count": 0, "ok_count": 0,
-            "telemetry": None, "verdict": None, "heuristic_category": None,
-            "verdict_source": None, "spec_vehicle": False,
-            "needs_remote_diagnostics": False, "is_aggregate": False,
-            "note": "Не удалось выполнить разбор по фактам. Обработайте заявку вручную.",
-        }
+        return _empty_parse_payload(
+            "Не удалось выполнить разбор по фактам. Обработайте заявку вручную.")
 
 
 @router.get("/{issue_id}/parse")
@@ -1063,7 +1147,7 @@ async def list_issue_attachments(
         if not issue_data:
             raise HTTPException(status_code=404, detail="Issue not found")
         external_id = issue_data["issue"].external_id
-        live = await okdesk.get_issue(external_id)
+        live = await _live_issue(okdesk, external_id, issue_id)
         out: list[dict[str, object]] = []
         for a in live.attachments:
             name = a.attachment_file_name or ""
@@ -1101,7 +1185,7 @@ async def download_issue_attachment(
         if not issue_data:
             raise HTTPException(status_code=404, detail="Issue not found")
         external_id = issue_data["issue"].external_id
-        live = await okdesk.get_issue(external_id)
+        live = await _live_issue(okdesk, external_id, issue_id)
         meta = next((a for a in live.attachments if a.id == attachment_id), None)
         result = await okdesk.download_attachment(external_id, attachment_id)
         if not result:
@@ -1134,7 +1218,7 @@ async def automate_batch(
         if not issue_data:
             raise HTTPException(status_code=404, detail="Issue not found")
         external_id = issue_data["issue"].external_id
-        live = await okdesk.get_issue(external_id)
+        live = await _live_issue(okdesk, external_id, issue_id)
         objects: list[dict[str, object]] = []
         note: str | None = None
         # ocr_progress: complete=False означает, что OCR части вложений не дошёл до
@@ -1165,7 +1249,18 @@ async def automate_batch(
         jamming = sum(1 for o in objects if o.get("verdict") == "Глушение")
         ok_data = sum(1 for o in objects if o.get("verdict") == "Данные верны")
         company_name = getattr(issue_data["issue"], "company_name", None)
+        # Сводный `parsed` пакетный разбор раньше не отдавал вовсе, и фронт не мог
+        # показать ни ярлык типа заявки, ни пометку «год исправлен» — они приходили
+        # только через /parse. Считаем без единого сетевого вызова: parse_issue —
+        # это regex по теме и телу.
+        parsed_head = automation.parse_issue(live.title, live.description,
+                                             created_at=live.created_at)
+        parsed_out = asdict(parsed_head)
+        parsed_out["plate_format_suspect"] = _plate_format_suspect(parsed_head.plate)
+        parsed_out["issue_intent"] = next(
+            (o.get("issue_intent") for o in objects if o.get("issue_intent")), None)
         payload = {
+            "parsed": parsed_out,
             "total": len(objects),
             "jamming_count": jamming,
             "ok_count": ok_data,
@@ -1179,20 +1274,18 @@ async def automate_batch(
         except Exception:
             log.warning("batch_cache_save_failed", issue_id=issue_id)
         return payload
-    except HTTPException:
+    except HTTPException as exc:
+        if _is_gone(exc):
+            # Причина — в ноте; кэш ("batch" хранит правки оператора) не трогаем.
+            return _empty_batch_payload(
+                f"{_GONE_NOTE} — разбирать нечего.")
         raise
     except Exception:
         # Last-resort guard: still return a usable payload rather than a 500 so
         # the operator sees a note instead of «Ошибка разбора».
         log.exception("automate_batch_failed", issue_id=issue_id)
-        return {
-            "total": 0,
-            "jamming_count": 0,
-            "ok_count": 0,
-            "is_aggregate": False,
-            "objects": [],
-            "note": "Не удалось выполнить разбор по объектам. Обработайте заявку вручную.",
-        }
+        return _empty_batch_payload(
+            "Не удалось выполнить разбор по объектам. Обработайте заявку вручную.")
 
 
 @router.get("/{issue_id}/automate_batch")
@@ -2014,7 +2107,7 @@ async def compose_answer(
                 objects = cached["data"]["objects"]
                 break
         if not objects:
-            live = await okdesk.get_issue(external_id)
+            live = await _live_issue(okdesk, external_id, issue_id)
             objects = await automation.analyze_batch(external_id, live.attachments,
                                                      issue_title=live.title,
                                                      issue_description=live.description,
@@ -2141,7 +2234,7 @@ async def create_children(
         if not issue_data:
             raise HTTPException(status_code=404, detail="Issue not found")
         external_id = issue_data["issue"].external_id
-        parent = await okdesk.get_issue(external_id)
+        parent = await _live_issue(okdesk, external_id, issue_id)
         contact_id = parent.contact.id if parent.contact else None
         # Ответственного дочерней наследуем от родительской заявки.
         parent_assignee_id = parent.assignee.id if getattr(parent, "assignee", None) else None
@@ -2239,7 +2332,7 @@ async def get_issue_track(
                         date_from=date_from, date_to=date_to)
         except Exception:
             log.warning("track_prefer_automate_failed", issue_id=issue_id)
-        live = await okdesk.get_issue(external_id)
+        live = await _live_issue(okdesk, external_id, issue_id)
         attachments_text = ""
         if live.attachments:
             attachments_text = await automation.read_attachments(external_id, live.attachments)
@@ -2464,7 +2557,7 @@ async def get_extracted(
         if not issue_data:
             raise HTTPException(status_code=404, detail="Issue not found")
         external_id = issue_data["issue"].external_id
-        live = await okdesk.get_issue(external_id)
+        live = await _live_issue(okdesk, external_id, issue_id)
         att_text = ""
         try:
             att_text = await automation.read_attachments(external_id, live.attachments or [])

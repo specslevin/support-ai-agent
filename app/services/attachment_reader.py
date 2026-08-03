@@ -285,8 +285,17 @@ def _xlsx(data: bytes) -> str:
     for ws in wb.worksheets:
         parts.append(f"# Лист: {ws.title}")
         for row in ws.iter_rows(values_only=True):
-            vals = [str(c) for c in row if c is not None]
-            if vals:
+            # ПУСТЫЕ ЯЧЕЙКИ СОХРАНЯЕМ как пустые поля, а не выбрасываем. Раньше
+            # строка схлопывалась и колонки съезжали: у спецтехники без одометра
+            # («Амкадор О120ОО 73 | | | | | | 1») заполнена только колонка
+            # «Моточасы», и единственное уцелевшее число читалось как «Пробег по
+            # ГЛОНАСС» — 1 моточас превращался в 1 км (65604, 65478, 65450).
+            # Хвостовые пустые ячейки убираем: они ничего не позиционируют, но
+            # раздували бы строку до ширины листа.
+            vals = ["" if c is None else str(c).strip() for c in row]
+            while vals and not vals[-1]:
+                vals.pop()
+            if any(vals):
                 parts.append(" | ".join(vals))
     return "\n".join(parts)
 

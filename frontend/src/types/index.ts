@@ -111,6 +111,22 @@ export interface Comment {
 
 export type StatusCode = 'opened' | 'in_progress' | 'resolved' | 'closed' | string
 
+/**
+ * Ярлык «почему заявка ушла из пробеговой лестницы»: заявка не о расхождении
+ * пробега, а о работах с прибором (или о просьбе обнулить ложный пробег).
+ * Список открытый — бэкенд может добавить ярлык, фронт покажет его как есть.
+ */
+export type KnownIssueIntent =
+  | 'перемещение объекта'
+  | 'замена прибора'
+  | 'отключение / деактивация'
+  | 'подключение'
+  | 'установка / монтаж'
+  | 'обнуление ложного пробега'
+
+/** То, что реально приходит по сети: известный ярлык либо любой новый от бэкенда. */
+export type IssueIntent = KnownIssueIntent | string
+
 export interface AutomationParsed {
   plate: string | null
   date: string | null
@@ -124,6 +140,19 @@ export interface AutomationParsed {
   declared_system_km: number | null
   llm_extracted?: boolean
   plate_format_suspect?: boolean
+  /**
+   * Почему заявка вышла из пробеговой лестницы (установка, замена, отключение,
+   * перемещение, подключение прибора, обнуление ложного пробега). null/отсутствие
+   * — обычная заявка о расхождении пробега.
+   */
+  issue_intent?: IssueIntent | null
+  /**
+   * Год в дате неисправности исправлен НАМИ: клиент написал «01.07.2028» или
+   * прошлогоднюю дату, разбор подставил год заявки. Это догадка системы, а не
+   * текст клиента — рядом с датой показываем пометку. Поле необязательное:
+   * разборы из старого кэша его не несут.
+   */
+  date_year_fixed?: boolean
 }
 
 export interface AutomationTelemetry {
@@ -144,6 +173,12 @@ export interface AutomationTelemetry {
   speed_spike_count: number
   teleport_jumps: number
   max_implied_kmh: number | null
+  /**
+   * Флаги телеметрии: `jamming_suspect`, `low_satellites`, `track_gap`,
+   * `power_off`, `no_data`, `object_not_found`, `zero_coords`, `speed_spike`,
+   * `teleport`, `sparse_data` (терминал почти не выходил на связь за сутки —
+   * вероятна неисправность или демонтаж). Подписи — FLAG_LABELS в TelemetryPanel.
+   */
   flags: string[]
 }
 
@@ -211,7 +246,11 @@ export interface BatchObject {
   plate: string | null
   date: string | null
   sheet_mileage_km: number | null
-  /** Моточасы по путевому листу (спецтехника): показываем как «м/ч», не как км. */
+  /**
+   * Моточасы (спецтехника): показываем как «м/ч», не как км. Приезжают и у
+   * одиночной заявки (клиент пишет «ПЛ-1 м/ч»), и у строк из ВЛОЖЕНИЙ —
+   * табличный XLSX «Группировка», колонка «Моточасы».
+   */
   engine_hours?: number | null
   declared_system_km?: number | null
   system_mileage_km: number | null
@@ -261,6 +300,12 @@ export interface BatchResult {
   ok_count: number
   is_aggregate?: boolean
   objects: BatchObject[]
+  /**
+   * Сводные факты заявки (ярлык `issue_intent`, признак правки года в дате).
+   * Опционально: ответы batch-эндпоинтов правки строк его не содержат, а старые
+   * кэши разбора не знают о нём вовсе.
+   */
+  parsed?: AutomationParsed | null
   ocr_progress?: OcrProgress
   /** Когда по заявке звали ИИ (`POST /batch/ai`) — платная кнопка после этого гаснет. */
   ai_called_at?: string | null

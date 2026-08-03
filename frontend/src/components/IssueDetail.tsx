@@ -17,8 +17,8 @@ import { useAuthStore } from '../store/authStore'
 import { StatusBadge } from './StatusBadge'
 import { EmployeeMenu, TypeMenu } from './pickers'
 import type {
-  OkdeskDetail, Template, AutomationResult, BatchResult, BatchObject, ParseResult,
-  VerdictSource, IssueAttachment, RelatedIssue,
+  OkdeskDetail, Template, AutomationResult, AutomationParsed, BatchResult, BatchObject,
+  ParseResult, VerdictSource, IssueAttachment, RelatedIssue,
 } from '../types'
 import {
   extractPlaceholders, hasPlaceholders, renderTemplate,
@@ -26,8 +26,9 @@ import {
 } from '../lib/templates'
 import { STATUS_COLOR, statusPillStyle } from '../lib/status'
 import {
-  TelemetryPanel, VerdictPill, VERDICT_TEXT_STYLE,
+  TelemetryPanel, VerdictPill, VERDICT_TEXT_STYLE, IssueIntentChip,
   normalizeVerdictSource, verdictSourceHint, verdictDisagreement,
+  isNonMileageVerdict, isServiceVerdict, NON_MILEAGE_HINT,
 } from './TelemetryPanel'
 
 function formatDate(iso: string | null | undefined) {
@@ -1598,6 +1599,8 @@ function verdictCellHint(o: BatchObject): string {
 const VERDICT_ORDER = [
   'Глушение', 'Данные верны', 'Не было питания', 'Терминал подключился',
   'Изменили настройки', 'Проверить', 'Нет данных', 'Объект не найден',
+  // Служебные — в хвост: по ним клиенту не отвечают (см. SERVICE_VERDICTS).
+  'Не заявка о расхождении пробега', 'Ложный пробег / экранирование',
   'Номер не распознан', 'Нет даты', 'Нет номера/даты', 'Ошибка данных',
 ]
 
@@ -1605,7 +1608,12 @@ const VERDICT_ORDER = [
  * Сводка разбора: «Всего N: вердикт × k» + бейдж «ИИ не вызывался», пока ни один
  * вердикт в таблице не получен от DeepSeek. Одна реализация на обе таблицы.
  */
-function ParseSummary({ objects, total }: { objects: BatchObject[]; total?: number }) {
+function ParseSummary({ objects, total, intent }: {
+  objects: BatchObject[]
+  total?: number
+  /** `parsed.issue_intent` — ярлык «про что заявка», если она не о пробеге. */
+  intent?: string | null
+}) {
   const counts: Record<string, number> = {}
   for (const o of objects) counts[o.verdict] = (counts[o.verdict] ?? 0) + 1
   const keys = Object.keys(counts).sort((a, b) => VERDICT_ORDER.indexOf(a) - VERDICT_ORDER.indexOf(b))
@@ -1616,6 +1624,8 @@ function ParseSummary({ objects, total }: { objects: BatchObject[]; total?: numb
       {keys.map(v => (
         <span key={v} className={VERDICT_STYLE[v] ?? 'text-white'}>{v} {counts[v]}</span>
       ))}
+      {/* Почему заявка не о пробеге — сразу в шапке разбора, до таблицы. */}
+      <IssueIntentChip intent={intent} />
       {!aiCalled && (
         <SumBadge title="Вердикты посчитаны правилами бесплатно. DeepSeek по этим объектам не вызывался — обоснования, уверенности и черновика ответа пока нет">
           ИИ не вызывался
@@ -1949,21 +1959,55 @@ function manualEditedRows(objects: BatchObject[]): { obj: BatchObject; what: str
 }
 
 /**
- * Моточасы по путевому листу рядом с колонкой «ПЛ». У спецтехники клиент пишет
- * «ПЛ-1 м/ч» вместо километров — показываем это отдельной пометкой, чтобы м/ч
- * никогда не читались как км и не попадали в поле правки пробега оператором
- * (там по-прежнему только километры). Пусто — ничего не рисуем.
+ * Моточасы рядом с колонкой «ПЛ». У спецтехники клиент пишет «ПЛ-1 м/ч» вместо
+ * километров, а в табличных вложениях («Группировка», колонка «Моточасы») они
+ * приезжают своей графой — показываем отдельной пометкой, чтобы м/ч никогда не
+ * читались как км и не попадали в поле правки пробега оператором (там
+ * по-прежнему только километры). Пусто — ничего не рисуем.
  */
 function EngineHoursMark({ hours }: { hours?: number | null }) {
   if (hours == null || !Number.isFinite(hours)) return null
   return (
     <span
-      title="Моточасы по путевому листу (спецтехника). Это не километры — в пробег они не подставляются"
+      title="Моточасы (спецтехника) — из путевого листа или из колонки «Моточасы» вложения. Это не километры: в пробег они не подставляются"
       className="shrink-0 whitespace-nowrap text-[10px] text-secondary"
     >
       {hours} м/ч
     </span>
   )
+}
+
+/**
+ * «Год исправлен» рядом с датой неисправности (`parsed.date_year_fixed`). Клиент
+ * пишет «01.07.2028» или прошлогоднюю дату — разбор подставляет год заявки. Это
+ * НАША догадка, а не текст клиента, поэтому оператор должен видеть её отдельно.
+ * Пометка тихая: без цвета-тревоги, расшифровка — в тултипе. Поле необязательное
+ * (старые кэши его не несут) — `undefined` значит «ничего не показывать».
+ */
+function YearFixedMark({ on }: { on?: boolean }) {
+  if (!on) return null
+  return (
+    <span
+      title="Год в дате исправлен разбором: клиент указал год, которого не может быть у этой заявки. Это догадка системы — проверьте по письму и при необходимости поправьте дату"
+      className="shrink-0 whitespace-nowrap text-[9px] uppercase leading-3 tracking-[0.4px] text-muted"
+    >
+      год испр.
+    </span>
+  )
+}
+
+/**
+ * Относится ли сводный признак «год исправлен» к ЭТОЙ строке. Признак живёт в
+ * сводных фактах заявки (`parsed`), а строк в разборе может быть двадцать —
+ * помечаем только строку с той же датой и только пока её не правил оператор
+ * (его дату мы не угадывали). Признака нет (старый кэш) → `false`.
+ */
+function yearFixedFor(
+  parsed: AutomationParsed | null | undefined,
+  o: BatchObject,
+): boolean {
+  if (!parsed?.date_year_fixed || o.date_edited) return false
+  return !!o.date && !!parsed.date && o.date === parsed.date
 }
 
 /**
@@ -2090,8 +2134,19 @@ function VerdictCell({ o, loading, readOnly, onChange }: {
     </span>
   ) : null
 
+  // Заявка не о расхождении пробега — предупреждаем прямо в строке: отвечать по
+  // пробеговому шаблону нельзя, телеметрия ниже остаётся только справкой.
+  const service = isNonMileageVerdict(o.verdict) ? (
+    <span
+      title={NON_MILEAGE_HINT}
+      className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-pill border border-border text-secondary text-[9px] font-medium uppercase leading-3 tracking-[0.4px] align-middle"
+    >
+      не о пробеге
+    </span>
+  ) : null
+
   if (readOnly) {
-    return <><VerdictPill verdict={o.verdict} source={rowVerdictSource(o)} />{spec}</>
+    return <><VerdictPill verdict={o.verdict} source={rowVerdictSource(o)} />{service}{spec}</>
   }
 
   const d = verdictDisagreement(o.verdict, o.heuristic_category, rowVerdictSource(o))
@@ -2132,6 +2187,7 @@ function VerdictCell({ o, loading, readOnly, onChange }: {
         )}
         {loading && <span className="ml-1.5 shrink-0 animate-spin text-muted">↻</span>}
       </span>
+      {service}
       {spec}
     </>
   )
@@ -2542,6 +2598,10 @@ function SingleParseTable({ issueId, issueTitle, companyName, onSelect }: {
   // Что именно перезапишет переанализ: пересобирается документ `parse`, значит и
   // ручные правки искать надо в нём, а не в строке из кэша `automate`.
   const riskRows = freeRows.length ? freeRows : rows
+  // Сводные факты (ярлык «про что заявка», правка года в дате) берём из того же
+  // источника, что и строки таблицы, — иначе шапка описывала бы другой разбор.
+  const parsed = ((!automate || parseWins) && freeRows.length ? free?.parsed : automate?.parsed)
+    ?? free?.parsed ?? automate?.parsed ?? null
 
   /** Ответ batch-эндпоинта → кэш бесплатного разбора: он и рисует таблицу после правки. */
   const putParse = (data: BatchResult) => {
@@ -2730,7 +2790,7 @@ function SingleParseTable({ issueId, issueTitle, companyName, onSelect }: {
     <>
     {rows.length > 0 ? (
       <>
-        <ParseSummary objects={rows} total={rows.length} />
+        <ParseSummary objects={rows} total={rows.length} intent={parsed?.issue_intent} />
         <div className="overflow-x-auto">
           <table className="w-full text-[11px]">
             <ParseTableHead actions={canEdit ? 2 : 1} />
@@ -2768,6 +2828,9 @@ function SingleParseTable({ issueId, issueTitle, companyName, onSelect }: {
                       emptyLabel="нет даты"
                       editTitle="Изменить дату неисправности и перепроверить в гео"
                       editedTitle="Дата изменена оператором, перепроверено в гео"
+                      /* Год в дате подставили мы, а не клиент — помечаем только
+                         ту строку, к дате которой относится сводный признак. */
+                      suffix={<YearFixedMark on={yearFixedFor(parsed, o)} />}
                       onApply={val => applyEdit(idx, 'date', val)}
                     />
                   </td>
@@ -2917,12 +2980,18 @@ function AnswerMenuItem({ label, hint, disabled, onClick }: {
  * Раньше этот путь прятался за чипом «✦ черновик ИИ», из-за чего оператор получал
  * ответ по правилам, думая, что его написала модель.
  */
-function RulesAnswerChip({ issueId, objectCount, selectedIdx, plate, date, onUseDraft }: {
+function RulesAnswerChip({ issueId, objectCount, selectedIdx, plate, date, serviceVerdict, onUseDraft }: {
   issueId: number
   objectCount: number
   selectedIdx: number | null
   plate?: string | null
   date?: string | null
+  /**
+   * У выбранной строки СЛУЖЕБНЫЙ вердикт (заявка не о пробеге либо разбор не
+   * состоялся). Ответ по пробеговому шаблону такой строке не подходит — путь
+   * «только по этому ТС» закрываем, чтобы оператор не отправил клиенту чужой текст.
+   */
+  serviceVerdict?: boolean
   onUseDraft: (text: string) => void
 }) {
   const [open, setOpen] = useState(false)
@@ -2936,14 +3005,20 @@ function RulesAnswerChip({ issueId, objectCount, selectedIdx, plate, date, onUse
   const pick = (scope: 'all' | 'object') => { setOpen(false); compose.mutate(scope) }
   // Один объект — выбирать нечего, вставляем сразу без меню.
   const single = objectCount <= 1
+  // Единственная строка со служебным вердиктом: предлагать по ней шаблон нечего —
+  // чип гаснет и объясняет причину. У многообъектной заявки чип живёт: сводный
+  // ответ «по всем» остаётся законным, закрыт только пункт «только по этому ТС».
+  const blocked = !!serviceVerdict && single
 
   return (
     <div className="relative shrink-0">
       <button
         onClick={() => (single ? pick('object') : setOpen(v => !v))}
-        disabled={compose.isPending}
-        title="Ответ по правилам: формулировки готовые, модель не вызывается — бесплатно"
-        className={`flex shrink-0 items-center gap-1 rounded-pill border border-border bg-frame px-2.5 py-[3px] text-[11px] font-medium text-secondary transition-colors hover:border-accent hover:text-accent disabled:opacity-40 ${compose.isPending ? 'animate-pulse cursor-wait' : ''}`}
+        disabled={compose.isPending || blocked}
+        title={blocked
+          ? 'Заявка не о расхождении пробега (или разбор не состоялся) — готового ответа по правилам для неё нет, отвечает оператор'
+          : 'Ответ по правилам: формулировки готовые, модель не вызывается — бесплатно'}
+        className={`flex shrink-0 items-center gap-1 rounded-pill border border-border bg-frame px-2.5 py-[3px] text-[11px] font-medium text-secondary transition-colors hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-border disabled:hover:text-secondary ${compose.isPending ? 'animate-pulse cursor-wait' : ''}`}
       >
         {compose.isPending
           ? <Working label="Собираю…" />
@@ -2960,8 +3035,10 @@ function RulesAnswerChip({ issueId, objectCount, selectedIdx, plate, date, onUse
             />
             <AnswerMenuItem
               label={plate ? `Только по ${plate}` : 'Только по выбранному ТС'}
-              hint={plate ? 'шаблон категории' : 'сначала выберите строку'}
-              disabled={!plate && selectedIdx == null}
+              hint={serviceVerdict
+                ? 'вердикт служебный — шаблона нет'
+                : plate ? 'шаблон категории' : 'сначала выберите строку'}
+              disabled={serviceVerdict || (!plate && selectedIdx == null)}
               onClick={() => pick('object')}
             />
           </div>
@@ -3039,7 +3116,10 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
    * Строки разбора наружу: карточке нужно знать их число (один вызов ИИ на все
    * объекты) и звали ли ИИ — от этого зависит платная кнопка в «Телеметрии».
    */
-  onParse?: (objects: import('../types').BatchObject[], meta?: { aiNote?: string | null; aiSummary?: string | null }) => void
+  onParse?: (
+    objects: import('../types').BatchObject[],
+    meta?: { aiNote?: string | null; aiSummary?: string | null; intent?: string | null },
+  ) => void
 }) {
   const queryClient = useQueryClient()
   const isDemo = useAuthStore(s => s.user?.role === 'demo')
@@ -3135,9 +3215,18 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
   })
   const cached = cachedQ.data?.cached ? cachedQ.data : null
 
-  /** Разбор — один источник правды: кэш запроса. Все правки пишут сюда же. */
+  /**
+   * Разбор — один источник правды: кэш запроса. Все правки пишут сюда же.
+   * Мержим в предыдущий документ: ответы эндпоинтов правки строк не несут сводных
+   * фактов (`parsed`), и без мержа после правки пробега со всей шапки пропадал бы
+   * ярлык «про что заявка».
+   */
   const putBatch = (data: BatchResult) => {
-    queryClient.setQueryData(['batch-cached', issueId], { cached: true, ...data })
+    queryClient.setQueryData(
+      ['batch-cached', issueId],
+      (prev: (BatchResult & { cached?: boolean }) | undefined) =>
+        ({ ...(prev ?? {}), cached: true, ...data, parsed: data.parsed ?? prev?.parsed ?? null }),
+    )
   }
 
   // Строки разбора наружу: карточке нужно их число (один вызов ИИ на все объекты)
@@ -3146,10 +3235,12 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
   const reportRows = cached?.objects ?? null
   const reportNote = cached?.ai_note ?? null
   const reportSummary = cached?.ai_summary_answer ?? null
+  // Ярлык «про что заявка» нужен и блоку телеметрии — он живёт в карточке.
+  const reportIntent = cached?.parsed?.issue_intent ?? null
   useEffect(() => {
-    if (reportRows) onParse?.(reportRows, { aiNote: reportNote, aiSummary: reportSummary })
+    if (reportRows) onParse?.(reportRows, { aiNote: reportNote, aiSummary: reportSummary, intent: reportIntent })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reportRows, reportNote, reportSummary])
+  }, [reportRows, reportNote, reportSummary, reportIntent])
 
   const run = useMutation({
     mutationFn: () => api.automateBatch(issueId),
@@ -3406,7 +3497,7 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
 
       {res && (
         <div className="space-y-2 text-xs">
-          <ParseSummary objects={res.objects} total={res.total} />
+          <ParseSummary objects={res.objects} total={res.total} intent={res.parsed?.issue_intent} />
           <div className="overflow-x-auto">
             <table className="w-full text-[11px]">
               <ParseTableHead actions={isDemo ? 2 : 3} />
@@ -3455,6 +3546,8 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
                           emptyLabel="нет даты"
                           editTitle="Изменить дату неисправности и перепроверить в гео"
                           editedTitle="Дата изменена оператором, перепроверено в гео"
+                          /* Год подставил разбор, а не клиент — см. YearFixedMark. */
+                          suffix={<YearFixedMark on={yearFixedFor(res.parsed, o)} />}
                           onApply={val => handleDateChange(o, val, idx)}
                         />
                       </td>
@@ -4089,6 +4182,9 @@ export function IssueDetail() {
   const [batchAiNote, setBatchAiNote] = useState<string | null>(null)
   // Сводный ответ по всей заявке, написанный моделью (приходит тем же вызовом ИИ).
   const [aiSummary, setAiSummary] = useState<string | null>(null)
+  // `parsed.issue_intent` пакетного разбора: почему заявка вышла из пробеговой
+  // лестницы. У одиночной берём из её собственного разбора (см. ниже).
+  const [batchIntent, setBatchIntent] = useState<string | null>(null)
   const [pendingStatus, setPendingStatus] = useState<typeof ALL_STATUSES[number] | null>(null)
   const [resolveNotice, setResolveNotice] = useState<string | null>(null)
   const [toast, setToast] = useState<string | null>(null)
@@ -4152,6 +4248,7 @@ export function IssueDetail() {
     setParseRows([])
     setBatchAiNote(null)
     setAiSummary(null)
+    setBatchIntent(null)
     // Новая заявка — активную секцию считаем заново (см. эффект ниже); сама
     // раскрытость секций при этом сохраняется, она живёт в localStorage.
     sectionPickedRef.current = false
@@ -4204,6 +4301,10 @@ export function IssueDetail() {
     enabled: selectedIssueId != null,
     staleTime: 5 * 60_000,
   })
+  // Бесплатный разбор ЧИТАЕМ из кэша (enabled=false — своих запросов не шлём):
+  // таблицу наполняет SingleParseTable, а карточке нужен только сводный ярлык
+  // «про что заявка» для блока телеметрии.
+  const { data: freeParseCached } = useFreeParse(selectedIssueId ?? 0, false)
 
   // Дефолтная подсветка: «Разбор», иначе первая раскрытая секция. Пересчитываем
   // и при догрузке условных секций («Вложения», «Связанные») — до тех пор, пока
@@ -4294,6 +4395,15 @@ export function IssueDetail() {
   const aiIsBatch = parseRows.length >= 2
   // Регион — из кода в гос.номере выбранной (или первой) строки разбора.
   const regionLabel = plateRegion(selectedObj?.plate ?? parseRows[0]?.plate ?? null)
+  // Ярлык «про что заявка»: у пакетной приходит из её разбора, у одиночной — из
+  // кэша `automate` либо бесплатного `parse`. Нет ярлыка — обычная заявка о пробеге.
+  const issueIntent = batchIntent
+    ?? freeParseCached?.parsed?.issue_intent
+    ?? singleAnalysis?.parsed?.issue_intent
+    ?? null
+  // По служебному вердикту («не о пробеге», разбор не состоялся) готовый ответ
+  // клиенту предлагать нельзя — чип «по правилам» для такой строки гасим.
+  const selectedIsService = isServiceVerdict(selectedObj?.verdict)
 
   return (
     <ActiveSectionContext.Provider value={activeSectionValue}>
@@ -4479,6 +4589,7 @@ export function IssueDetail() {
               setParseRows(objects)
               setBatchAiNote(meta?.aiNote ?? null)
               setAiSummary(meta?.aiSummary ?? null)
+              setBatchIntent(meta?.intent ?? null)
               // Строки обновились (прогон ИИ, правка номера/даты) — выбранный объект
               // должен показывать НОВЫЕ данные, а не копию до правки.
               setSelectedObj(prev => {
@@ -4521,6 +4632,7 @@ export function IssueDetail() {
             heuristicCategory={selectedObj?.heuristic_category ?? null}
             editedBy={selectedObj?.verdict_edited_by ?? null}
             editedAt={formatDate(selectedObj?.verdict_edited_at) ?? null}
+            issueIntent={issueIntent}
           />
           {!selectedObj && (
             <p className="text-[13px] text-muted">
@@ -4561,6 +4673,12 @@ export function IssueDetail() {
               {selectedObj?.spec_vehicle && (
                 <div className="flex items-start gap-1.5 rounded-md bg-warning/10 px-3 py-2 text-[11px] leading-4 text-warning">
                   <AlertTriangle size={13} className="mt-px shrink-0" /> Спецтехника — оценивать по факту работы
+                </div>
+              )}
+              {/* Вердикт служебный: заявка не о пробеге — черновик как есть не шлём. */}
+              {isNonMileageVerdict(selectedObj?.verdict) && (
+                <div className="flex items-start gap-1.5 rounded-md bg-warning/10 px-3 py-2 text-[11px] leading-4 text-warning">
+                  <AlertTriangle size={13} className="mt-px shrink-0" /> {NON_MILEAGE_HINT}
                 </div>
               )}
               <p
@@ -4758,6 +4876,7 @@ export function IssueDetail() {
                   selectedIdx={selectedIdx}
                   plate={selectedObj?.plate ?? null}
                   date={selectedObj?.date ?? null}
+                  serviceVerdict={selectedIsService}
                   onUseDraft={text => { setComment(text); setCommentPublic(true) }}
                 />
                 <AiAnswerChip

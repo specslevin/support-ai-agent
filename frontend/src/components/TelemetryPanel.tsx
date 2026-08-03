@@ -17,6 +17,8 @@ interface TelemetryPanelProps {
   /** Кто и когда переписал вердикт вручную (источник `operator`). */
   editedBy?: string | null
   editedAt?: string | null
+  /** `parsed.issue_intent` — почему заявка ушла из пробеговой лестницы. */
+  issueIntent?: string | null
 }
 
 /**
@@ -36,6 +38,47 @@ export const VERDICT_TEXT_STYLE: Record<string, string> = {
   'Номер не распознан': 'text-warning',
   'Ошибка данных': 'text-orange',
   'Проверить': 'text-info',
+  // Служебные вердикты «заявка не о пробеге» — своя, спокойная зелень текста:
+  // они не диагноз по треку, а маршрутизация, и не должны читаться как «Глушение»
+  // или «Ошибка данных» (см. SERVICE_VERDICTS).
+  'Не заявка о расхождении пробега': 'text-secondary',
+  'Ложный пробег / экранирование': 'text-secondary',
+}
+
+/**
+ * СЛУЖЕБНЫЕ вердикты: строку по ним нельзя ни показать клиенту как ответ, ни
+ * предложить автоответом. Два вида:
+ *   • разбор не состоялся (нет номера/даты, ошибка данных) — отвечать нечем;
+ *   • заявка вообще не о расхождении пробега (работы с прибором, просьба
+ *     обнулить ложный пробег) — отвечает не пробеговый шаблон, а оператор.
+ * Телеметрия у второй группы СОБРАНА и остаётся на экране как справка.
+ */
+export const SERVICE_VERDICTS = new Set([
+  'Нет номера/даты',
+  'Нет даты',
+  'Номер не распознан',
+  'Ошибка данных',
+  'Не заявка о расхождении пробега',
+  'Ложный пробег / экранирование',
+])
+
+/** Вердикты «заявка не о пробеге» — телеметрия есть, но это справка, а не диагноз. */
+export const NON_MILEAGE_VERDICTS = new Set([
+  'Не заявка о расхождении пробега',
+  'Ложный пробег / экранирование',
+])
+
+/** Подсказка к бейджу «служебный» рядом с вердиктом строки. */
+export const NON_MILEAGE_HINT =
+  'Заявка не о расхождении пробега — автоответ по пробеговому шаблону тут не годится. '
+  + 'Телеметрия ниже собрана как справка: смотрите, но клиенту отвечает оператор'
+
+export function isServiceVerdict(verdict?: string | null): boolean {
+  return !!verdict && SERVICE_VERDICTS.has(verdict)
+}
+
+export function isNonMileageVerdict(verdict?: string | null): boolean {
+  return !!verdict && NON_MILEAGE_VERDICTS.has(verdict)
 }
 
 /** Старые кэши источника не несут — вердикт в них посчитан правилами. */
@@ -81,6 +124,30 @@ export function VerdictPill({ verdict, source, className = '', title }: {
     >
       <span className="min-w-0 truncate">{glyph}{verdict ?? 'Без вердикта'}</span>
       <span className="shrink-0 text-[9px] font-medium uppercase leading-3 tracking-[0.4px] text-muted">{tail}</span>
+    </span>
+  )
+}
+
+/**
+ * Ярлык «про что заявка на самом деле» (`parsed.issue_intent`): установка,
+ * замена, отключение, подключение, перемещение прибора или просьба обнулить
+ * ложный пробег. Оператору важно видеть ПРИЧИНУ, а не только «не о пробеге».
+ *
+ * Форма плоская, как у пилюли вердикта, но нейтральная: это не диагноз, спорить
+ * цветом со статусами и вердиктами ярлык не должен. Пусто — ничего не рисуем.
+ */
+export function IssueIntentChip({ intent, className = '' }: {
+  intent?: string | null
+  className?: string
+}) {
+  if (!intent) return null
+  return (
+    <span
+      title={`Заявка распознана как «${intent}» — поэтому она вышла из лестницы вердиктов о расхождении пробега`}
+      className={`inline-flex max-w-full min-w-0 items-center gap-[5px] rounded-pill border border-border bg-frame px-[9px] py-0.5 align-middle text-[11px] leading-4 text-secondary ${className}`}
+    >
+      <span className="shrink-0 text-[9px] font-medium uppercase leading-3 tracking-[0.4px] text-muted">заявка про</span>
+      <span className="min-w-0 truncate">{intent}</span>
     </span>
   )
 }
@@ -137,6 +204,12 @@ const FLAG_LABELS: Record<string, string> = {
   zero_coords: 'нулевые координаты',
   speed_spike: 'выбросы скорости',
   teleport: 'телепорты трека',
+  sparse_data: 'почти нет связи',
+}
+
+/** Расшифровка флага при наведении — там, где короткой подписи мало. */
+const FLAG_HINTS: Record<string, string> = {
+  sparse_data: 'Терминал почти не выходил на связь за сутки — вероятна неисправность или демонтаж прибора',
 }
 
 /** Минуты → «2 ч 15 мин» от часа и больше, иначе «45 мин». */
@@ -195,6 +268,7 @@ export function TelemetryPanel({
   heuristicCategory = null,
   editedBy = null,
   editedAt = null,
+  issueIntent = null,
 }: TelemetryPanelProps) {
   const [reasoningOpen, setReasoningOpen] = useState(false)
   const src = normalizeVerdictSource(verdictSource)
@@ -223,9 +297,14 @@ export function TelemetryPanel({
       <div className="space-y-2">
         <div className="flex flex-wrap items-center gap-2">
           <VerdictPill verdict={category} source={src} />
+          <IssueIntentChip intent={issueIntent} />
           {verdictNote && <span className="text-[13px] text-secondary">{verdictNote}</span>}
           {subtitle && <span className="ml-auto text-[13px] text-muted">{subtitle}</span>}
         </div>
+        {/* Вердикт служебный: метрики ниже — справка, а не основание для ответа. */}
+        {isNonMileageVerdict(category) && (
+          <p className="text-[11px] leading-4 text-muted">{NON_MILEAGE_HINT}</p>
+        )}
         {percent != null && (
           <div className="h-1 w-full rounded-pill bg-frame overflow-hidden">
             <div className="h-full rounded-pill bg-accent" style={{ width: `${percent}%` }} />
@@ -257,7 +336,11 @@ export function TelemetryPanel({
           {telemetry.flags.length > 0 && (
             <div className="flex flex-wrap gap-1.5">
               {telemetry.flags.map(f => (
-                <span key={f} className="px-2 py-0.5 rounded-pill border border-border text-[11px] text-secondary">
+                <span
+                  key={f}
+                  title={FLAG_HINTS[f]}
+                  className="px-2 py-0.5 rounded-pill border border-border text-[11px] text-secondary"
+                >
                   {FLAG_LABELS[f] ?? f}
                 </span>
               ))}
