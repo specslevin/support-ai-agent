@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Sparkles } from 'lucide-react'
+import { Sparkles, AlertTriangle } from 'lucide-react'
 import type { AutomationTelemetry, VerdictSource } from '../types'
 
 interface TelemetryPanelProps {
@@ -19,6 +19,11 @@ interface TelemetryPanelProps {
   editedAt?: string | null
   /** `parsed.issue_intent` — почему заявка ушла из пробеговой лестницы. */
   issueIntent?: string | null
+  /** `warnings` строки разбора — чему в ней нельзя доверять (см. RowWarningChips). */
+  warnings?: string[] | null
+  /** Начало и конец окна телеметрии (ISO). Разные даты → окно длиннее суток. */
+  windowFrom?: string | null
+  windowTo?: string | null
 }
 
 /**
@@ -153,6 +158,123 @@ export function IssueIntentChip({ intent, className = '' }: {
 }
 
 /**
+ * ЧЕМУ В СТРОКЕ НЕЛЬЗЯ ДОВЕРЯТЬ (`warnings` строки разбора). Причинный вердикт
+ * при непустом списке бэкенд уже разворачивает в «Проверить» — здесь оператор
+ * видит ПРИЧИНУ, иначе «Проверить» выглядит как случайная осторожность.
+ * Короткий ярлык — на экране, полная расшифровка — в подсказке при наведении.
+ */
+const WARNING_LABELS: Record<string, string> = {
+  region_conflict: 'регион не совпал',
+  act_numbers_differ: 'пробеги в акте расходятся',
+  two_dates_one_plate: 'две даты',
+}
+
+const WARNING_HINTS: Record<string, string> = {
+  region_conflict: 'Регион в заявке не совпадает с регионом найденного объекта — '
+    + 'возможно, это другая машина. Сверьте гос.номер с письмом',
+  act_numbers_differ: 'В акте текст и таблица дают разные пробеги — сверьте с документом',
+  two_dates_one_plate: 'У этого ТС в заявке две разные даты из разных документов — '
+    + 'строки не сведены, проверьте, к какому дню относится жалоба',
+}
+
+/** Список открытый: неизвестное значение показываем как есть, интерфейс не ломаем. */
+function warningLabel(w: string): string {
+  return WARNING_LABELS[w] ?? w
+}
+
+function warningHint(w: string): string {
+  return WARNING_HINTS[w]
+    ?? `Разбор пометил строку как ненадёжную («${w}») — проверьте данные по документу`
+}
+
+/** Мусор из старых кэшей (пустые строки, дубли, не-строки) до экрана не доходит. */
+function normalizeWarnings(warnings?: string[] | null): string[] {
+  if (!Array.isArray(warnings)) return []
+  const out: string[] = []
+  for (const w of warnings) {
+    if (typeof w !== 'string') continue
+    const v = w.trim()
+    if (v && !out.includes(v)) out.push(v)
+  }
+  return out
+}
+
+/**
+ * Пометки «чему нельзя доверять» рядом с вердиктом строки. Форма — как у бейджа
+ * «не о пробеге», но цвет предупреждающий: это не маршрутизация, а сомнение в
+ * самих данных. Пустой/отсутствующий массив — ничего не рисуем.
+ */
+export function RowWarningChips({ warnings, className = '' }: {
+  warnings?: string[] | null
+  className?: string
+}) {
+  const list = normalizeWarnings(warnings)
+  if (list.length === 0) return null
+  return (
+    <>
+      {list.map(w => (
+        <span
+          key={w}
+          title={warningHint(w)}
+          className={`inline-flex items-center gap-1 rounded-pill border border-warning/40 bg-warning/10 px-1.5 py-0.5 align-middle text-[9px] font-medium leading-3 text-warning ${className}`}
+        >
+          <AlertTriangle size={9} className="shrink-0" />
+          {warningLabel(w)}
+        </span>
+      ))}
+    </>
+  )
+}
+
+/** Расшифровки всех пометок строки одной спокойной строкой (для блока телеметрии). */
+function warningsNote(warnings?: string[] | null): string | null {
+  const list = normalizeWarnings(warnings)
+  if (list.length === 0) return null
+  return list.map(warningHint).join('. ')
+}
+
+/**
+ * Длина окна телеметрии в сутках по двум ISO-датам (`YYYY-MM-DD`), включительно.
+ * Отдельного поля бэкенд не отдаёт — считаем сами. `null` значит «показывать
+ * нечего»: конца окна нет, он равен началу или даты не разобрались.
+ */
+function telemetryWindowDays(from?: string | null, to?: string | null): number | null {
+  if (!from || !to || from === to) return null
+  const a = Date.parse(`${from}T00:00:00Z`)
+  const b = Date.parse(`${to}T00:00:00Z`)
+  if (!Number.isFinite(a) || !Number.isFinite(b) || b <= a) return null
+  return Math.round((b - a) / 86_400_000) + 1
+}
+
+/**
+ * Почему длинное окно опасно. Пороги телеметрии (телепорты, доля низких
+ * спутников, число пакетов) откалиброваны НА СУТКИ и намеренно не меняются
+ * (решение владельца проекта), поэтому по многомесячному окну метрики
+ * накопленные, а вердикт по ним — не диагноз.
+ */
+export const TELEMETRY_WINDOW_HINT =
+  'Метрики и флаги посчитаны за ВЕСЬ период, а не за один день: телепорты, доля '
+  + 'низких спутников и число пакетов — накопленные. Пороги вердикта откалиброваны '
+  + 'на сутки, поэтому по такому окну вердикту доверять нельзя — смотрите трек'
+
+/** Ярлык «период N суток» рядом с телеметрией. `null`/1 сутки — ничего не рисуем. */
+export function TelemetryWindowChip({ days, className = '' }: {
+  days?: number | null
+  className?: string
+}) {
+  if (days == null) return null
+  return (
+    <span
+      title={TELEMETRY_WINDOW_HINT}
+      className={`inline-flex items-center gap-1 rounded-pill border border-warning/40 bg-warning/10 px-[9px] py-0.5 align-middle text-[11px] leading-4 text-warning ${className}`}
+    >
+      <AlertTriangle size={10} className="shrink-0" />
+      период {days} суток
+    </span>
+  )
+}
+
+/**
  * Правила и действующий вердикт разошлись — это надо показать, а не спрятать.
  * У источника «правила» расхождения нет по определению: сравнивать не с чем.
  */
@@ -269,8 +391,15 @@ export function TelemetryPanel({
   editedBy = null,
   editedAt = null,
   issueIntent = null,
+  warnings = null,
+  windowFrom = null,
+  windowTo = null,
 }: TelemetryPanelProps) {
   const [reasoningOpen, setReasoningOpen] = useState(false)
+  // Чему в строке нельзя доверять и за какой период собраны метрики — оба
+  // ограничения касаются вердикта выше, поэтому считаем их до отрисовки шапки.
+  const warnNote = warningsNote(warnings)
+  const windowDays = telemetryWindowDays(windowFrom, windowTo)
   const src = normalizeVerdictSource(verdictSource)
   // Уверенность и полоса доверия существуют ТОЛЬКО у вердикта ИИ: у правил и у
   // человека их просто нет, а чужая уверенность от прошлого прогона врала бы.
@@ -298,12 +427,20 @@ export function TelemetryPanel({
         <div className="flex flex-wrap items-center gap-2">
           <VerdictPill verdict={category} source={src} />
           <IssueIntentChip intent={issueIntent} />
+          {/* Пометки строки — сразу за вердиктом: они объясняют, почему он «Проверить». */}
+          <RowWarningChips warnings={warnings} />
+          <TelemetryWindowChip days={windowDays} />
           {verdictNote && <span className="text-[13px] text-secondary">{verdictNote}</span>}
           {subtitle && <span className="ml-auto text-[13px] text-muted">{subtitle}</span>}
         </div>
         {/* Вердикт служебный: метрики ниже — справка, а не основание для ответа. */}
         {isNonMileageVerdict(category) && (
           <p className="text-[11px] leading-4 text-muted">{NON_MILEAGE_HINT}</p>
+        )}
+        {/* Расшифровка пометок прямым текстом: ярлыки короткие, а решение по строке
+            оператор принимает здесь же — заставлять его наводить мышь не годится. */}
+        {warnNote && (
+          <p className="text-[11px] leading-4 text-warning">{warnNote}</p>
         )}
         {percent != null && (
           <div className="h-1 w-full rounded-pill bg-frame overflow-hidden">
@@ -318,6 +455,13 @@ export function TelemetryPanel({
         <div className="text-[13px] text-muted">Телеметрия не загружена</div>
       ) : (
         <>
+          {/* Окно длиннее суток: метрики ниже накопленные. Пороги остались
+              суточными намеренно — предупреждаем, а не подкручиваем их. */}
+          {windowDays != null && (
+            <p className="text-[11px] leading-4 text-muted">
+              Окно телеметрии — {windowDays} суток ({windowFrom} — {windowTo}). {TELEMETRY_WINDOW_HINT}.
+            </p>
+          )}
           <div className="flex flex-wrap gap-2">
             {metrics.map(m => {
               const isKey = highlighted.has(m.key)

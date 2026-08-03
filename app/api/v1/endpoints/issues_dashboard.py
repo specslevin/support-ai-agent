@@ -8,6 +8,7 @@ import re
 import urllib.parse
 # Алиас: имя `fields` уже занято локальной переменной в /issues/{id}/fields.
 from dataclasses import asdict, fields as _dc_fields
+from typing import Any
 
 import httpx
 import structlog
@@ -36,7 +37,8 @@ from app.core.okdesk.client import OkdeskAPIError
 from app.core.okdesk.models import Employee
 from app.core.okdesk.service import OkdeskService
 from app.core.services.cache_service import CacheService
-from app.services.issue_automation import (IssueAutomationService, ParsedIssue,
+from app.services.issue_automation import (_SIGNATURE_IMAGE_RE,
+                                           IssueAutomationService, ParsedIssue,
                                            TelemetryFacts, _plate_format_suspect)
 
 log = structlog.get_logger(__name__)
@@ -986,6 +988,10 @@ async def parse_issue_facts(
             ocr_cache=cache,
             progress_out=(ocr_progress if attachments else None),
         )
+        if attachments:
+            # Тот же знаменатель, что в /automate_batch: подпись письма не
+            # считается «недоделанным» вложением (класс 11).
+            _discount_signature_attachments(ocr_progress, live.attachments)
         objects = payload.get("objects") or []
         if not objects:
             payload["note"] = (
@@ -1205,6 +1211,65 @@ async def download_issue_attachment(
         raise HTTPException(status_code=500, detail="Failed to download attachment")
 
 
+def _sync_head_with_single_row(parsed_out: dict[str, object],
+                               objects: list[dict[str, object]]) -> None:
+    """Свести шапку ``parsed`` с ЕДИНСТВЕННОЙ строкой разбора (класс 10, C3).
+
+    Политика та же, что в ``IssueAutomationService.parse_facts`` (см. комментарий
+    «Одна строка — синхронизируем сводный parsed с тем, что реально разобрано»),
+    но с УСИЛЕНИЕМ: при одной строке значение СТРОКИ побеждает значение шапки, а
+    не только добирает пустое. Шапку считает ``parse_issue`` по теме письма, где
+    номер склеивается с датой («FW: акт Н 718 НВ29.07.26г» → Н718НВ29 вместо
+    Н718НВ763), а строка приходит из текста акта — она точнее. Если строк
+    несколько, шапку не досочиняем: сводить N строк в одну шапку смысла нет.
+
+    TODO(уборка): объединить с версией в ``parse_facts`` — политика должна быть
+    одна, сейчас она продублирована здесь, чтобы не трогать сервис.
+    """
+    if len(objects) != 1:
+        return
+    row = objects[0]
+    for field in ("plate", "date", "sheet_mileage_km", "declared_system_km"):
+        value = row.get(field)
+        # Пустое значение строки шапку не «уточняет» — не затираем то, что
+        # разобрано из темы/тела (иначе теряли бы дату при OCR без даты).
+        if value is None or value == "":
+            continue
+        parsed_out[field] = value
+    # Бейдж «номер подозрительный» фронт считает по шапке (IssueDetail.tsx), так
+    # что пересчитываем его по итоговому номеру, а не по номеру из темы.
+    parsed_out["plate_format_suspect"] = _plate_format_suspect(
+        parsed_out.get("plate"))  # type: ignore[arg-type]
+
+
+def _discount_signature_attachments(progress: dict[str, object],
+                                    attachments: list[Any] | None) -> None:
+    """Убрать из знаменателя ``ocr_progress`` картинки из подписи письма (класс 11).
+
+    ``analyze_batch`` считает ``attachments_total`` до того, как отбросит
+    ``image001.png`` (подпись Outlook), поэтому при полностью выполненном разборе
+    оператор видел «1 из 2» (заявка 4931/66194: PDF акта + image001.jpg).
+    Правим в обработчике, а не в сервисе: то же правило имени файла
+    (``_SIGNATURE_IMAGE_RE``) применимо к ``live.attachments`` без каких-либо
+    внутренних состояний OCR. Пропущенные остаются видны в
+    ``attachments_skipped``, а знаменатель никогда не опускается ниже уже
+    сделанного (в сервисе список вложений ещё и обрезан лимитом
+    ``_BATCH_MAX_ATTACHMENTS``, так что вычитать «в слепую» нельзя).
+    """
+    skipped = 0
+    for att in attachments or []:
+        name = (getattr(att, "attachment_file_name", None) or "").strip()
+        if name and _SIGNATURE_IMAGE_RE.match(name):
+            skipped += 1
+    if not skipped:
+        return
+    total = progress.get("attachments_total")
+    done = progress.get("attachments_done")
+    progress["attachments_skipped"] = skipped
+    if isinstance(total, int) and isinstance(done, int):
+        progress["attachments_total"] = max(total - skipped, done, 0)
+
+
 @router.post("/{issue_id}/automate_batch")
 async def automate_batch(
     issue_id: int,
@@ -1259,6 +1324,11 @@ async def automate_batch(
         parsed_out["plate_format_suspect"] = _plate_format_suspect(parsed_head.plate)
         parsed_out["issue_intent"] = next(
             (o.get("issue_intent") for o in objects if o.get("issue_intent")), None)
+        # Шапка не должна расходиться со строкой таблицы (класс 10): при
+        # единственной строке она показывает ЕЁ номер/дату/пробеги.
+        _sync_head_with_single_row(parsed_out, objects)
+        # «1 из 2» при complete=true — картинка из подписи письма в знаменателе.
+        _discount_signature_attachments(ocr_progress, live.attachments)
         payload = {
             "parsed": parsed_out,
             "total": len(objects),

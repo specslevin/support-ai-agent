@@ -29,6 +29,7 @@ import {
   TelemetryPanel, VerdictPill, VERDICT_TEXT_STYLE, IssueIntentChip,
   normalizeVerdictSource, verdictSourceHint, verdictDisagreement,
   isNonMileageVerdict, isServiceVerdict, NON_MILEAGE_HINT,
+  RowWarningChips,
 } from './TelemetryPanel'
 
 function formatDate(iso: string | null | undefined) {
@@ -2011,6 +2012,54 @@ function yearFixedFor(
 }
 
 /**
+ * «Номер подозрительный» (`parsed.plate_format_suspect`) — ОТДЕЛЬНЫЙ признак от
+ * «спецтехники». Раньше битый или усечённый номер бэкенд помечал `spec_vehicle`
+ * (автобус ПАЗ с номером «ЕК424» ехал в таблице как спецтехника), и в строке был
+ * только чип «спецтехника». Теперь `spec_vehicle` — только настоящая спецтехника,
+ * а сомнение в формате номера живёт здесь, у самого номера.
+ */
+function PlateSuspectMark({ on }: { on?: boolean }) {
+  if (!on) return null
+  return (
+    <span
+      title="Гос.номер не похож на формат: вероятно, клиент ошибся или OCR прочитал номер не полностью. Объект в мониторинге мог найтись не тот — сверьте с письмом и при необходимости исправьте номер"
+      className="shrink-0 whitespace-nowrap text-[9px] uppercase leading-3 tracking-[0.4px] text-warning"
+    >
+      номер?
+    </span>
+  )
+}
+
+/**
+ * Относится ли сводный признак «номер подозрительный» к ЭТОЙ строке — по той же
+ * логике, что и `yearFixedFor`: признак живёт в сводных фактах заявки, а строк
+ * может быть двадцать. Номер, который правил оператор, не помечаем.
+ */
+function plateSuspectFor(
+  parsed: AutomationParsed | null | undefined,
+  o: BatchObject,
+): boolean {
+  if (!parsed?.plate_format_suspect || o.plate_edited) return false
+  return !!o.plate && !!parsed.plate && o.plate === parsed.plate
+}
+
+/**
+ * Конец окна телеметрии для строки. Своё поле у строки главнее; сводное
+ * `parsed.date_to` (заявки «нет данных с 10.02.2026» — окно от названной даты до
+ * даты создания) переносим только на строку с той же датой начала и только пока
+ * дату не правил оператор. Иначе многомесячное окно приписалось бы чужому ТС.
+ */
+function windowEndFor(
+  parsed: AutomationParsed | null | undefined,
+  o: BatchObject | null | undefined,
+): string | null {
+  if (!o) return null
+  if (o.date_to) return o.date_to
+  if (!parsed?.date_to || o.date_edited) return null
+  return o.date && parsed.date && o.date === parsed.date ? parsed.date_to : null
+}
+
+/**
  * Ячейка гос.номера, даты или пробега с правкой по карандашу (клик по карандашу,
  * а не по тексту — защита от случайного изменения; Enter применяет, Esc отменяет).
  *
@@ -2125,6 +2174,10 @@ function VerdictCell({ o, loading, readOnly, onChange }: {
   readOnly?: boolean
   onChange: (verdict: string) => void
 }) {
+  // НАСТОЯЩАЯ спецтехника (модель или спецформат номера). Битый номер сюда не
+  // относится — у него своя пометка у гос.номера (PlateSuspectMark), подменять
+  // одну другой нельзя: «спецтехника» меняет способ оценки, а «номер?» — доверие
+  // к самому объекту.
   const spec = o.spec_vehicle ? (
     <span
       title="Спецтехника без км-пробега — оценивать по факту работы/моточасам"
@@ -2145,8 +2198,12 @@ function VerdictCell({ o, loading, readOnly, onChange }: {
     </span>
   ) : null
 
+  // Чему в строке нельзя доверять (регион, расхождение чисел в акте, две даты) —
+  // причина, по которой бэкенд развернул причинный вердикт в «Проверить».
+  const warns = <RowWarningChips warnings={o.warnings} className="ml-1.5" />
+
   if (readOnly) {
-    return <><VerdictPill verdict={o.verdict} source={rowVerdictSource(o)} />{service}{spec}</>
+    return <><VerdictPill verdict={o.verdict} source={rowVerdictSource(o)} />{service}{spec}{warns}</>
   }
 
   const d = verdictDisagreement(o.verdict, o.heuristic_category, rowVerdictSource(o))
@@ -2189,6 +2246,7 @@ function VerdictCell({ o, loading, readOnly, onChange }: {
       </span>
       {service}
       {spec}
+      {warns}
     </>
   )
 }
@@ -2498,6 +2556,9 @@ function rowFromAutomate(res: AutomationResult): BatchObject {
   const t = res.telemetry
   return {
     file: '', plate: res.parsed?.plate ?? null, date: res.parsed?.date ?? null,
+    // Конец периода неисправности («нет данных с …»): без него блок телеметрии не
+    // покажет, что метрики накоплены за месяцы, а не за сутки.
+    date_to: res.parsed?.date_to ?? null,
     sheet_mileage_km: res.parsed?.sheet_mileage_km ?? null,
     // Моточасы спецтехники: едут отдельным полем, в километры их не превращаем.
     engine_hours: res.parsed?.engine_hours ?? null,
@@ -2815,6 +2876,9 @@ function SingleParseTable({ issueId, issueTitle, companyName, onSelect }: {
                       emptyLabel="нет номера"
                       editTitle={o.plate ? 'Изменить гос.номер и перепроверить ТС в гео' : 'Вписать гос.номер вручную и проверить в гео'}
                       editedTitle="Номер изменён оператором, перепроверено в гео"
+                      /* Формат номера подозрительный — это НЕ «спецтехника»
+                         (см. PlateSuspectMark), признаки разные. */
+                      suffix={<PlateSuspectMark on={plateSuspectFor(parsed, o)} />}
                       onApply={val => applyEdit(idx, 'plate', val)}
                     />
                   </td>
@@ -3532,6 +3596,8 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
                           emptyLabel="нет номера"
                           editTitle={o.plate ? 'Изменить гос.номер и перепроверить ТС в гео' : 'Вписать гос.номер вручную (OCR не распознал) и проверить в гео'}
                           editedTitle="Номер изменён оператором, перепроверено в гео"
+                          /* «номер?» ≠ «спецтехника» — см. PlateSuspectMark. */
+                          suffix={<PlateSuspectMark on={plateSuspectFor(res.parsed, o)} />}
                           onApply={val => handlePlateChange(o, val, idx)}
                         />
                       </td>
@@ -4401,6 +4467,13 @@ export function IssueDetail() {
     ?? freeParseCached?.parsed?.issue_intent
     ?? singleAnalysis?.parsed?.issue_intent
     ?? null
+  // Конец окна телеметрии выбранной строки: у заявок «нет данных с 10.02.2026»
+  // разбор считает период до даты создания — окно бывает в месяцы, а пороги
+  // метрик суточные. Сводный `date_to` берём из того же разбора, что и ярлык выше.
+  const selectedWindowTo = windowEndFor(
+    freeParseCached?.parsed ?? singleAnalysis?.parsed ?? null,
+    selectedObj,
+  )
   // По служебному вердикту («не о пробеге», разбор не состоялся) готовый ответ
   // клиенту предлагать нельзя — чип «по правилам» для такой строки гасим.
   const selectedIsService = isServiceVerdict(selectedObj?.verdict)
@@ -4616,7 +4689,9 @@ export function IssueDetail() {
           title="Телеметрия"
           storageKey="telemetry"
           count={selectedObj?.plate ?? null}
-          right={selectedObj?.date ? <span>за {selectedObj.date}</span> : undefined}
+          right={selectedObj?.date
+            ? <span>за {selectedObj.date}{selectedWindowTo ? ` — ${selectedWindowTo}` : ''}</span>
+            : undefined}
         >
           <TelemetryPanel
             telemetry={selectedObj?.telemetry ?? null}
@@ -4633,6 +4708,11 @@ export function IssueDetail() {
             editedBy={selectedObj?.verdict_edited_by ?? null}
             editedAt={formatDate(selectedObj?.verdict_edited_at) ?? null}
             issueIntent={issueIntent}
+            // Чему в строке нельзя доверять и за какой период собраны метрики —
+            // оба ограничения относятся к вердикту, поэтому живут в его блоке.
+            warnings={selectedObj?.warnings ?? null}
+            windowFrom={selectedObj?.date ?? null}
+            windowTo={selectedWindowTo}
           />
           {!selectedObj && (
             <p className="text-[13px] text-muted">
