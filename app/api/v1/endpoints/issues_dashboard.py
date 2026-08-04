@@ -45,16 +45,54 @@ log = structlog.get_logger(__name__)
 router = APIRouter(prefix="/issues", tags=["dashboard:issues"])
 
 
+# Псевдо-источники строки разбора: номер взят из темы/описания/комментария, а не
+# из вложения. Бесплатный `parse` помечает ТАК ВСЕ строки, даже когда номера
+# фактически пришли из имён отдельных актов (Жигулевское), поэтому форму письма
+# по такому источнику не судим (класс 19 сессии C4).
+_TEXT_SOURCES = ("(из текста заявки)", "(из комментария клиента)")
+# Сколько разных ТС в ОДНОМ вложении делает его «общим списком»: у Чапаевского в
+# одном .docx 12-30 позиций, у Жигулевского в файле 1 акт (максимум 2).
+_AGG_PLATES_PER_FILE = 5
+
+
+def _plates_by_source(objects: list[dict[str, object]]) -> dict[str, set[str]]:
+    """Гос.номера, сгруппированные по источнику строки (полю ``file``)."""
+    by_source: dict[str, set[str]] = {}
+    for o in objects:
+        plate = o.get("plate")
+        if not plate:
+            continue
+        by_source.setdefault(str(o.get("file") or ""), set()).add(str(plate))
+    return by_source
+
+
 def _is_aggregate(company_name: str | None, description: str | None,
                   objects: list[dict[str, object]]) -> bool:
-    """Aggregate (ОДКР) issue — answer once, do NOT split into children.
+    """Сводная заявка — отвечаем ОДНИМ письмом, детей НЕ создаём.
 
-    TRUE if the company is ОДКР, OR the issue body is empty AND there are
-    >= 5 distinct plates across attachments.
+    Класс 19 сессии C4: решает ФОРМА письма, а не число машин (решение
+    пользователя, интервью 4). Одно вложение с общим списком ТС (архетип
+    Чапаевского) — всегда сводный ответ; отдельный акт на каждую машину (архетип
+    Жигулевского) — поштучно. Порог по числу ТС остался только страховкой от
+    выгрузок по всему парку.
     """
     if company_name and "одкр" in company_name.lower():
         return True
     plates = {o.get("plate") for o in objects if o.get("plate")}
+    by_source = _plates_by_source(objects)
+    # Общий список ТС внутри ОДНОГО вложения. Раньше здесь решал порог 25, и один
+    # архетип письма резался пополам: Чапаевское 4913 и 4798 (17 ТС) разрезались
+    # на детей, а 4843 (29) и 4580 (30) отвечались сводно — при одинаковых письмах
+    # одного автора.
+    if any(len(v) >= _AGG_PLATES_PER_FILE
+           for k, v in by_source.items() if k not in _TEXT_SOURCES):
+        return True
+    # «Один акт = один файл» — поштучно, сколько бы машин ни было: у Жигулевского
+    # 4880 это 28 отдельных актов, и порог 25 разворачивал их в сводный ответ
+    # вопреки форме письма. Порог применяем только к письмам, где на источник
+    # приходится в среднем больше одного ТС.
+    if len(plates) < 2 * max(1, len(by_source)):
+        return False
     # Очень много ТС — сводная выгрузка по всему парку, а не письмо про
     # конкретные машины: 62959 приложил два XLSX на ~91 строку каждый (182 строки,
     # весь парк ПО) как ДОКАЗАТЕЛЬСТВО сбоя списка, и разбор трактовал это как 91
@@ -899,7 +937,14 @@ async def automate_issue(
         try:
             await cache.save_result_cache(
                 external_id, "parse",
-                json.dumps(automation.facts_dict(result), ensure_ascii=False))
+                # Тема/описание/текст вложений нужны строке, чтобы узнать ИМЯ акта,
+                # откуда пришёл её номер: без них источник останется псевдо-«(из
+                # текста заявки)» и правило сводности по форме письма ослепнет
+                # (C4, класс 19).
+                json.dumps(automation.facts_dict(
+                    result, source_texts=(live.title, live.description,
+                                          attachments_text or None)),
+                           ensure_ascii=False))
         except Exception:
             log.warning("automate_facts_cache_save_failed", issue_id=issue_id)
         return result_dict
@@ -1640,6 +1685,10 @@ async def update_batch_date(
                 str(plate), new_date, o.get("sheet_mileage_km"),
                 o.get("address"), o.get("file") or "",
                 declared=o.get("declared_system_km"),
+                # Оператор правит НАЧАЛО интервала — конец у строки остаётся её
+                # собственным, иначе многодневная жалоба схлопнется в одни сутки
+                # (C4, классы 12, 13). Дату оператора днём отправки не считаем.
+                date_to=o.get("date_to"),
             )
         except Exception:
             log.warning("batch_date_reanalyze_failed", issue_id=issue_id, date=new_date)
@@ -1726,6 +1775,8 @@ async def update_batch_plate(
                 new_plate, o.get("date"), o.get("sheet_mileage_km"),
                 o.get("address"), o.get("file") or "",
                 declared=o.get("declared_system_km"),
+                # Номер сменился, интервал строки — нет (C4, классы 12, 13).
+                date_to=o.get("date_to"),
             )
         except Exception:
             log.warning("batch_plate_reanalyze_failed", issue_id=issue_id, plate=new_plate)
@@ -2298,6 +2349,73 @@ async def _attach_source_file_to_child(
             )
 
 
+# Маркер в описании дочерней заявки, созданной нашим сплиттером (см. ниже).
+_CHILD_MARK = "создано из общей заявки"
+# Кандидатов на «такой ребёнок уже есть» ищем в ЛОКАЛЬНОМ кэше по ровному
+# совпадению темы с гос.номером. Окно и лимит держат цену проверки в 0-2 запросах
+# к Okdesk: замер по базе (599 номеров) — точное совпадение плюс 45 дней даёт
+# максимум 6 кандидатов, у 80% номеров их 0 или 1.
+_CHILD_LOOKUP_DAYS = 45
+_CHILD_LOOKUP_LIMIT = 6
+
+
+def _child_body(desc: str) -> str:
+    """Тело описания дочерней заявки БЕЗ хвоста «(создано из общей заявки #…)».
+
+    Родитель у дубля другой, поэтому сравнивать описания целиком нельзя."""
+    return desc.split(f"({_CHILD_MARK}")[0].strip()
+
+
+async def _existing_child(cache: CacheService, okdesk: OkdeskService,
+                          plate: str | None, date_ru: str, body: str) -> int | None:
+    """Внешний id уже созданного ребёнка с той же парой (гос.номер, дата).
+
+    Класс 18 сессии C4: клиент дважды прислал одно письмо («Заявка 156»: 65762 в
+    08:30 и 65764 в 08:44), и сплиттер создал из ОБОИХ родителей одинаковых детей
+    (4555/65800 и 4560/65804, К690ОК за 22.07). Проверка дешёвая: у ребёнка в
+    локальном `issue_cache` тема РОВНО равна гос.номеру, а дата неисправности
+    лежит только в описании (в кэше оно пустое) — описание берём живьём из
+    Okdesk и только у отобранных кандидатов. Best-effort: любая осечка проверки
+    не мешает создать заявку.
+
+    Пары (номер, дата) для дубля НЕ достаточно: после починки класса 5 у одного
+    ТС за один день бывает ДВА путевых листа (4880 М790ЕА: №ТР139 129/0 и №ТР138
+    227/158) — это две законные дочерние заявки. Поэтому дублем считаем только
+    полное совпадение тела описания (номер, дата И цифры пробега).
+    """
+    if not plate or not date_ru or date_ru == "—":
+        return None
+    # Ищем по НОРМАЛИЗОВАННОМУ номеру: LIKE в SQLite регистронезависим только для
+    # латиницы, поэтому «к690ок» и латинское «K690OK» без нормализации кандидата
+    # не находят. Тема ребёнка пишется тем же нормализованным номером.
+    want = _norm_plate(plate)
+    try:
+        rows = await cache.get_issues_from_cache(search=want)
+    except Exception:
+        log.warning("child_dup_lookup_failed", plate=plate)
+        return None
+    # created_at в кэше — МСК-wall-clock, utcnow отстаёт на 3 часа; на окне в 45
+    # дней это неважно, а дата неисправности у настоящего дубля всегда свежая.
+    edge = _dt.datetime.utcnow() - _dt.timedelta(days=_CHILD_LOOKUP_DAYS)
+    cands = [r for r in rows
+             if _norm_plate(getattr(r, "subject", None)) == want
+             and (getattr(r, "created_at", None) or edge) >= edge]
+    cands.sort(key=lambda r: getattr(r, "created_at", None) or edge, reverse=True)
+    for row in cands[:_CHILD_LOOKUP_LIMIT]:
+        try:
+            live = await okdesk.get_issue(row.external_id)
+        except Exception:
+            continue
+        desc = getattr(live, "description", None) or ""
+        if _CHILD_MARK not in desc or f"Дата неисправности: {date_ru}" not in desc:
+            continue
+        if _child_body(desc) == body:
+            return row.external_id
+        log.info("child_same_plate_other_act", plate=plate, date=date_ru,
+                 existing_id=row.external_id)
+    return None
+
+
 @router.post("/{issue_id}/create_children")
 async def create_children(
     issue_id: int,
@@ -2317,6 +2435,29 @@ async def create_children(
         parent_assignee_id = parent.assignee.id if getattr(parent, "assignee", None) else None
 
         created = []
+        # Описания детей, созданных в ЭТОМ запросе: второй раз тот же ребёнок не
+        # создаётся даже внутри одного вызова (класс 18 сессии C4).
+        done: dict[str, int] = {}
+        # Пометки строк разбора берём из КЭША, а не из тела запроса: фронт их не
+        # присылает, а в описание ребёнка (оно уходит в Okdesk и его видит клиент)
+        # нельзя подставлять пробег, накрученный прострелами трека (класс 10), и
+        # нельзя обещать удалённую диагностику по терминалу, который молчит
+        # месяцами (класс 22). Сессия C4, решения интервью 4.
+        row_marks: dict[tuple[str, str], set[str]] = {}
+        for _kind in ("batch", "parse"):
+            try:
+                _cached = await cache.get_result_cache(external_id, _kind)
+            except Exception:
+                continue
+            _data = (_cached or {}).get("data")
+            if not isinstance(_data, dict):
+                continue
+            for _o in _data.get("objects") or []:
+                _marks = (set(_o.get("flags") or ()) | set(_o.get("warnings") or ())
+                          | set((_o.get("telemetry") or {}).get("flags") or ()))
+                if _marks:
+                    _key = (_norm_plate(_o.get("plate")) or "", str(_o.get("date") or ""))
+                    row_marks.setdefault(_key, set()).update(_marks)
         for obj in body.objects:
             title = obj.plate
             # Use DD.MM.YYYY + explicit «Дата неисправности» marker so the child
@@ -2328,24 +2469,51 @@ async def create_children(
                     date_ru = _d.date.fromisoformat(obj.date).strftime("%d.%m.%Y")
                 except ValueError:
                     date_ru = obj.date
+            marks = row_marks.get(
+                (_norm_plate(obj.plate) or "", str(obj.date or "")), frozenset())
             if obj.verdict == "Нет данных":
+                cause = ("Терминал не выходит на связь задолго до даты неисправности — "
+                         "требуется проверка оборудования на месте, удалённой диагностикой "
+                         "данные не восстановить. "
+                         if "tracker_silent" in marks else
+                         "Нет данных от терминала за дату — требуется удалённая диагностика. ")
                 desc = (
                     f"Расхождение пробега. Дата неисправности: {date_ru}. "
-                    f"Нет данных от терминала за дату — требуется удалённая диагностика. "
+                    f"{cause}"
                     f"(создано из общей заявки #{external_id})"
                 )
             else:
+                # Цифру пробега подставляем ТОЛЬКО когда ей можно верить.
+                sys_txt = ("не показателен (трек рваный, прострелы координат)"
+                           if "mileage_unreliable" in marks
+                           else f"{obj.system_mileage_km if obj.system_mileage_km is not None else '—'} км")
                 desc = (
                     f"Расхождение пробега. Дата неисправности: {date_ru}. "
-                    f"По системе {obj.system_mileage_km if obj.system_mileage_km is not None else '—'} км, "
+                    f"По системе {sys_txt}, "
                     f"путевой лист {obj.sheet_mileage_km if obj.sheet_mileage_km is not None else '—'} км. "
                     f"(создано из общей заявки #{external_id})"
                 )
+            # Дубль ребёнка (класс 18): такой же ребёнок уже создан — в этом же
+            # запросе или из другого родителя (клиент прислал письмо дважды).
+            # Ничего не создаём и не меняем, а отдаём ссылку на существующую заявку.
+            body_key = _child_body(desc)
+            dup_id = done.get(body_key)
+            if dup_id is None:
+                dup_id = await _existing_child(cache, okdesk, obj.plate, date_ru, body_key)
+            if dup_id is not None:
+                created.append({
+                    "plate": obj.plate, "issue_id": dup_id, "ok": True,
+                    "existing": True, "url": _okdesk_portal_url(dup_id),
+                    "note": (f"Дочерняя заявка на {obj.plate} за {date_ru} уже есть "
+                             f"— #{dup_id}, повторно не создаём"),
+                })
+                continue
             try:
                 child = await okdesk.create_child_issue(
                     external_id, title, desc, address=obj.address, contact_id=contact_id,
                 )
                 created.append({"plate": obj.plate, "issue_id": child.id, "ok": True})
+                done[body_key] = child.id
                 # Наследуем ответственного от родителя (best-effort, не ломает создание).
                 if parent_assignee_id:
                     try:
@@ -2363,8 +2531,13 @@ async def create_children(
             # по системе и путевому листу) уже есть в теле дочерней заявки. Прежний
             # фоллбэк цеплял ВСЕ вложения родителя — это лишнее (64444).
 
-        ok = sum(1 for c in created if c["ok"])
-        return {"ok": True, "created": ok, "failed": len(created) - ok, "results": created}
+        # `existing` считаем отдельно: это НЕ созданная и НЕ провалившаяся строка
+        # (класс 18) — фронт получает по ней ссылку на уже существующего ребёнка.
+        existing_n = sum(1 for c in created if c.get("existing"))
+        ok = sum(1 for c in created if c["ok"] and not c.get("existing"))
+        failed = sum(1 for c in created if not c["ok"])
+        return {"ok": True, "created": ok, "existing": existing_n,
+                "failed": failed, "results": created}
     except HTTPException:
         raise
     except Exception:

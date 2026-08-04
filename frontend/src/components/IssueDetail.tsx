@@ -29,7 +29,8 @@ import {
   TelemetryPanel, VerdictPill, VERDICT_TEXT_STYLE, IssueIntentChip,
   normalizeVerdictSource, verdictSourceHint, verdictDisagreement,
   isNonMileageVerdict, isServiceVerdict, NON_MILEAGE_HINT,
-  RowWarningChips,
+  RowWarningChips, TrackerSilentChip, SystemMileageValue, isMileageUnreliable,
+  needsAttachmentParse, NEEDS_ATTACHMENT_PARSE_VERDICT, NEEDS_ATTACHMENT_PARSE_HINT,
 } from './TelemetryPanel'
 
 function formatDate(iso: string | null | undefined) {
@@ -1592,6 +1593,15 @@ function rowVerdictSource(o: BatchObject): VerdictSource {
   return normalizeVerdictSource(o.verdict_source ?? (o.verdict_edited ? 'operator' : undefined))
 }
 
+/**
+ * Флаги строки разбора: своё поле строки + флаги её телеметрии. Бэкенд кладёт
+ * признаки (`mileage_unreliable`, `tracker_silent`) в оба места, но старые кэши и
+ * ответы batch-правок бывают заполнены только с одной стороны.
+ */
+function rowFlags(o: BatchObject): string[] {
+  return [...(o.flags ?? []), ...(o.telemetry?.flags ?? [])]
+}
+
 /** Тултип ячейки вердикта: откуда он взялся + что даст ручная правка. */
 function verdictCellHint(o: BatchObject): string {
   return `${verdictSourceHint(rowVerdictSource(o))}. Изменить вручную — источник станет «оператор»`
@@ -1602,7 +1612,8 @@ const VERDICT_ORDER = [
   'Изменили настройки', 'Проверить', 'Нет данных', 'Объект не найден',
   // Служебные — в хвост: по ним клиенту не отвечают (см. SERVICE_VERDICTS).
   'Не заявка о расхождении пробега', 'Ложный пробег / экранирование',
-  'Номер не распознан', 'Нет даты', 'Нет номера/даты', 'Ошибка данных',
+  'Номер не распознан', 'Нет даты', NEEDS_ATTACHMENT_PARSE_VERDICT,
+  'Нет номера/даты', 'Ошибка данных',
 ]
 
 /**
@@ -1842,10 +1853,13 @@ function pluralObjects(n: number): string {
  */
 const PARSE_COLUMNS: { label: string; title: string }[] = [
   { label: 'Номер', title: 'Гос.номер' },
-  { label: 'Дата', title: 'Дата неисправности' },
+  { label: 'Дата', title: 'Дата неисправности. Если в документе указан период («С 20.07 по 31.07»), '
+    + 'рядом с датой показан конец интервала' },
   { label: 'ПЛ', title: 'Пробег по путевому листу, км (у спецтехники вместо километров — моточасы, «м/ч»)' },
   { label: 'ГЛОНАСС', title: 'ГЛОНАСС заявл. — заявленный пробег по системе, км' },
-  { label: 'Факт', title: 'По факту — пробег по треку, км' },
+  { label: 'Факт', title: 'По факту — пробег по треку, км. «≈» приглушённым цветом значит, '
+    + 'что цифра накручена прострелами трека: сравнивать её с путевым листом и отправлять клиенту нельзя. '
+    + '«не запрашивали» — дата строки взята из имени файла (день отправки), телеметрию за неё не спрашивали' },
   { label: 'Вердикт', title: 'Вердикт ИИ — можно изменить' },
 ]
 
@@ -1993,6 +2007,31 @@ function YearFixedMark({ on }: { on?: boolean }) {
       className="shrink-0 whitespace-nowrap text-[9px] uppercase leading-3 tracking-[0.4px] text-muted"
     >
       год испр.
+    </span>
+  )
+}
+
+/** ISO `2026-07-31` → «31.07». Год не печатаем: он тот же, что у начала периода. */
+function shortDayRu(iso?: string | null): string | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec((iso ?? '').trim())
+  return m ? `${m[3]}.${m[2]}` : null
+}
+
+/**
+ * Конец периода неисправности рядом с датой строки: в акте бывает «Дата
+ * неисправности: С 20.07.2026 по 31.07.2026», и одна дата в колонке скрывала бы,
+ * что телеметрия собрана за весь интервал. Конец, равный началу (или пустой), —
+ * обычная односуточная строка, ничего не рисуем.
+ */
+function PeriodEndMark({ from, to }: { from?: string | null; to?: string | null }) {
+  const day = to && to !== from ? shortDayRu(to) : null
+  if (!day) return null
+  return (
+    <span
+      title="Период неисправности из документа: телеметрия и метрики собраны за весь интервал, а не за один день. Пороги вердикта откалиброваны на сутки — по длинному окну смотрите трек"
+      className="shrink-0 whitespace-nowrap text-[10px] text-secondary"
+    >
+      — {day}
     </span>
   )
 }
@@ -2200,10 +2239,22 @@ function VerdictCell({ o, loading, readOnly, onChange }: {
 
   // Чему в строке нельзя доверять (регион, расхождение чисел в акте, две даты) —
   // причина, по которой бэкенд развернул причинный вердикт в «Проверить».
+  // «Пробег недостоверен» тоже приезжает сюда, но вердикт не разжалует — у него
+  // спокойный вид (см. NON_DEMOTING_WARNINGS).
   const warns = <RowWarningChips warnings={o.warnings} className="ml-1.5" />
 
+  // Мёртвый терминал: «Нет данных» у молчащего с весны прибора — это выезд, а не
+  // удалённая диагностика. Флаг лежит и в строке, и в её телеметрии.
+  const silent = (
+    <TrackerSilentChip
+      flags={rowFlags(o)}
+      lastMessageDate={o.telemetry?.last_message_date}
+      className="ml-1.5"
+    />
+  )
+
   if (readOnly) {
-    return <><VerdictPill verdict={o.verdict} source={rowVerdictSource(o)} />{service}{spec}{warns}</>
+    return <><VerdictPill verdict={o.verdict} source={rowVerdictSource(o)} />{service}{spec}{warns}{silent}</>
   }
 
   const d = verdictDisagreement(o.verdict, o.heuristic_category, rowVerdictSource(o))
@@ -2247,6 +2298,7 @@ function VerdictCell({ o, loading, readOnly, onChange }: {
       {service}
       {spec}
       {warns}
+      {silent}
     </>
   )
 }
@@ -2893,8 +2945,12 @@ function SingleParseTable({ issueId, issueTitle, companyName, onSelect }: {
                       editTitle="Изменить дату неисправности и перепроверить в гео"
                       editedTitle="Дата изменена оператором, перепроверено в гео"
                       /* Год в дате подставили мы, а не клиент — помечаем только
-                         ту строку, к дате которой относится сводный признак. */
-                      suffix={<YearFixedMark on={yearFixedFor(parsed, o)} />}
+                         ту строку, к дате которой относится сводный признак.
+                         Рядом — конец периода неисправности («— 31.07»). */
+                      suffix={<>
+                        <PeriodEndMark from={o.date} to={windowEndFor(parsed, o)} />
+                        <YearFixedMark on={yearFixedFor(parsed, o)} />
+                      </>}
                       onApply={val => applyEdit(idx, 'date', val)}
                     />
                   </td>
@@ -2925,7 +2981,18 @@ function SingleParseTable({ issueId, issueTitle, companyName, onSelect }: {
                       onApply={val => applyMileage(idx, 'declared', val)}
                     />
                   </td>
-                  <td className="pr-2 text-white font-medium">{o.system_mileage_km ?? o.telemetry?.system_mileage_km ?? '—'}</td>
+                  {/* Пробег по треку. При `mileage_unreliable` цифра накручена
+                      прострелами — показываем её приглушённой и с «≈», чтобы она
+                      не ушла клиенту как факт. */}
+                  <td className="pr-2 text-white font-medium">
+                    <SystemMileageValue
+                      km={o.system_mileage_km ?? o.telemetry?.system_mileage_km ?? null}
+                      unreliable={isMileageUnreliable(o.warnings, rowFlags(o))}
+                      /* Телеметрию за день ОТПРАВКИ письма бэкенд не запрашивал —
+                         прочерк тут читался бы как «в гео нет данных». */
+                      notRequested={needsAttachmentParse(o.verdict, o.warnings, rowFlags(o))}
+                    />
+                  </td>
                   <td className="pr-2">
                     <VerdictCell
                       o={o}
@@ -2958,6 +3025,14 @@ function SingleParseTable({ issueId, issueTitle, companyName, onSelect }: {
         </div>
         <ParseDisagreeNote objects={rows} />
         <ParseTableNote />
+        {/* Формат, где дата в теме/имени файла — день отправки, а рабочая дата
+            внутри акта: бесплатный разбор по тексту вердикт не выносит и зовёт
+            нажать кнопку разбора вложений (она выше, в этом же блоке). */}
+        {rows.some(o => needsAttachmentParse(o.verdict, o.warnings, rowFlags(o))) && (
+          <p className="mt-1.5 flex items-start gap-1.5 text-[11px] leading-4 text-info">
+            <Info size={13} className="mt-px shrink-0" /> {NEEDS_ATTACHMENT_PARSE_HINT}.
+          </p>
+        )}
       </>
     ) : (
       /* Разбор состоялся, но номер не нашёлся — объясняем причину вместо пустоты. */
@@ -3471,6 +3546,17 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
   const res = cached as BatchResult | null
   const isCached = !!cached && !freshRun
   const isAggregate = !!res?.is_aggregate
+  // Сводный ответ определяет ФОРМА письма, а не число машин: агрегатная заявка ОДКР
+  // и письмо с одним вложением-общим списком ТС (архетип Чапаевского ПО) отвечаются
+  // одним ответом, детей по ним не создаём. Поэтому кнопку в строке именно глушим, а
+  // не убираем: пустая клетка выглядела бы как «кнопка потерялась», а тултип на
+  // disabled-кнопке объясняет причину и не сдвигает 9 колонок таблицы.
+  const childDisabled = isDemo || isAggregate
+  const childTitle = isDemo
+    ? 'Недоступно в демо-режиме'
+    : isAggregate
+      ? 'Сводная заявка: отвечаем одним ответом по всем объектам — дочерние заявки не создаём'
+      : 'Создать дочернюю заявку'
   // OCR ещё не дочитал все вложения → идёт авто-дораспознавание (или предложить
   // продолжить, если цикл остановился по лимиту проходов).
   const ocrProg = res?.ocr_progress
@@ -3612,8 +3698,12 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
                           emptyLabel="нет даты"
                           editTitle="Изменить дату неисправности и перепроверить в гео"
                           editedTitle="Дата изменена оператором, перепроверено в гео"
-                          /* Год подставил разбор, а не клиент — см. YearFixedMark. */
-                          suffix={<YearFixedMark on={yearFixedFor(res.parsed, o)} />}
+                          /* Год подставил разбор, а не клиент — см. YearFixedMark.
+                             Рядом — конец периода неисправности («— 31.07»). */
+                          suffix={<>
+                            <PeriodEndMark from={o.date} to={windowEndFor(res.parsed, o)} />
+                            <YearFixedMark on={yearFixedFor(res.parsed, o)} />
+                          </>}
                           onApply={val => handleDateChange(o, val, idx)}
                         />
                       </td>
@@ -3644,7 +3734,14 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
                           onApply={val => handleMileageChange(o, 'declared', val, idx)}
                         />
                       </td>
-                      <td className="pr-2">{o.system_mileage_km ?? '—'}</td>
+                      {/* См. таблицу выше: недостоверный пробег помечаем «≈». */}
+                      <td className="pr-2">
+                        <SystemMileageValue
+                          km={o.system_mileage_km ?? o.telemetry?.system_mileage_km ?? null}
+                          unreliable={isMileageUnreliable(o.warnings, rowFlags(o))}
+                          notRequested={needsAttachmentParse(o.verdict, o.warnings, rowFlags(o))}
+                        />
+                      </td>
                       <td className="pr-2">
                         <VerdictCell
                           o={o}
@@ -3676,10 +3773,10 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
                             <Check size={14} className="inline text-green-400" />
                           ) : (
                             <button
-                              onClick={() => !isDemo && createRow(o, idx)}
-                              title={isDemo ? 'Недоступно в демо-режиме' : 'Создать дочернюю заявку'}
-                              disabled={isDemo}
-                              className={`inline-flex transition-colors ${isDemo ? 'text-muted/40 cursor-not-allowed' : 'text-muted hover:text-accent'}`}
+                              onClick={() => !childDisabled && createRow(o, idx)}
+                              title={childTitle}
+                              disabled={childDisabled}
+                              className={`inline-flex transition-colors ${childDisabled ? 'text-muted/40 cursor-not-allowed' : 'text-muted hover:text-accent'}`}
                             ><FilePlus size={14} /></button>
                           )
                         )}
@@ -3721,7 +3818,11 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
                текст и вставляется. Здесь — только пояснение про агрегатность. */
             <p className="flex items-start gap-1.5 text-[11px] text-muted leading-relaxed">
               <Info size={13} className="shrink-0 mt-0.5 text-info" />
-              <span>Агрегатная заявка (ОДКР) — отвечаем одним ответом по всем объектам, без разбивки на дочерние.</span>
+              <span>
+                Сводная заявка — отвечаем одним ответом по всем объектам, без разбивки на дочерние.
+                Сводно отвечаются и агрегатные заявки ОДКР, и письма, где список ТС пришёл одним общим
+                вложением. Поэтому создание дочерних заявок в строках таблицы отключено.
+              </span>
             </p>
           )}
           {!isAggregate && (() => {
@@ -4477,6 +4578,13 @@ export function IssueDetail() {
   // По служебному вердикту («не о пробеге», разбор не состоялся) готовый ответ
   // клиенту предлагать нельзя — чип «по правилам» для такой строки гасим.
   const selectedIsService = isServiceVerdict(selectedObj?.verdict)
+  // Рабочая дата лежит внутри акта: телеметрию за день отправки письма не
+  // запрашивали. Это не «старый кэш без метрик» — объяснение своё (см. ниже).
+  const selectedNeedsParse = needsAttachmentParse(
+    selectedObj?.verdict,
+    selectedObj?.warnings,
+    selectedObj ? rowFlags(selectedObj) : null,
+  )
 
   return (
     <ActiveSectionContext.Provider value={activeSectionValue}>
@@ -4720,8 +4828,10 @@ export function IssueDetail() {
             </p>
           )}
           {/* Разборы, сделанные до появления telemetry в ответе бэкенда, метрик
-              не содержат — объясняем, почему их нет, вместо пустого блока. */}
-          {selectedObj && !selectedObj.telemetry && (
+              не содержат — объясняем, почему их нет, вместо пустого блока.
+              Строку, которой нужен разбор вложений, сюда не пускаем: метрик нет не
+              из-за старого кэша, и «обновить разбор» её не вылечит (см. панель выше). */}
+          {selectedObj && !selectedObj.telemetry && !selectedNeedsParse && (
             <p className="text-[13px] text-muted">
               В сохранённом разборе метрик нет — нажмите «Обновить разбор» в блоке выше,
               чтобы пересчитать телеметрию по объектам.

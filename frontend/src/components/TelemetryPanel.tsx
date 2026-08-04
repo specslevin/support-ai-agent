@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Sparkles, AlertTriangle } from 'lucide-react'
+import { Sparkles, AlertTriangle, Info, BellOff } from 'lucide-react'
 import type { AutomationTelemetry, VerdictSource } from '../types'
 
 interface TelemetryPanelProps {
@@ -27,6 +27,19 @@ interface TelemetryPanelProps {
 }
 
 /**
+ * Служебный вердикт формата, где дата в теме письма и в имени файла — это день
+ * ОТПРАВКИ, а рабочая «Дата неисправности» лежит ВНУТРИ акта (архетип
+ * Жигулевского ПО). Бесплатный разбор по тексту честно отказывается судить по
+ * чужому дню и зовёт оператора нажать «разобрать вложения» — это тоже бесплатно.
+ */
+export const NEEDS_ATTACHMENT_PARSE_VERDICT = 'Нужен разбор вложений'
+
+export const NEEDS_ATTACHMENT_PARSE_HINT =
+  'Дата в теме письма и в имени файла — это день ОТПРАВКИ, а «Дата неисправности» '
+  + 'указана внутри акта. Телеметрию за чужой день намеренно не запрашивали: нажмите '
+  + '«разобрать вложения» в блоке разбора — это бесплатно, токены не тратятся'
+
+/**
  * Цвет ТЕКСТА вердикта — один источник для таблицы разбора и пилюли телеметрии.
  * Заливка занята статусами Okdesk, дублировать её нельзя (см. VerdictPill).
  */
@@ -48,6 +61,9 @@ export const VERDICT_TEXT_STYLE: Record<string, string> = {
   // или «Ошибка данных» (см. SERVICE_VERDICTS).
   'Не заявка о расхождении пробега': 'text-secondary',
   'Ложный пробег / экранирование': 'text-secondary',
+  // «Нужен разбор вложений» — не диагноз и не тревога, а поручение оператору:
+  // информационный синий, как у «Проверить», без янтаря и красного.
+  [NEEDS_ATTACHMENT_PARSE_VERDICT]: 'text-info',
 }
 
 /**
@@ -65,6 +81,9 @@ export const SERVICE_VERDICTS = new Set([
   'Ошибка данных',
   'Не заявка о расхождении пробега',
   'Ложный пробег / экранирование',
+  // Разбор не состоялся по той же причине, что и «Нет даты»: рабочей даты в
+  // тексте письма нет, она внутри акта — клиенту по такой строке отвечать нечем.
+  NEEDS_ATTACHMENT_PARSE_VERDICT,
 ])
 
 /** Вердикты «заявка не о пробеге» — телеметрия есть, но это справка, а не диагноз. */
@@ -84,6 +103,23 @@ export function isServiceVerdict(verdict?: string | null): boolean {
 
 export function isNonMileageVerdict(verdict?: string | null): boolean {
   return !!verdict && NON_MILEAGE_VERDICTS.has(verdict)
+}
+
+/**
+ * Строке нужен разбор вложений: рабочая дата лежит внутри акта, поэтому телеметрию
+ * за день отправки бэкенд НЕ запрашивал (`telemetry`/`system_mileage_km` = null).
+ * Признак приезжает вердиктом и/или пометкой `date_from_filename` — читаем оба
+ * источника (и флаги телеметрии, если строка их несёт), иначе панель соврёт
+ * «нет данных» там, где данных просто не спрашивали.
+ */
+export function needsAttachmentParse(
+  verdict?: string | null,
+  warnings?: string[] | null,
+  flags?: string[] | null,
+): boolean {
+  if (verdict === NEEDS_ATTACHMENT_PARSE_VERDICT) return true
+  const has = (arr?: string[] | null) => Array.isArray(arr) && arr.includes('date_from_filename')
+  return has(warnings) || has(flags)
 }
 
 /** Старые кэши источника не несут — вердикт в них посчитан правилами. */
@@ -158,6 +194,17 @@ export function IssueIntentChip({ intent, className = '' }: {
 }
 
 /**
+ * Почему нельзя показывать клиенту НАШ суточный пробег (`mileage_unreliable`).
+ * Прострелы трека накручивают километры (1257,9 км за 82 минуты движения), но
+ * сам вердикт по треку от этого не разжалуется — рваный трек и есть признак
+ * глушения. Одна формулировка на пометку строки, флаг и цифру «Факт».
+ */
+export const MILEAGE_UNRELIABLE_HINT =
+  'Суточный пробег системы накручен прострелами трека — цифре верить нельзя. '
+  + 'Не сравнивайте её с путевым листом и не отправляйте клиенту. '
+  + 'На вердикт это не влияет: рваный трек сам по себе признак глушения'
+
+/**
  * ЧЕМУ В СТРОКЕ НЕЛЬЗЯ ДОВЕРЯТЬ (`warnings` строки разбора). Причинный вердикт
  * при непустом списке бэкенд уже разворачивает в «Проверить» — здесь оператор
  * видит ПРИЧИНУ, иначе «Проверить» выглядит как случайная осторожность.
@@ -167,6 +214,11 @@ const WARNING_LABELS: Record<string, string> = {
   region_conflict: 'регион не совпал',
   act_numbers_differ: 'пробеги в акте расходятся',
   two_dates_one_plate: 'две даты',
+  mileage_unreliable: 'пробег недостоверен',
+  date_from_filename: 'дата из имени файла',
+  act_name_body_differ: 'акт в имени ≠ акт в теле',
+  mileage_in_hours: 'пробег в часах, не в км',
+  duplicate_in_source: 'ТС задвоен в письме',
 }
 
 const WARNING_HINTS: Record<string, string> = {
@@ -175,7 +227,47 @@ const WARNING_HINTS: Record<string, string> = {
   act_numbers_differ: 'В акте текст и таблица дают разные пробеги — сверьте с документом',
   two_dates_one_plate: 'У этого ТС в заявке две разные даты из разных документов — '
     + 'строки не сведены, проверьте, к какому дню относится жалоба',
+  mileage_unreliable: MILEAGE_UNRELIABLE_HINT,
+  date_from_filename: 'Дата взята из имени файла — это день ОТПРАВКИ письма, а рабочая '
+    + '«Дата неисправности» указана внутри акта. Нажмите «разобрать вложения» (бесплатно, '
+    + 'без токенов) — разбор возьмёт дату из документа и пересчитает телеметрию',
+  act_name_body_differ: 'Имя файла и тело документа называют РАЗНЫЕ акты: в имени «№ТР140» '
+    + 'и 31.07, а внутри «№ТР126 от 29.07». Цифры пробега взяты из тела и согласованы — '
+    + 'под вопросом происхождение строки: из какого именно акта она собрана. Откройте '
+    + 'документ и сверьте номер и дату акта, прежде чем отвечать клиенту',
+  mileage_in_hours: 'В графе «Пробег по путевому листу» стоит время, а не километры '
+    + '(«41 ч», «34,10 мин») — это спецтехника, её пробег мерят моточасами. Число ушло '
+    + 'в поле моточасов, километрового пробега по путевому листу у строки нет. На вердикт '
+    + 'это не влияет: километровый диагноз по такой строке и так не выносится',
+  duplicate_in_source: 'Клиент перечислил это ТС в письме дважды — разбор схлопнул позиции '
+    + 'в одну строку. Схлопывание верное, данные строки в порядке: строк просто меньше, '
+    + 'чем позиций письма, потерянную строку искать не нужно',
 }
+
+/**
+ * Пометки, которые НЕ разжалуют вердикт. Остальные значения `warnings` бэкенд
+ * разворачивает в «Проверить» (данным строки верить нельзя), а эти говорят не о
+ * достоверности вердикта:
+ *   `mileage_unreliable`  — сомнение только в НАШЕЙ цифре суточного пробега;
+ *                           рваный трек сам признак спуфинга, «Глушение» остаётся;
+ *   `mileage_in_hours`    — пробег спецтехники дан моточасами, км-поля пусты;
+ *                           километровый вердикт по такой строке и не выносится;
+ *   `duplicate_in_source` — клиент задвоил ТС в письме, строки схлопнуты ВЕРНО;
+ *                           пометка нужна лишь чтобы не искали «потерянную» строку;
+ *   `act_name_body_differ` — расходятся НОМЕРА актов в имени файла и в теле, а
+ *                           цифры и дата строки взяты из тела и согласованы. Дату
+ *                           в имени файла этот формат и так пишет как день
+ *                           ОТПРАВКИ (C4, класс 11), поэтому расхождение само по
+ *                           себе не доказывает, что вердикт считан за чужой день.
+ * Поэтому чип рисуется спокойно (нейтральная рамка, значок ℹ), а не тревожно,
+ * как «регион не совпал».
+ */
+const NON_DEMOTING_WARNINGS = new Set([
+  'mileage_unreliable',
+  'mileage_in_hours',
+  'duplicate_in_source',
+  'act_name_body_differ',
+])
 
 /** Список открытый: неизвестное значение показываем как есть, интерфейс не ломаем. */
 function warningLabel(w: string): string {
@@ -212,25 +304,135 @@ export function RowWarningChips({ warnings, className = '' }: {
   if (list.length === 0) return null
   return (
     <>
-      {list.map(w => (
-        <span
-          key={w}
-          title={warningHint(w)}
-          className={`inline-flex items-center gap-1 rounded-pill border border-warning/40 bg-warning/10 px-1.5 py-0.5 align-middle text-[9px] font-medium leading-3 text-warning ${className}`}
-        >
-          <AlertTriangle size={9} className="shrink-0" />
-          {warningLabel(w)}
-        </span>
-      ))}
+      {list.map(w => {
+        // Не разжалующая пометка (пробег недостоверен) — спокойный вид: тревожный
+        // янтарь означает «вердикт развернули в Проверить», а здесь этого нет.
+        const soft = NON_DEMOTING_WARNINGS.has(w)
+        const tone = soft
+          ? 'border-border bg-frame text-secondary'
+          : 'border-warning/40 bg-warning/10 text-warning'
+        return (
+          <span
+            key={w}
+            title={warningHint(w)}
+            className={`inline-flex items-center gap-1 rounded-pill border px-1.5 py-0.5 align-middle text-[9px] font-medium leading-3 ${tone} ${className}`}
+          >
+            {soft
+              ? <Info size={9} className="shrink-0" />
+              : <AlertTriangle size={9} className="shrink-0" />}
+            {warningLabel(w)}
+          </span>
+        )
+      })}
     </>
   )
 }
 
-/** Расшифровки всех пометок строки одной спокойной строкой (для блока телеметрии). */
-function warningsNote(warnings?: string[] | null): string | null {
+/**
+ * Пробег системы по строке недостоверен: пометка приезжает и в `warnings`, и
+ * дублируется флагом телеметрии — читаем оба источника, чтобы цифра «Факт» была
+ * помечена и в старых ответах, где массив `warnings` ещё не заполнялся.
+ */
+export function isMileageUnreliable(
+  warnings?: string[] | null,
+  flags?: string[] | null,
+): boolean {
+  const has = (arr?: string[] | null) => Array.isArray(arr) && arr.includes('mileage_unreliable')
+  return has(warnings) || has(flags)
+}
+
+/**
+ * Значение пробега системы («Факт») с пометкой недостоверности: приглушённый
+ * цвет и «≈» вместо точной цифры — чтобы оператор не скопировал её в ответ.
+ * Достоверное значение рисуется как раньше, `className` задаёт вызывающий.
+ */
+export function SystemMileageValue({ km, unreliable, notRequested, className = '' }: {
+  km?: number | null
+  unreliable?: boolean
+  /**
+   * Телеметрию за этот день НЕ запрашивали (дата из имени файла = день отправки).
+   * Пустой прочерк читался бы как «в геосистеме нет данных» — пишем честно.
+   */
+  notRequested?: boolean
+  className?: string
+}) {
+  if (km == null && notRequested) {
+    return (
+      <span
+        title={NEEDS_ATTACHMENT_PARSE_HINT}
+        className={`whitespace-nowrap text-[10px] leading-4 text-muted ${className}`}
+      >
+        не запрашивали
+      </span>
+    )
+  }
+  if (km == null) return <span className={className}>—</span>
+  if (!unreliable) return <span className={className}>{km}</span>
+  return (
+    <span
+      title={MILEAGE_UNRELIABLE_HINT}
+      className={`whitespace-nowrap font-normal text-muted ${className}`}
+    >
+      ≈ {km}
+    </span>
+  )
+}
+
+/** `2026-03-16` / ISO-время → `16.03.2026`. Прочее отдаём как есть. */
+function formatDayRu(value?: string | null): string | null {
+  if (!value) return null
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(value.trim())
+  return m ? `${m[3]}.${m[2]}.${m[1]}` : value.trim()
+}
+
+/** Терминал молчит 30+ дней до даты неисправности — по флагу `tracker_silent`. */
+export function isTrackerSilent(flags?: string[] | null): boolean {
+  return Array.isArray(flags) && flags.includes('tracker_silent')
+}
+
+export const TRACKER_SILENT_HINT =
+  'Терминал не выходил на связь больше месяца ДО даты неисправности — это не '
+  + '«пустые сутки», а мёртвый прибор. Удалённая диагностика бессмысленна, нужен выезд'
+
+/**
+ * Ярлык «молчит с …» рядом с вердиктом «Нет данных»: оператор должен видеть
+ * разницу между «прибор жив, но за день нет данных» и «молчит с марта».
+ * Тон предупреждающий (это отказ оборудования), дата — из
+ * `telemetry.last_message_date`; без даты пишем просто «терминал молчит».
+ */
+export function TrackerSilentChip({ flags, lastMessageDate, className = '' }: {
+  flags?: string[] | null
+  lastMessageDate?: string | null
+  className?: string
+}) {
+  if (!isTrackerSilent(flags)) return null
+  const day = formatDayRu(lastMessageDate)
+  return (
+    <span
+      title={day
+        ? `${TRACKER_SILENT_HINT}. Последнее сообщение — ${day}`
+        : TRACKER_SILENT_HINT}
+      className={`inline-flex items-center gap-1 rounded-pill border border-orange/40 bg-orange/10 px-1.5 py-0.5 align-middle text-[9px] font-medium leading-3 text-orange ${className}`}
+    >
+      <BellOff size={9} className="shrink-0" />
+      {day ? `молчит с ${day}` : 'терминал молчит'}
+    </span>
+  )
+}
+
+/**
+ * Расшифровки пометок строки для блока телеметрии, РАЗДЕЛЬНО: те, из-за которых
+ * вердикт развёрнут в «Проверить» (тревожный тон), и те, что вердикт не трогают
+ * (`mileage_unreliable` — спокойный тон, иначе строка читалась бы как «вердикту
+ * нельзя верить», а верить нельзя только цифре пробега).
+ */
+function warningsNotes(warnings?: string[] | null): { alert: string | null; soft: string | null } {
   const list = normalizeWarnings(warnings)
-  if (list.length === 0) return null
-  return list.map(warningHint).join('. ')
+  const join = (items: string[]) => (items.length > 0 ? items.map(warningHint).join('. ') : null)
+  return {
+    alert: join(list.filter(w => !NON_DEMOTING_WARNINGS.has(w))),
+    soft: join(list.filter(w => NON_DEMOTING_WARNINGS.has(w))),
+  }
 }
 
 /**
@@ -327,11 +529,17 @@ const FLAG_LABELS: Record<string, string> = {
   speed_spike: 'выбросы скорости',
   teleport: 'телепорты трека',
   sparse_data: 'почти нет связи',
+  mileage_unreliable: 'пробег недостоверен',
+  tracker_silent: 'терминал молчит 30+ дней',
+  date_from_filename: 'дата из имени файла',
 }
 
 /** Расшифровка флага при наведении — там, где короткой подписи мало. */
 const FLAG_HINTS: Record<string, string> = {
   sparse_data: 'Терминал почти не выходил на связь за сутки — вероятна неисправность или демонтаж прибора',
+  mileage_unreliable: MILEAGE_UNRELIABLE_HINT,
+  tracker_silent: TRACKER_SILENT_HINT,
+  date_from_filename: WARNING_HINTS.date_from_filename,
 }
 
 /** Минуты → «2 ч 15 мин» от часа и больше, иначе «45 мин». */
@@ -398,8 +606,17 @@ export function TelemetryPanel({
   const [reasoningOpen, setReasoningOpen] = useState(false)
   // Чему в строке нельзя доверять и за какой период собраны метрики — оба
   // ограничения касаются вердикта выше, поэтому считаем их до отрисовки шапки.
-  const warnNote = warningsNote(warnings)
+  const warnNotes = warningsNotes(warnings)
   const windowDays = telemetryWindowDays(windowFrom, windowTo)
+  // Пробег системы недостоверен: пометка приезжает и в `warnings` строки, и
+  // флагом телеметрии — второе нужно для ответов, где массива пометок нет.
+  const mileageBad = isMileageUnreliable(warnings, telemetry?.flags)
+  // Дата строки — день ОТПРАВКИ письма: телеметрию за него бэкенд намеренно не
+  // запрашивал. Пустой блок читался бы как «объект не найден / нет данных».
+  const needsParse = needsAttachmentParse(category, warnings, telemetry?.flags)
+  // Пометка `date_from_filename` уже печатает полное объяснение строкой выше —
+  // в блоке телеметрии тогда хватит короткой фразы, повторять текст незачем.
+  const needsParseExplained = normalizeWarnings(warnings).includes('date_from_filename')
   const src = normalizeVerdictSource(verdictSource)
   // Уверенность и полоса доверия существуют ТОЛЬКО у вердикта ИИ: у правил и у
   // человека их просто нет, а чужая уверенность от прошлого прогона врала бы.
@@ -429,6 +646,12 @@ export function TelemetryPanel({
           <IssueIntentChip intent={issueIntent} />
           {/* Пометки строки — сразу за вердиктом: они объясняют, почему он «Проверить». */}
           <RowWarningChips warnings={warnings} />
+          {/* «Нет данных» бывает двух разных смыслов: прибор жив, но за сутки нет
+              пакетов — или молчит с весны. Второе решается выездом, не диагностикой. */}
+          <TrackerSilentChip
+            flags={telemetry?.flags}
+            lastMessageDate={telemetry?.last_message_date}
+          />
           <TelemetryWindowChip days={windowDays} />
           {verdictNote && <span className="text-[13px] text-secondary">{verdictNote}</span>}
           {subtitle && <span className="ml-auto text-[13px] text-muted">{subtitle}</span>}
@@ -439,8 +662,29 @@ export function TelemetryPanel({
         )}
         {/* Расшифровка пометок прямым текстом: ярлыки короткие, а решение по строке
             оператор принимает здесь же — заставлять его наводить мышь не годится. */}
-        {warnNote && (
-          <p className="text-[11px] leading-4 text-warning">{warnNote}</p>
+        {warnNotes.alert && (
+          <p className="text-[11px] leading-4 text-warning">{warnNotes.alert}</p>
+        )}
+        {/* Пометка, которая вердикт не разжалует (недостоверный пробег) — спокойным
+            тоном: сомнение только в цифре, не в диагнозе по треку. */}
+        {(warnNotes.soft || mileageBad) && (
+          <p className="text-[11px] leading-4 text-muted">
+            {/* Саму цифру печатаем здесь же и только с «≈»: в блоке телеметрии
+                отдельной метрики пробега нет, а оператор отвечает, глядя сюда. */}
+            {mileageBad && telemetry?.system_mileage_km != null
+              && `Пробег по треку ≈ ${telemetry.system_mileage_km} км. `}
+            {warnNotes.soft ?? MILEAGE_UNRELIABLE_HINT}
+          </p>
+        )}
+        {/* Мёртвый терминал: пишем прямым текстом, а не только ярлыком — от этого
+            зависит решение «диагностика удалённо» против «выезд». */}
+        {isTrackerSilent(telemetry?.flags) && (
+          <p className="text-[11px] leading-4 text-orange">
+            {TRACKER_SILENT_HINT}
+            {formatDayRu(telemetry?.last_message_date)
+              ? `. Последнее сообщение — ${formatDayRu(telemetry?.last_message_date)}`
+              : ''}
+          </p>
         )}
         {percent != null && (
           <div className="h-1 w-full rounded-pill bg-frame overflow-hidden">
@@ -451,7 +695,18 @@ export function TelemetryPanel({
         <VerdictDisagreeLine verdict={category} heuristic={heuristicCategory} source={src} />
       </div>
 
-      {telemetry == null ? (
+      {telemetry == null && needsParse ? (
+        /* Данных нет не потому, что их нет в геосистеме, а потому, что мы их не
+           спрашивали: день отправки письма — не день неисправности. */
+        <p className="flex items-start gap-1.5 rounded-md bg-info/10 px-3 py-2 text-[11px] leading-4 text-info">
+          <Info size={13} className="mt-px shrink-0" />
+          <span>
+            {needsParseExplained
+              ? 'Телеметрию за этот день не запрашивали — нужен разбор вложений.'
+              : `${NEEDS_ATTACHMENT_PARSE_HINT}.`}
+          </span>
+        </p>
+      ) : telemetry == null ? (
         <div className="text-[13px] text-muted">Телеметрия не загружена</div>
       ) : (
         <>
