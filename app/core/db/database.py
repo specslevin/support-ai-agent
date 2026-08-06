@@ -49,6 +49,13 @@ def _run_lightweight_migrations(conn) -> None:
     if not _column_exists(conn, "ai_feedback", "verdict_source"):
         conn.exec_driver_sql("ALTER TABLE ai_feedback ADD COLUMN verdict_source TEXT")
 
+    # result_cache.rules_version — версия правил разбора, по которой посчитан
+    # результат. NULL у всех существующих записей = «версия неизвестна» → разбор
+    # считается устаревшим и пересчитывается по требованию (RULES_VERSION в
+    # app/core/services/cache_service.py). Ничего не удаляем: запись остаётся.
+    if not _column_exists(conn, "result_cache", "rules_version"):
+        conn.exec_driver_sql("ALTER TABLE result_cache ADD COLUMN rules_version TEXT")
+
 
 async def init_db():
     async with engine.begin() as conn:

@@ -29,7 +29,7 @@ import {
   TelemetryPanel, VerdictPill, VERDICT_TEXT_STYLE, IssueIntentChip,
   normalizeVerdictSource, verdictSourceHint, verdictDisagreement,
   isNonMileageVerdict, isServiceVerdict, NON_MILEAGE_HINT,
-  RowWarningChips, TrackerSilentChip, SystemMileageValue, isMileageUnreliable,
+  RowWarningChips, TrackerSilentChip, SimilarPlatesChip, SystemMileageValue, isMileageUnreliable,
   needsAttachmentParse, NEEDS_ATTACHMENT_PARSE_VERDICT, NEEDS_ATTACHMENT_PARSE_HINT,
 } from './TelemetryPanel'
 
@@ -2253,8 +2253,13 @@ function VerdictCell({ o, loading, readOnly, onChange }: {
     />
   )
 
+  // Объект по номеру не найден, но в парке есть похожие: подсказка для ручной
+  // правки номера. Подставлять похожую машину сами мы больше не имеем права —
+  // вердикт вышел бы по чужому ТС (сессия C5, класс 10).
+  const similar = <SimilarPlatesChip plates={o.similar_plates} className="ml-1.5" />
+
   if (readOnly) {
-    return <><VerdictPill verdict={o.verdict} source={rowVerdictSource(o)} />{service}{spec}{warns}{silent}</>
+    return <><VerdictPill verdict={o.verdict} source={rowVerdictSource(o)} />{service}{spec}{warns}{silent}{similar}</>
   }
 
   const d = verdictDisagreement(o.verdict, o.heuristic_category, rowVerdictSource(o))
@@ -2299,6 +2304,7 @@ function VerdictCell({ o, loading, readOnly, onChange }: {
       {spec}
       {warns}
       {silent}
+      {similar}
     </>
   )
 }

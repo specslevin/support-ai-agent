@@ -140,6 +140,13 @@ class ResultCache(Base):
     issue_external_id: Mapped[int] = mapped_column(Integer, nullable=False)
     kind: Mapped[str] = mapped_column(String(32), nullable=False)  # 'automate' | 'batch'
     result_json: Mapped[str] = mapped_column(Text, nullable=False)
+    # Версия ПРАВИЛ РАЗБОРА, по которой посчитан результат (см. RULES_VERSION в
+    # app/core/services/cache_service.py). Запись с другой версией (или без версии
+    # вовсе — весь кэш, накопленный до этой правки) считается устаревшей и не
+    # отдаётся как готовый разбор: правила менялись, вердикт мог быть другим.
+    # Записи распознавания вложений (kind 'ocr:<id>') версию НЕ несут — OCR от
+    # правил разбора не зависит и переиспользуется всегда.
+    rules_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )

@@ -1091,16 +1091,25 @@ async def get_cached_parse(
         raise HTTPException(status_code=500, detail="Failed to read cached parse")
 
 
-async def _cached_facts(cache: CacheService, external_id: int) -> dict | None:
+async def _cached_facts(cache: CacheService, external_id: int, *,
+                        allow_stale: bool = False) -> dict | None:
     """Разбор из кэша: сначала полный ИИ-прогон, затем детерминированные факты.
 
     Оба kind несут одинаковые по форме поля ``parsed``/``telemetry``, поэтому
     потребители (шаблоны, трек) получают полный набор полей и когда ИИ-разбор
     сброшен/не запускался, а бесплатный разбор по фактам уже есть.
+
+    ``allow_stale=True`` — читать разбор и старой версии правил. Так берёт трек:
+    ему нужны только НОМЕР и ДАТА (личность объекта, включая ручную правку
+    оператора), а не вердикт; без них трек строится независимым парсом темы и
+    может уехать на чужое ТС. Шаблоны читают строго свежий разбор: подставлять
+    в ответ клиенту пробег, посчитанный отменёнными правилами, дороже, чем
+    заставить оператора вписать число руками.
     """
     for kind in ("automate", "parse"):
         try:
-            cached = await cache.get_result_cache(external_id, kind)
+            cached = await cache.get_result_cache(external_id, kind,
+                                                 allow_stale=allow_stale)
         except Exception:
             continue
         if cached and isinstance(cached.get("data"), dict):
@@ -1462,11 +1471,20 @@ async def _objects_doc(cache: CacheService, external_id: int) -> tuple[str, dict
 
     Приоритет — «batch» (разбор по вложениям, там уже могут быть правки), при его
     отсутствии — детерминированный «parse»: строки в нём того же формата, поэтому
-    вердикт/номер правятся так же. Возвращает (kind, data)."""
+    вердикт/номер правятся так же. Возвращает (kind, data).
+
+    Разбор старой версии правил здесь НЕ берётся намеренно: правка легла бы в
+    документ, который карточка всё равно не показывает (тот же фильтр версии на
+    чтении), — оператор менял бы вердикт «в никуда». Честнее сказать, что разбор
+    устарел, и попросить прогнать заново."""
     for kind in ("batch", "parse"):
         cached = await cache.get_result_cache(external_id, kind)
         if cached and (cached.get("data") or {}).get("objects"):
             return kind, cached["data"]
+    if await cache.has_stale_result_cache(external_id, ("batch", "parse")):
+        raise HTTPException(
+            status_code=400,
+            detail="Разбор устарел (правила разбора изменились) — выполните разбор заново")
     raise HTTPException(status_code=400, detail="Сначала выполните разбор по вложениям")
 
 
@@ -2109,9 +2127,13 @@ class AiFeedbackBody(BaseModel):
 
 
 async def _ai_category_of(cache: CacheService, external_id: int) -> str | None:
-    """Категория, которую выдал ИИ (для записи рядом с оценкой оператора)."""
+    """Категория, которую выдал ИИ (для записи рядом с оценкой оператора).
+
+    Читаем и устаревший разбор: оценку ставят тому вердикту, который оператор
+    ВИДЕЛ, и потерять его в записи об ошибке хуже, чем сослаться на старые
+    правила."""
     for kind in ("automate", "batch"):
-        cached = await cache.get_result_cache(external_id, kind)
+        cached = await cache.get_result_cache(external_id, kind, allow_stale=True)
         d = (cached or {}).get("data") if cached else None
         if isinstance(d, dict):
             if d.get("category"):
@@ -2443,10 +2465,15 @@ async def create_children(
         # нельзя подставлять пробег, накрученный прострелами трека (класс 10), и
         # нельзя обещать удалённую диагностику по терминалу, который молчит
         # месяцами (класс 22). Сессия C4, решения интервью 4.
+        # Устаревший разбор здесь тоже годится (allow_stale): пометки только
+        # ЗАПРЕЩАЮТ обещания в тексте для клиента, и старое предупреждение всё
+        # равно предупреждение, а его отсутствие вернуло бы ровно те обещания,
+        # которые классы 10/22 запретили.
         row_marks: dict[tuple[str, str], set[str]] = {}
         for _kind in ("batch", "parse"):
             try:
-                _cached = await cache.get_result_cache(external_id, _kind)
+                _cached = await cache.get_result_cache(external_id, _kind,
+                                                       allow_stale=True)
             except Exception:
                 continue
             _data = (_cached or {}).get("data")
@@ -2572,7 +2599,7 @@ async def get_issue_track(
         # трека взял бы исходный (неверный) номер из темы и построил трек по
         # чужому объекту, расходясь с анализом.
         try:
-            data0 = await _cached_facts(cache, external_id)
+            data0 = await _cached_facts(cache, external_id, allow_stale=True)
             if data0:
                 cp = data0.get("parsed") or {}
                 cplate, cdate = cp.get("plate"), cp.get("date")
@@ -2620,7 +2647,7 @@ async def get_issue_track(
             if isinstance(parsed0.get("date"), str) and parsed0.get("date"):
                 fb_date = parsed0["date"][:10]
             try:
-                data1 = await _cached_facts(cache, external_id)
+                data1 = await _cached_facts(cache, external_id, allow_stale=True)
                 if data1:
                     parsed = data1.get("parsed") or {}
                     p = parsed.get("plate")

@@ -16,6 +16,30 @@ from app.core.okdesk.service import OkdeskService
 
 log = structlog.get_logger(__name__)
 
+# ---------------------------------------------------------------------------
+# Версия правил разбора
+# ---------------------------------------------------------------------------
+# ПОДНИМАТЬ РУКАМИ при каждом изменении логики разбора (лестница правил, порядок
+# ветвей, стражи номеров/пробега/интервалов — всё, от чего может измениться
+# ВЕРДИКТ или факты). Формат свободный, важно лишь отличие от предыдущего
+# значения; принято «ГГГГ-ММ-ДД.N».
+#
+# Зачем: результат разбора лежит в result_cache и раньше жил вечно — оператор
+# видел вердикт, посчитанный старыми правилами (заявки 4602/4676: разбор от
+# 29.07, то есть до всей починки П4), и не знал об этом. Теперь запись, у которой
+# rules_version не равна этой константе (в том числе NULL у всего старого кэша),
+# считается устаревшей: она НЕ отдаётся как готовый разбор, но и НЕ удаляется —
+# разбор просто пересчитывается по требованию, как будто кэша нет.
+#
+# НЕ вычислять из хэша файла: правка комментария сбрасывала бы весь кэш.
+RULES_VERSION = "2026-08-06.1"
+
+# Только результаты РАЗБОРА подчиняются версии правил. Записи OCR (kind
+# 'ocr:<attachment_id>') сюда не входят намеренно: распознавание вложений дорого
+# по CPU и времени, от правил разбора не зависит и должно переиспользоваться и
+# после смены версии — иначе каждый деплой заново гонял бы Tesseract по сканам.
+_VERSIONED_KINDS = frozenset({"parse", "batch", "automate"})
+
 _OKDESK_PAGE_SIZE = 50
 _OKDESK_MAX_PAGES = 60  # sync most recent 3000 issues
 _OKDESK_PAGE_RETRIES = 3  # повторы при сбое страницы, чтобы не терять хвост синка
@@ -390,21 +414,62 @@ class CacheService:
             except Exception:
                 pass
 
+    @staticmethod
+    def _version_for_kind(kind: str) -> str | None:
+        """Версия, которой штампуется новая запись: правила — для разбора, NULL —
+        для OCR и прочих неверсионируемых видов."""
+        return RULES_VERSION if kind in _VERSIONED_KINDS else None
+
+    @staticmethod
+    def is_stale_kind(kind: str, rules_version: str | None) -> bool:
+        """Устарела ли запись: только для видов разбора и только при несовпадении
+        версии правил (NULL = «посчитано неизвестно когда» → устарело)."""
+        return kind in _VERSIONED_KINDS and rules_version != RULES_VERSION
+
     async def save_result_cache(self, external_id: int, kind: str, result_json: str) -> None:
-        """Upsert a cached analysis result for (issue, kind)."""
+        """Upsert a cached analysis result for (issue, kind).
+
+        Рядом с результатом штампуется версия правил разбора (RULES_VERSION):
+        по ней следующий деплой поймёт, что запись посчитана старой логикой.
+
+        ``created_at`` при перезаписи обновляется: оператор читает это поле как
+        «когда разбор посчитан», а видел дату ПЕРВОЙ записи — у 4602 пакетный
+        разбор был помечен 29.07, хотя пересчитывался позже (C5)."""
         existing = await self.db.execute(
             select(ResultCache).where(
                 ResultCache.issue_external_id == external_id, ResultCache.kind == kind
             )
         )
         row = existing.scalar_one_or_none()
+        version = self._version_for_kind(kind)
         if row:
             row.result_json = result_json
+            row.rules_version = version
+            # Naive UTC — ровно то, что пишет server_default=func.now() при вставке
+            # (CURRENT_TIMESTAMP в SQLite), иначе новая запись и перезаписанная
+            # оказались бы в разных шкалах времени.
+            row.created_at = datetime.utcnow()
         else:
-            self.db.add(ResultCache(issue_external_id=external_id, kind=kind, result_json=result_json))
+            self.db.add(ResultCache(issue_external_id=external_id, kind=kind,
+                                    result_json=result_json, rules_version=version))
         await self.db.commit()
 
-    async def get_result_cache(self, external_id: int, kind: str) -> dict[str, Any] | None:
+    async def get_result_cache(self, external_id: int, kind: str, *,
+                               allow_stale: bool = False) -> dict[str, Any] | None:
+        """Готовый результат из кэша, либо ``None``.
+
+        Разбор, посчитанный ДРУГОЙ версией правил (``rules_version`` не равна
+        RULES_VERSION, в т.ч. NULL у всего старого кэша), по умолчанию считается
+        устаревшим и не отдаётся — как будто кэша нет. Запись при этом остаётся в
+        базе: инвалидация здесь — это «не отдавать», а не DELETE.
+
+        ``allow_stale=True`` отдаёт запись любой версии с пометкой ``stale``. Так
+        читают те пути, где отсутствие данных ХУЖЕ устаревших (личность ТС для
+        трека, предупреждения строк для дочерних заявок, метаданные оценки).
+
+        OCR-записи (``kind`` = ``ocr:<attachment_id>``) версии не подчиняются и
+        отдаются всегда: распознавание от правил разбора не зависит.
+        """
         import json as _json
         res = await self.db.execute(
             select(ResultCache).where(
@@ -414,11 +479,31 @@ class CacheService:
         row = res.scalar_one_or_none()
         if not row:
             return None
+        stale = self.is_stale_kind(kind, row.rules_version)
+        if stale and not allow_stale:
+            return None
         try:
             data = _json.loads(row.result_json)
         except (ValueError, TypeError):
             return None
-        return {"data": data, "created_at": row.created_at.isoformat()}
+        return {"data": data, "created_at": row.created_at.isoformat(), "stale": stale}
+
+    async def has_stale_result_cache(self, external_id: int, kinds: tuple[str, ...]) -> bool:
+        """Есть ли по заявке запись разбора, отвергнутая из-за смены правил.
+
+        Нужна только для honest-сообщения оператору («разбор устарел, выполните
+        заново») вместо общего «сначала выполните разбор»."""
+        try:
+            res = await self.db.execute(
+                select(ResultCache.kind, ResultCache.rules_version).where(
+                    ResultCache.issue_external_id == external_id,
+                    ResultCache.kind.in_(kinds),
+                )
+            )
+            return any(self.is_stale_kind(k, v) for k, v in res.all())
+        except Exception:
+            log.warning("has_stale_result_cache_failed", external_id=external_id)
+            return False
 
     async def save_ai_feedback(self, external_id: int, rating: str,
                                error_kind: str | None = None, comment: str | None = None,
