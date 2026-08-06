@@ -1616,6 +1616,7 @@ _DATE_JUNK_RE = re.compile(r"(?<!\d)\d{1,2}(?:[-–—]\.|\.[-–—]|\.\.)\d{1,
 def _parse_body_vehicles(text: str | None, bare_mileage_ok: bool = False,
                          dups_out: "set[str] | None" = None,
                          broken_dates_out: "set[str] | None" = None,
+                         windows_out: "list[str | None] | None" = None,
                          ) -> list[tuple[str, str | None, float | None, float | None]]:
     """Нумерованный тело-список «1. <номер> <модель>, … за <дата> … ГЛОНАСС X км,
     … одометр Y км; 2. …» (Прихоперское ПО, 64455): у каждого ТС СВОЯ дата, свой
@@ -1631,7 +1632,12 @@ def _parse_body_vehicles(text: str | None, bare_mileage_ok: bool = False,
     ``broken_dates_out`` — ключи дедупа тех ТС, у чьей строки дата ИСПОРЧЕНА
     опечаткой/OCR («А702АР 39км 04-.05.2026», 4461, C5 класс 7): дата в тексте
     была, но прочитать её нельзя. Такой строке НЕЛЬЗЯ раздавать общую дату
-    заявки — вердикт вышел бы по чужому дню; она остаётся с ярлыком «Нет даты»."""
+    заявки — вердикт вышел бы по чужому дню; она остаётся с ярлыком «Нет даты».
+
+    ``windows_out`` — окна СМЕН возвращённых строк, ПОЗИЦИЯ В ПОЗИЦИЮ со списком
+    результата (None там, где окна нет). Вызывающий отдаёт их наружу полем строки
+    ``shift_window``: у дневной и ночной смены одного ТС за один день совпадает
+    всё, кроме часов, и без них оператор видит две неразличимые строки."""
     if not text:
         return []
     # Переводы строк СОХРАНЯЕМ (_strip_html их убивал): в нумерованном списке
@@ -1641,8 +1647,8 @@ def _parse_body_vehicles(text: str | None, bare_mileage_ok: bool = False,
     # Номер акта/заявки («№ТР138») в списке ТС не участвует (C4, классы 16, 17).
     matches = [m for m in _PLATE_RE.finditer(body)
                if not _plate_is_doc_number(body, m)]
-    rows: list[list[Any]] = []                      # [plate, date, sheet, glonass]
-    idx_by_key: dict[tuple[str, str | None], int] = {}
+    rows: list[list[Any]] = []               # [plate, date, sheet, glonass, окно смены]
+    idx_by_key: dict[tuple[str, str | None, str | None], int] = {}
     for i, m in enumerate(matches):
         plate = _normalize_plate(m.group(0))
         end = matches[i + 1].start() if i + 1 < len(matches) else len(body)
@@ -1678,7 +1684,17 @@ def _parse_body_vehicles(text: str | None, bare_mileage_ok: bool = False,
         # Ключ — по _plate_dedup_key, а не по сырому номеру: иначе один ТС,
         # написанный в двух ориентациях спецномера («8941АА» в шапке и «АА8941»
         # в строке, 65676) или с регионом и без (64513), даёт два ТС.
-        key = (_plate_dedup_key(plate), date)
+        # Третья часть ключа — ОКНО СМЕНЫ: у одного ТС за один день бывают ДВЕ
+        # смены, дневная и ночная («М618ХТ 196км 05.07.2026 8.00-20.00» и
+        # «М618ХТ 18км 20.00-08.00 05.07.2026-06..07.2026», 4461, П6). Это разные
+        # путевые листы, а по паре (номер, дата) ночная смена молча выбрасывалась:
+        # ключ занят дневной, новых цифр строка «не приносит» — 18 км пропадали.
+        # Настоящий дубль (одинаковое окно или его отсутствие у обеих строк, 4798)
+        # схлопывается как раньше. Тот же приём, что в П4 у актов, где два путевых
+        # листа одного ТС за день различал ФАЙЛ; здесь оба листа в одном тексте, и
+        # различают их только часы.
+        shift = _shift_window_key(win)
+        key = (_plate_dedup_key(plate), date, shift)
         pos = idx_by_key.get(key)
         if pos is not None:
             # Тот же ТС на ту же дату, встреченный повторно. Повтор раньше просто
@@ -1698,7 +1714,7 @@ def _parse_body_vehicles(text: str | None, bare_mileage_ok: bool = False,
                 dups_out.add(_plate_dedup_key(plate))
             continue
         idx_by_key[key] = len(rows)
-        rows.append([plate, date, sheet, glonass])
+        rows.append([plate, date, sheet, glonass, shift])
     # Строка БЕЗ даты, у которой есть ДУБЛЬ С датой, — артефакт разметки (тот же
     # номер упомянут ещё и в шапке/перечислении), а не отдельный выезд: 65676
     # давал 5 строк на 2 машины — «8941АА» без даты, «2874СЕ» без даты, «АА8941»
@@ -1749,6 +1765,8 @@ def _parse_body_vehicles(text: str | None, bare_mileage_ok: bool = False,
         # нельзя (63617): строку оставляем, но только если ей есть что нести.
         if r[2] is not None or r[3] is not None:
             keep.append(i)
+    if windows_out is not None:
+        windows_out.extend(rows[i][4] for i in keep)
     return [(str(rows[i][0]), rows[i][1], rows[i][2], rows[i][3]) for i in keep]
 
 
@@ -2508,6 +2526,25 @@ def _has_shift_window(text: str | None) -> bool:
     Мы считаем пробег за СУТКИ (пороги лестницы откалиброваны на них), поэтому
     строку только помечаем (WARN_SHIFT_WINDOW) — см. C5 класс 3."""
     return bool(text and _SHIFT_WINDOW_RE.search(text))
+
+
+def _shift_window_key(text: str | None) -> str | None:
+    """Окно СМЕНЫ строки в едином виде («20:00-08:00») или None, если его нет.
+
+    У одного ТС за ОДИН календарный день бывает ДВЕ смены — дневная и ночная
+    («М618ХТ 196км 05.07.2026 8.00-20.00» и «М618ХТ 18км 20.00-08.00
+    05.07.2026-06..07.2026», 4461, П6). Это две РАЗНЫЕ жалобы с разными путевыми
+    листами, и различает их только окно времени, поэтому оно входит в ключ дедупа
+    строк (см. _parse_body_vehicles). Тот же приём, что в П4 у актов, где двух
+    путевых листов одного ТС за день различал ФАЙЛ.
+
+    Записи «8.00-20.00», «08:00 - 20:00» — одно и то же окно, поэтому часы
+    дополняем нулём: иначе один и тот же дубль дал бы две строки."""
+    m = _SHIFT_WINDOW_RE.search(text or "")
+    if not m:
+        return None
+    return "-".join(f"{int(h):02d}:{mm}"
+                    for h, mm in re.findall(r"(\d{1,2})[.:](\d{2})", m.group(0)))
 
 
 # Голова ИНТЕРВАЛА: «26.06.2026», «28.06», а также ночная смена с общим месяцем
@@ -5018,11 +5055,17 @@ class IssueAutomationService:
             # первого. Разбираем каждый номер: своя дата/пробег из тела, добор из темы.
             subj_dups: set[str] = set()   # ТС, задвоенные в списке (класс 23)
             subj_broken: set[str] = set()  # ТС с испорченной датой (класс 7)
+            # Окна СМЕН строк тела, позиция в позицию с body_rows (П6): дневная и
+            # ночная смены одного ТС за один день различаются ТОЛЬКО часами, и
+            # оператору их надо видеть. Список ведём параллельно targets_subj —
+            # все преобразования ниже сохраняют порядок и длину.
+            subj_windows: list[str | None] = []
             body_rows = _parse_body_vehicles(
                 issue_description,
                 bare_mileage_ok=(_intent_for(None) == FALSE_MILEAGE_INTENT),
                 dups_out=subj_dups,
-                broken_dates_out=subj_broken)  # (plate,date,sheet,glonass)
+                broken_dates_out=subj_broken,
+                windows_out=subj_windows)  # (plate,date,sheet,glonass)
             body_keys = {_plate_dedup_key(p) for p, _, _, _ in body_rows}
             title_plates = extract_all_plates(issue_title or "")
             # ОДИН объект разбираем ТЕМ ЖЕ движком, что и N (раньше требовалось
@@ -5035,6 +5078,7 @@ class IssueAutomationService:
             # Дата шапки — только если своя не нашлась (см. fallback_date выше).
             p0_date = p0.date or fallback_date
             targets_subj: list[tuple[str, str | None, float | None, float | None]] = list(body_rows)
+            row_windows: list[str | None] = list(subj_windows)
             # Каждая строка тела — своя цель (своя дата/пробег, 64455/65649).
             # Номера, встреченные только в ТЕМЕ, добираем с общей датой/ПЛ из
             # разбора темы+тела (fallback), чтобы ТС из темы не потерялся.
@@ -5042,11 +5086,13 @@ class IssueAutomationService:
                 if _plate_dedup_key(plate) not in body_keys:
                     targets_subj.append(
                         (plate, p0_date, p0.sheet_mileage_km, p0.declared_system_km))
+                    row_windows.append(None)
             if not targets_subj and p0.plate:
                 # Номер есть только в общем разборе темы+тела (нестандартная
                 # разметка строки) — одиночная заявка не должна остаться без строки.
                 targets_subj.append(
                     (p0.plate, p0_date, p0.sheet_mileage_km, p0.declared_system_km))
+                row_windows.append(None)
             # ИНТЕРВАЛЫ (смены) ОДНОГО ТС — своя строка на каждый (4331: пять смен
             # давали одну строку; 4322: вторая дата пропадала). Только когда во
             # ВСЕЙ заявке один ТС: у списка машин непонятно, к какой из них
@@ -5058,6 +5104,9 @@ class IssueAutomationService:
                 _intervals = _parse_km_intervals(issue_description, created)
                 if len(_intervals) >= 2:
                     targets_subj = [(_iv_plate, d, km, None) for d, km in _intervals]
+                    # Интервальный разбор строит строки заново (своя дата на
+                    # каждую смену) — окна строк тела к ним не относятся.
+                    row_windows = [None] * len(targets_subj)
             # ОБЩАЯ дата заявки — строкам, у которых СВОЕЙ даты нет. 65910: в
             # сводном разборе дата 23.07 и ПЛ есть, а обе строки объектов вышли
             # с date=None → «Нет номера/даты» и телеметрия не запрашивалась
@@ -5106,6 +5155,9 @@ class IssueAutomationService:
             # сутки — строки только помечаем (C5 класс 3, WARN_SHIFT_WINDOW).
             shift_subj = _has_shift_window(_txt_subj)
             if targets_subj:
+                # Страховка выравнивания: ни одна ветка выше не должна оставить
+                # окон меньше, чем целей, но zip молча обрезал бы список строк.
+                row_windows += [None] * (len(targets_subj) - len(row_windows))
                 sem0 = asyncio.Semaphore(_BATCH_CONCURRENCY)
                 # Тексты, в которых ищем ИМЯ АКТА для источника строки: тема формата
                 # ЖПО — перечень имён вложений, и номер строки приезжает оттуда, а не
@@ -5114,7 +5166,8 @@ class IssueAutomationService:
                 _src_texts = (issue_title, _strip_html(issue_description), extra_text)
 
                 async def _one_subj(plate: str, pdate: str | None, psheet: float | None,
-                                    pglonass: float | None) -> dict[str, Any] | None:
+                                    pglonass: float | None,
+                                    pwindow: str | None = None) -> dict[str, Any] | None:
                     async with sem0:
                         try:
                             row = await self._analyze_object(
@@ -5138,13 +5191,21 @@ class IssueAutomationService:
                             if shift_subj:
                                 row.setdefault("warnings", []).append(
                                     WARN_SHIFT_WINDOW)
+                            # Часы СВОЕЙ смены (П6). У дневной и ночной смены
+                            # одного ТС за один день совпадает всё, кроме окна, —
+                            # без него две строки неразличимы. Пробег по-прежнему
+                            # считается за СУТКИ, поле только показывает, о какой
+                            # смене писал клиент.
+                            if pwindow:
+                                row["shift_window"] = pwindow
                             return row
                         except Exception:
                             log.warning("analyze_batch_subject_failed", plate=plate)
                             return None
 
                 chunk0 = await asyncio.gather(
-                    *(_one_subj(p, d, s, g) for p, d, s, g in targets_subj))
+                    *(_one_subj(p, d, s, g, w) for (p, d, s, g), w
+                      in zip(targets_subj, row_windows)))
                 return [r for r in chunk0 if r is not None]
         # Возобновляемое извлечение текста с накоплением в кэше (ocr:<att_id>):
         # распознанное вложение не гоняется повторно, большой скан дотягивается за

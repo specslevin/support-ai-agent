@@ -2037,6 +2037,27 @@ function PeriodEndMark({ from, to }: { from?: string | null; to?: string | null 
 }
 
 /**
+ * Окно смены рядом с датой строки. Нужно ровно затем, чтобы две строки одного ТС
+ * за один день (дневная и ночная смены) не выглядели одинаково: клиент пишет
+ * «М618ХТ 196км 05.07.2026» и «М618ХТ 18км 20.00-08.00 05.07.2026», и без окна
+ * оператор видел бы два одинаковых номера с разным пробегом. Сам пробег и
+ * телеметрия по-прежнему считаются за СУТКИ (решение владельца проекта): окно
+ * показываем, но в расчёт не берём — об этом говорит пометка `shift_window`.
+ */
+function ShiftWindowMark({ window }: { window?: string | null }) {
+  const w = (window ?? '').trim()
+  if (!w) return null
+  return (
+    <span
+      title={`Клиент указал смену ${w}. Пробег и телеметрия строки посчитаны за СУТКИ целиком — окно смены в расчёт намеренно не берём, пороги вердиктов откалиброваны на сутки`}
+      className="shrink-0 whitespace-nowrap text-[10px] text-secondary"
+    >
+      {w}
+    </span>
+  )
+}
+
+/**
  * Относится ли сводный признак «год исправлен» к ЭТОЙ строке. Признак живёт в
  * сводных фактах заявки (`parsed`), а строк в разборе может быть двадцать —
  * помечаем только строку с той же датой и только пока её не правил оператор
@@ -2955,6 +2976,7 @@ function SingleParseTable({ issueId, issueTitle, companyName, onSelect }: {
                          Рядом — конец периода неисправности («— 31.07»). */
                       suffix={<>
                         <PeriodEndMark from={o.date} to={windowEndFor(parsed, o)} />
+                        <ShiftWindowMark window={o.shift_window} />
                         <YearFixedMark on={yearFixedFor(parsed, o)} />
                       </>}
                       onApply={val => applyEdit(idx, 'date', val)}
@@ -3708,6 +3730,7 @@ function BatchAnalysis({ issueId, issueTitle, issueDescription, onOpenExternal, 
                              Рядом — конец периода неисправности («— 31.07»). */
                           suffix={<>
                             <PeriodEndMark from={o.date} to={windowEndFor(res.parsed, o)} />
+                            <ShiftWindowMark window={o.shift_window} />
                             <YearFixedMark on={yearFixedFor(res.parsed, o)} />
                           </>}
                           onApply={val => handleDateChange(o, val, idx)}
